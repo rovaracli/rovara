@@ -4,7 +4,7 @@ const script = new URL("../../scripts/openrouter-qualify.mjs", import.meta.url).
 type Row = { model: string; status: string; max_completion_tokens: number; observedModelIds: string[]; zeroPriceProof: Record<string, { attempt: number; source: string }> };
 type Call = { holdMicros: number; requestControls: { max_tokens: number }; checks: Record<string, string>; generation?: { model: string }; responseModel?: string; usage?: { cost_details: Record<string, unknown> } };
 type Provider = { status: string; calls: Call[]; priceCapProbes?: { holdMicros: number }[]; candidateTariff?: Row };
-type Report = { status: string; models: { model: string; resumed?: boolean; providers: Provider[] }[]; preCallHoldsMicros: number; perModelCapMicros: number; exposureMicros: number; chargedMicros: number; failuresByCause: Record<string, number>; proposedTariffRows: Row[] };
+type Report = { status: string; models: { model: string; resumed?: boolean; providers: Provider[] }[]; preCallHoldsMicros: number; perModelCapMicros: number; exposureMicros: number; chargedMicros: number; failuresByCause: Record<string, number>; proposedTariffRows: Row[]; installSelection: { installable: unknown[] } };
 const { qualify } = await import(script) as { qualify: (options: Record<string, unknown>) => Promise<Report> };
 const recorded = JSON.parse(readFileSync(new URL("../fixtures/openrouter-harness-v3.json", import.meta.url), "utf8")) as { model: string; actual: string; pricing: Record<string, string> };
 const now = Date.UTC(2026, 10, 22);
@@ -59,7 +59,9 @@ it.each([[4096, 2048], [2048, 2048], [1500, 1500], [1025, 1025]])("sends every c
  const r = await run({ ceiling });
  expect(r.report.status).toBe("PASS");
  expect(r.bodies.every(body => body.max_tokens === expected)).toBe(true);
- expect(r.bodies.every(body => body.reasoning.enabled && body.reasoning.max_tokens === 1024)).toBe(true);
+ // Controls (calls 1-3) send reasoning OFF (owner rule 2026-11-23); the reasoning probe (call 4) keeps the gateway's bounded 1024.
+ expect(r.bodies.slice(0, 3).every(body => body.reasoning.enabled === false)).toBe(true);
+ expect(r.bodies[3]!.reasoning).toEqual({ enabled: true, max_tokens: 1024 });
  const row = r.report.proposedTariffRows[0]!;
  expect(row.max_completion_tokens).toBe(expected);
  expect(row).toMatchObject({ reasoning: { mode: "bounded", max_tokens: 1024 } });
@@ -172,13 +174,23 @@ it("the zero request proof also needs the wire pin recorded on EVERY call: an ed
   expect(next.report.models[0]!.resumed, edit).not.toBe(true);
  }
 });
-it.each([["explicit zero", "0"], ["absent", undefined]])("never proves a non-relaxed model's cache-write zero (%s): CANDIDATE", async (_name, write) => {
- const pricing = { ...REQUEST_ZERO } as Record<string, string>; if (write === undefined) delete pricing.input_cache_write; else pricing.input_cache_write = write;
+it("never proves an EXPLICIT zero cache-write price: CANDIDATE, no basis, no write proof, not installable", async () => {
+ const pricing = { ...REQUEST_ZERO, input_cache_write: "0" } as Record<string, string>;
  const r = await run({ pricing, breakdown: true });
  const row = r.report.proposedTariffRows[0]!;
  expect(row.status).toBe("CANDIDATE");
+ expect(row).not.toHaveProperty("cacheWriteBasis");
  expect(row.zeroPriceProof).not.toHaveProperty("input_cache_write");
  expect(row.zeroPriceProof).toHaveProperty("request");
+ expect(r.report.installSelection.installable).toEqual([]);
+});
+it("an ABSENT cache-write price on a non-listed model gets the runtime no-write basis and is PROVEN (owner rule 2026-11-23)", async () => {
+ const pricing = { ...REQUEST_ZERO } as Record<string, string>; delete pricing.input_cache_write;
+ const r = await run({ pricing, breakdown: true });
+ const row = r.report.proposedTariffRows[0]!;
+ expect(row).toMatchObject({ status: "PROVEN", cacheWriteBasis: "never_requested_enforced" });
+ expect(row.zeroPriceProof.input_cache_write!.source).toContain("runtime_enforced:");
+ expect(r.report.installSelection.installable).toHaveLength(1);
 });
 it("recomputes proof on resume and rejects a forged promotion", async () => {
  const first = await run();

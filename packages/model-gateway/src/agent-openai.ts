@@ -160,7 +160,20 @@ export function anthropicStopOf(reason: unknown): string {
 }
 
 /** Chat Completions usage in Anthropic's fields: cached prompt tokens as cache reads, the rest as input; reasoning inside output. */
-export function anthropicUsageOf(value: unknown): Json {
+/**
+ * OpenRouter reports a cache WRITE either as prompt_tokens_details.cache_write_tokens or as a cost part named for it. A no-write route (an absent write price)
+ * stops and settles safely on EITHER, so a cost part for a write with no token count is still a write. Any cache-write / cache-creation key in usage.cost_details,
+ * or a top-level usage key of that name, whose value is not exactly zero (a positive number, or anything unreadable) counts.
+ */
+export function cacheWriteCostReported(value: unknown): boolean {
+  const u = record(value);
+  if (u === undefined) return false;
+  const named = (k: string) => /cache[_-]?(write|creat)/iu.test(k);
+  const nonzero = (v: unknown) => !(v === 0 || v === "0" || v === null || v === undefined);
+  const details = record(u.cost_details);
+  return Object.entries(u).some(([k, v]) => named(k) && typeof v !== "object" && nonzero(v)) || (details !== undefined && Object.entries(details).some(([k, v]) => named(k) && nonzero(v)));
+}
+export function anthropicUsageOf(value: unknown, provider?: ChatDialect): Json {
   const u = record(value);
   if (u === undefined || !whole(u.prompt_tokens) || !whole(u.completion_tokens) || u.prompt_tokens > 1_000_000_000 || u.completion_tokens > 1_000_000_000) throw new Error("unreadable answer");
   let cached = 0; let written = 0;
@@ -173,7 +186,9 @@ export function anthropicUsageOf(value: unknown): Json {
     if (!whole(w) || w > u.prompt_tokens - c) throw new Error("unreadable answer");
     cached = c; written = w;
   }
-  return { input_tokens: u.prompt_tokens - cached - written, output_tokens: u.completion_tokens, cache_read_input_tokens: cached, cache_creation_input_tokens: written };
+  // A write cost with no write token count: one marker token, taken from the input count (the money is in usage.cost; the marker only makes the write visible).
+  if (provider === "openrouter" && written === 0 && cacheWriteCostReported(u)) written = 1;
+  return { input_tokens: Math.max(0, u.prompt_tokens - cached - written), output_tokens: u.completion_tokens, cache_read_input_tokens: cached, cache_creation_input_tokens: written };
 }
 
 const event = (type: string, data: Json): Buffer => Buffer.from(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`, "utf8");
@@ -256,7 +271,7 @@ export class ChatStreamToSse {
         if (amount !== undefined) this.#cost = Math.max(this.#cost ?? 0, amount);
         this.#costComplete = complete !== undefined && !this.#costRegressed;
       }
-      const usage = anthropicUsageOf(chunk.usage);
+      const usage = anthropicUsageOf(chunk.usage, this.#provider);
       if (this.#provider === "openrouter") {
         // A later zero/omission cannot erase a write already reported on this call.
         const written = Math.max(Number(this.#usage?.cache_creation_input_tokens ?? 0), Number(usage.cache_creation_input_tokens));
@@ -346,7 +361,7 @@ export function fromChatCompletion(answer: unknown, provider: ChatDialect, model
       content.push({ type: "tool_use", id: call.id, name: fn.name, input });
     }
   }
-  const usage = anthropicUsageOf(a.usage);
+  const usage = anthropicUsageOf(a.usage, provider);
   const cost = provider === "openrouter" ? (parseReportedCost("openrouter", a.usage) ?? reportedCostFloor(a.usage)) : undefined;
   return { message: { id, type: "message", role: "assistant", model, content, stop_reason: anthropicStopOf(choice.finish_reason), stop_sequence: null, usage }, ...(cost === undefined ? {} : { reportedCost: cost }) };
 }

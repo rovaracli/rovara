@@ -203,8 +203,8 @@ export class DynamoMeter implements Meter {
       ], randomUUID()); return true;
     } catch (error) { if (error instanceof TransactionRefused) return false; throw error; }
   }
-  #sourceSettlement(actions: TransactAction[], pk: string, receipt?: ChargeReceiptV1, source?: CustomerSource, owner?: string, routeClass?: RouteClass): void {
-    const stop = stoppedBy(receipt, this.#now(), routeClass);
+  #sourceSettlement(actions: TransactAction[], pk: string, receipt?: ChargeReceiptV1, source?: CustomerSource, owner?: string, routeClass?: RouteClass, noWriteRoute = false): void {
+    const stop = stoppedBy(receipt, this.#now(), routeClass, noWriteRoute);
     const customerSource = source ?? stop?.source;
     if (customerSource === undefined) return;
     // The class-less record retains the one company/source slot and any legacy latch.
@@ -356,7 +356,7 @@ export class DynamoMeter implements Meter {
    * One hold to spend, in one conditional transaction (the hold must still be open). `swept`: closed by the sweep at the hold's
    * own estimate because its call's settle never landed; counted as estimated, never at $0.
    */
-  async #close(pk: string, id: string, hold: Hold, actualMicros: number, estimated: EstimatedSettlement | undefined, swept: boolean, receipt?: ChargeReceiptV1, provisional?: ProvisionalEstimate): Promise<"closed" | "already"> {
+  async #close(pk: string, id: string, hold: Hold, actualMicros: number, estimated: EstimatedSettlement | undefined, swept: boolean, receipt?: ChargeReceiptV1, provisional?: ProvisionalEstimate, noWriteRoute = false): Promise<"closed" | "already"> {
     if (hold.charge !== undefined && receipt === undefined) {
       if (!swept) throw new Error("charge receipt required");
       receipt = { ...readSettlementReceipt(hold.charge.receipt), recordedAt: new Date(this.#now()).toISOString() };
@@ -413,7 +413,7 @@ export class DynamoMeter implements Meter {
         update: (e) => `SET ${e.name("status")} = ${e.value(held ? "cut_off" : "settled")}, ${e.name("actualMicros")} = ${e.value(actualMicros)}, ${e.name("closedAt")} = ${e.value(now)}${held ? `, ${e.name("cutoffAt")} = ${e.value(now)}` : ""}${swept ? `, ${e.name("swept")} = ${e.value(true)}` : ""} ${held ? "" : `REMOVE ${e.name("openAll")}, ${e.name("openAt")}`}`,
         condition: (e) => `${e.name("status")} = ${e.value("open")}` });
       actions.push({ kind: "Put", table: this.#t.ledger, item: ledger, condition: (e) => `attribute_not_exists(${e.name("pk")})` });
-      this.#sourceSettlement(actions, pk, receipt, hold.customerSource, hold.customerSource === undefined ? undefined : id, hold.routeClass);
+      this.#sourceSettlement(actions, pk, receipt, hold.customerSource, hold.customerSource === undefined ? undefined : id, hold.routeClass, noWriteRoute);
       if (receipt !== undefined) actions.push({ kind: "Put", table: this.#t.ledger, item: { pk, sk: `ADJUST#${id}#${receipt.revision}`, receipt: JSON.parse(JSON.stringify(receipt)) as Plain, deltaMicros: actualMicros }, condition: e => `attribute_not_exists(${e.name("pk")})` });
       try { await this.#db.transact(actions, randomUUID()); }
       catch (error) {
@@ -440,7 +440,7 @@ export class DynamoMeter implements Meter {
     if (hold.charge !== undefined && receiptIdentity(hold.charge.receipt) !== receiptIdentity(r)) throw new Error("charge identity changed");
     const outputs = r.status === "awaiting_usage" && hold.provisional !== undefined ? await this.#history(pk, r) : [];
     const provisional = r.status === "awaiting_usage" && hold.provisional !== undefined ? provisionalEstimate(hold.estimate, hold.provisional, outputs, input.actualInputTokens) : undefined;
-    await this.#close(pk, r.callId, hold, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r, hold.charge?.kind), false, r, provisional);
+    await this.#close(pk, r.callId, hold, provisional?.amountMicros ?? chargeValue(r.amountMicros)!, estimatedReceipt(r, hold.charge?.kind), false, r, provisional, input.noWriteRoute === true);
     // A concurrent winner must have persisted this exact receipt.
     const after = await this.#db.get(this.#t.ledger, key);
     if (after === undefined || chargeReceiptContent(after.receipt) !== chargeReceiptContent(r)) throw new Error("conflicting charge settlement");

@@ -151,6 +151,16 @@ retains the explicit tool/plugin/suffix prohibitions. Every other ID requires
 all six price fields and zero auxiliary prices, including web_search.
 Unknown/conditional fees and explicit malformed values still refuse.
 
+Cache-write rule (owner, 2026-11-23): an **absent** catalogue write price is allowed for ANY
+reviewed route, as a row with the basis below and an explicit `"0"` write price. An EXPLICIT zero
+write price and an absent READ price stay refused (no basis, no proof). At runtime a reported write
+(`cache_write_tokens` above zero, or any cost part named for a cache write) STOPS the call, settles at
+`max(hold, reported cost, token cost with the write rated at the highest listed per-token price)`
+(`openRouterRates`), and latches the durable source stop (`noWriteRoute` on `settleV2`), so the route is
+refused afterwards. A priced-write route keeps its behaviour (billed, stops only on an overrun). The
+harness applies the same rule (`ZERO_PROOF_RULES.cacheWriteRuntimeEnforced`); a pinned test keeps the two
+name patterns equal. The rest of this section describes the original mini/nano wording, now generalized.
+
 Mini/nano may normalize an **absent** cache-write price to `"0"` only with
 `cacheWriteBasis: "never_requested_enforced"` and
 `cacheWriteEnforcementVersion: "openrouter-no-cache-write-v1"` in the private
@@ -360,10 +370,10 @@ proof (the one widening; `ZERO_PROOF_RULES.assumedMayBeProven`) because every ga
 OpenRouter call caps the request fee at 0 on the wire, so an endpoint with a request fee
 is refused by OpenRouter instead of charging; a PRESENT nonzero request price is priced
 (held, capped on the wire at that price) and never counts as zero. `input_cache_write`: the harness never
-exercises cache writes, so a zero or absent write price stays unproven, except for the
-gateway's relaxed-list models (`OPENROUTER_RELAXED_TARIFF_MODELS`) whose catalogue
-write price is ABSENT, whose row carries the current `never_requested_enforced`
-basis, and whose every call reported zero cache-write tokens: runtime enforcement (no
+exercises cache writes, so a zero or absent write price stays unproven, except for any
+model whose catalogue write price is ABSENT (owner rule 2026-11-23; before it, only the
+gateway's relaxed-list models, `OPENROUTER_RELAXED_TARIFF_MODELS`), whose row carries the current `never_requested_enforced`
+basis, and whose every call reported zero cache-write tokens and no write-named cost part: runtime enforcement (no
 cache hint ever reaches OpenRouter; a reported write stops the source) is then the
 proof, recorded as `runtime_enforced:<version>`. That rule is one predicate
 (`ZERO_PROOF_RULES` in `scripts/openrouter-qualify.mjs`). A row stays `CANDIDATE` until every zero has proof; `PROVEN`
@@ -467,3 +477,5 @@ For an OpenRouter call the gateway clamps `max_tokens` DOWN to the installed row
 the hold, the applied output limit and the forwarded body use the clamped value. A
 request whose `max_tokens` is not above the row's reasoning budget (1024 for a harness
 row) is refused.
+
+Harness cost and order (owner, 2026-11-23): the three CONTROL probes (the "2 + 2" checks) send `reasoning: {enabled: false}`; the reasoning probe keeps the gateway's exact bounded request. A route that refuses reasoning off (HTTP 400, $0) falls back once to the gateway's bounded request. All free catalogue and endpoint lookups run first; paid qualification then runs CHEAPEST FIRST (a model's cheapest route's highest listed per-token price, ties by model id), so the shared hold cap reaches more models. Report rows stay in catalogue order.

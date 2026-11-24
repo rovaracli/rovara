@@ -21,12 +21,13 @@ export function validClear(input: ClearSourceStop): boolean {
 export function receiptCustomerSource(r: ChargeReceiptV1 | undefined): CustomerSource | undefined {
   return r?.billing !== "external_provider" ? undefined : r.model.provider === "bedrock" ? "bedrock_byo" : r.model.provider === "openrouter" ? "openrouter" : undefined;
 }
-export function stoppedBy(r: ChargeReceiptV1 | undefined, now: number, routeClass?: RouteClass): SourceStop | undefined {
+export function stoppedBy(r: ChargeReceiptV1 | undefined, now: number, routeClass?: RouteClass, noWriteRoute = false): SourceStop | undefined {
   const source = receiptCustomerSource(r);
-  // The reviewed no-write models never request writes: provisional write evidence violates their bound,
-  // even when the known debit is below the hold. Reuse the durable overrun stop.
+  // The reviewed no-write models never request writes (the relaxed list, and any route admitted with the no-write basis: `noWriteRoute`, an ABSENT
+  // write price): provisional write evidence violates their bound, even when the known debit is below the hold. Reuse the durable overrun stop, so the
+  // route is refused afterwards. A priced-write route (no basis) keeps latching only on an overrun.
   const u = r === undefined ? undefined : chargeValue(r.usage);
-  const unexpectedWrite = source === "openrouter" && r !== undefined && r.status !== "final" && Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, r.model.modelId) && u !== undefined && u.cacheWrite5m + u.cacheWrite1h + u.cacheWriteUnknown > 0;
+  const unexpectedWrite = source === "openrouter" && r !== undefined && r.status !== "final" && (noWriteRoute || Object.hasOwn(OPENROUTER_RELAXED_TARIFF_MODELS, r.model.modelId)) && u !== undefined && u.cacheWrite5m + u.cacheWrite1h + u.cacheWriteUnknown > 0;
   if (source === undefined || (!customerSourceOverage(r) && !unexpectedWrite)) return undefined;
   return { ...(routeClass === undefined ? {} : { routeClass }), source, stopped: true, stopId: `${r!.callId}:${r!.revision}`, stoppedAt: now, callId: r!.callId, costMicros: chargeValue(r!.amountMicros)!, heldMicros: chargeValue(r!.originalReservationMicros)! };
 }

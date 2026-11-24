@@ -18,7 +18,8 @@ export interface ChargeReceiptV1 {
   billableMicros: ChargeField<number>; providerCostMicros: ChargeField<number>;
   occurredAt: string; accountingDay: string; accountingMonth: string; recordedAt: string;
 }
-export interface SettleV2 { reservationId: string; receipt: ChargeReceiptV1; actualInputTokens?: number }
+/** `noWriteRoute`: the call was admitted on an OpenRouter route with the no-cache-write basis (an ABSENT write price); a reported write on it latches the source stop. */
+export interface SettleV2 { reservationId: string; receipt: ChargeReceiptV1; actualInputTokens?: number; noWriteRoute?: boolean }
 export interface ApplyChargeResult { callId: string; appliedRevision: number; result: "applied" | "duplicate" | "older"; deltaMicros: number }
 const object = (v: unknown): Record<string, unknown> | undefined => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : undefined;
 const keys = (v: Record<string, unknown>, names: string): boolean => Object.keys(v).sort().join(",") === names.split(" ").sort().join(",");
