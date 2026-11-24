@@ -41,7 +41,7 @@ npm run infra:synth                                 # synthesize the Cloud stack
 ROVARA_CODE_URL=<code api> ROVARA_CLIENT_SECRET_FILE=<file> npm run cloud:local
 npm run fake-code                                   # a fake Rovara Code with canned data (contract v0), for building screens before Code serves a route
 npm run contract:table                              # contract v0 (packages/contracts/src/code-contract-v0.ts) as markdown tables
-npm run contract:drift -- check                     # Code's pinned contract snapshot against Cloud's strict schemas (refresh and rules: scripts/contract-drift.ts)
+npm run contract:drift -- check                     # Code's pinned contract snapshot against Cloud's strict schemas (refresh and rules: scripts/contract-drift.ts; it also checks the Code sentences Cloud parses strictly, `scripts/contract-drift/text-rules.ts`: add a rule when you add a strict parser of Code text, and ship the parser before Code changes the text, `docs/rovara-cloud-install.md`)
 npm run build && npm run test:browser              # browser tests (Playwright, chromium) on the fake Code; first time: npx playwright install chromium; selectors live in tests/web/browser/pages
 ```
 

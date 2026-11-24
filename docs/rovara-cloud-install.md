@@ -171,6 +171,23 @@ Approve the run in the CodePipeline console. The Deploy stage runs `npm ci`, bui
 app, then deploys the web stack and the first address with the release check around them. It takes a few
 minutes.
 
+## Release order with Code: Cloud's text parsers ship first
+
+Cloud and Code are released separately, so for a while a newer one runs against an older other. Some of Cloud's parsers are strict about the **text** Code sends, not only its shape: the "Setup needs repair" card's
+sentence must match one of Code's two templates exactly, the wiki build's sentences must be ones Cloud lists, and several of Code's refusals are matched word for word. A Code that changes one of those words
+before Cloud knows them makes Cloud refuse the whole answer (the card or panel shows "could not be read just now").
+
+**Rule: Cloud's strict text parsers ship before Code changes the text.** When a Code change edits a sentence or message Cloud parses, release Cloud with a parser that takes both the old and the new text first,
+then install the Code. Never install the Code first.
+
+- **Cloud train 15 (or newer) must be installed BEFORE any Code that contains Code train 22** (the "don't block work" change, DEC 254zzz447). Code train 22 ends the repair card's sentence with "Work continues;
+  results may be less reliable until setup is fixed." where earlier Code ends it with "Rovara cannot build on this project until it is fixed." Cloud before train 15 accepts only the old ending, so under a Code with
+  train 22 every open repair card would answer 503. Train 15 and newer accept both endings and show Cloud's own words either way.
+- **Check it before every Code install:** `npm run contract:drift -- check --code-ref <the Code release ref> --code-repo <a Code clone>`. Besides the schemas, it reads the sentences Code builds
+  (`scripts/contract-drift/text-rules.ts`) and fails when one is not taken by the Cloud being released. A failure means: change Cloud's parser first (accept the new text, keep the old), release Cloud, then Code.
+- **A new strict parser of Code text needs a rule** in `scripts/contract-drift/text-rules.ts` (Cloud's parser, Code's file and expression), and `npm run contract:drift -- snapshot-text --code-ref origin/code/next --code-repo <clone>`
+  to refresh the pinned sentences in `tests/fixtures/code-contract-snapshot/code-text.json`.
+
 ## Registering Cloud with Code (once)
 
 After the first deploy, the web stack's outputs give you everything:

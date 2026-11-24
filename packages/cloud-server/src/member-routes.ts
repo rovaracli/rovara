@@ -51,10 +51,10 @@ export const MEMBER_WORDS = Object.freeze({
 });
 
 /** Code's own fixed words for its two FORBIDDEN refusals (company-member-routes.ts OWN_MEMBERSHIP, company-member-contract.ts MEMBER_ONLY_OWNER). */
-const CODE_OWN_MEMBERSHIP = "you cannot change your own role or remove yourself here";
-const CODE_OWNER_ONLY = "only an owner can change or remove an owner";
+export const CODE_OWN_MEMBERSHIP = "you cannot change your own role or remove yourself here";
+export const CODE_OWNER_ONLY = "only an owner can change or remove an owner";
 /** Code's 404 for a caller who is not (or no longer) a company owner or admin, as opposed to its "member not found". */
-const CODE_NOT_ADMIN = "not found";
+export const CODE_NOT_ADMIN = "not found";
 
 const PERSON_ID = /^[a-f0-9]{64}$/u;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
@@ -300,9 +300,9 @@ async function removeMember(context: RouteContext): Promise<RouteAnswer> {
 }
 
 /** Code's fixed words for "nothing to finish" (company-member-routes.ts NO_PENDING_HANDOVER). */
-const CODE_NO_PENDING = "this person has no hand-over waiting to be finished";
+export const CODE_NO_PENDING = "this person has no hand-over waiting to be finished";
 /** Code's fixed words for a removal still being made by its remover (company-member-routes.ts HANDOVER_IN_PROGRESS). */
-const CODE_IN_PROGRESS = "this removal is still being made; try again in a few minutes";
+export const CODE_IN_PROGRESS = "this removal is still being made; try again in a few minutes";
 
 /** `GET /org/members/handovers` (DEC 254zzz101): the removals whose hand-over is waiting, as the app's list, or a refusal of the whole list. */
 async function pendingHandOvers(context: RouteContext): Promise<RouteAnswer> {

@@ -28,6 +28,8 @@ import { isCodeOutcomeUnknown, CodeError, SignInEnded } from "./code-client.js";
 import { agentAiConnected } from "./agent-ai-presence.js";
 import { companyCaller, refused } from "./company-caller.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
+import { setupAgentRepairView } from "./setup-repair-routes.js";
+import { Unreadable as CardUnreadable } from "./wiki-routes.js";
 
 export const SETUP_CHECKLIST_WORDS = Object.freeze({
   notFound: "project not found",
@@ -504,7 +506,13 @@ const runReadRoute: Route = {
     if ("refusal" in got) return got.refusal;
     if (!runAnswerOk(got.value)) return A.unavailable;
     // The waiting candidate (L4-D2) is rebuilt from its known fields; an unreadable one is no answer at all (never a card with a guessed risk or approver).
-    const read = got.value as Plain;
+    const { repair, ...kept } = got.value as Plain;
+    // Code's admin card of a broken setup (`repair`, with the automatic draft's part in it) is forwarded only rebuilt from what reads; one that does not read is dropped from this answer, never a refusal of the read (nothing on the page needs it).
+    let card: Plain | undefined;
+    if (repair !== undefined) {
+      try { card = setupAgentRepairView(repair); } catch (error) { if (!(error instanceof CardUnreadable)) throw error; console.log(JSON.stringify({ event: "cloud.setup_agent_repair_dropped", project: at.project })); }
+    }
+    const read: Plain = { ...kept, ...(card === undefined ? {} : { repair: card }) };
     if (read["apply"] === undefined) return { status: 200, body: read };
     try { return { status: 200, body: { ...read, apply: applyAnswer(read["apply"]) } }; } catch (error) { if (error instanceof Unreadable) return A.unavailable; throw error; }
   },
