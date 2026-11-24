@@ -1,13 +1,34 @@
 [
   {
-    "why": "Present when the check was added (Code 4ff67252e): Code sends this and Cloud's strict schema does not take it yet. Fix in Cloud (add the field or value), then delete the entry.",
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: no Code path writes it (no `deliveryObservation` in broker/worker at 9517796fc). Left accepted: the check still fails on any NEW drift.",
     "keys": [
-      "agent-sessions.ts#SessionMessageSchema deliveryObservation unknown-field: Code sends \"deliveryObservation\"; Cloud's object is strict and does not list it",
+      "agent-sessions.ts#SessionMessageSchema deliveryObservation unknown-field: Code sends \"deliveryObservation\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: no Code path builds `designActions` (grep: only contracts/src/task-workflow-design-review.ts:331 `designReviewRetryOffer` is defined, nothing calls it); would hide the Design first / Skip buttons. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "design-review-words.ts#DesignActionsViewSchema retry unknown-field: Code sends \"retry\"; Cloud's object is strict and does not list it",
-      "design-review.ts#WorkflowDesignReviewSchema rounds[].estimateUsd unknown-field: Code sends \"estimateUsd\"; Cloud's object is strict and does not list it",
+      "developer-tasks.ts#DeveloperTaskViewSchema designActions.retry unknown-field: Code sends \"retry\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: no Code path writes `scale` (contracts/src/design-review.ts:209 says \"Nothing writes it yet\"; no `scale` writer in broker/worker). Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "design-review.ts#WorkflowDesignReviewSchema rounds[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "design-review.ts#WorkflowDesignReviewSchema rounds[].unreadableFindings unknown-field: Code sends \"unreadableFindings\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema designActions.retry unknown-field: Code sends \"retry\"; Cloud's object is strict and does not list it",
+      "developer-tasks.ts#DeveloperTaskViewSchema workflow.critique.critiques[].points[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
+      "developer-tasks.ts#DeveloperTaskViewSchema workflow.designReview.rounds[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
+      "developer-tasks.ts#DeveloperTaskViewSchema workflow.reviews[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
+      "developer-tasks.ts#DeveloperTaskViewSchema workflow.secondReviewBlock.findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
+      "task-workflow.ts#WorkflowSnapshotShapeSchema critique.critiques[].points[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
+      "task-workflow.ts#WorkflowSnapshotShapeSchema designReview.rounds[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
+      "task-workflow.ts#WorkflowSnapshotShapeSchema reviews[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
+      "task-workflow.ts#WorkflowSnapshotShapeSchema secondReviewBlock.findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: the hosted task read carries no `evidence` (dev-routes.ts:665-670; the evidence route answers a proof index, dev-routes.ts:684). Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "developer-tasks.ts#DeveloperTaskViewSchema evidence.checks[].tests.absentOnNew unknown-field: Code sends \"absentOnNew\"; Cloud's object is strict and does not list it",
       "developer-tasks.ts#DeveloperTaskViewSchema evidence.checks[].tests.absentOnNewCount unknown-field: Code sends \"absentOnNewCount\"; Cloud's object is strict and does not list it",
       "developer-tasks.ts#DeveloperTaskViewSchema evidence.checks[].tests.failureCauses unknown-field: Code sends \"failureCauses\"; Cloud's object is strict and does not list it",
@@ -19,11 +40,37 @@
       "developer-tasks.ts#DeveloperTaskViewSchema evidence.environment.dependencies[].label enum: Code can send \"rovara_made_fake\": not in Cloud's list",
       "developer-tasks.ts#DeveloperTaskViewSchema evidence.environment.dependencies[].label enum: Code can send \"vendor_test\": not in Cloud's list",
       "developer-tasks.ts#DeveloperTaskViewSchema evidence.environment.dependencies[].mockSpecResult unknown-field: Code sends \"mockSpecResult\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema evidence.environment.dependencies[].mockSpecVendor unknown-field: Code sends \"mockSpecVendor\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema merge.order unknown-field: Code sends \"order\"; Cloud's object is strict and does not list it",
+      "developer-tasks.ts#DeveloperTaskViewSchema evidence.environment.dependencies[].mockSpecVendor unknown-field: Code sends \"mockSpecVendor\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: `order` is switched off by default and the task view carries no `merge` (core/merge/merge.ts:259: \"Off by default ... readers first\"). Left accepted: the check still fails on any NEW drift.",
+    "keys": [
+      "developer-tasks.ts#DeveloperTaskViewSchema merge.order unknown-field: Code sends \"order\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: only a SHA-256 object-format repository has a 64-hex id (Code's CommitIdSchema {40,128}); and `mergeTracking` is not in the hosted task view. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].approval.commitId pattern: Cloud's pattern is \"^[a-f0-9]{40}$\"; Code's is \"^[a-f0-9]{40,128}$\"",
-      "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].approval.githubUserId missing-required: Cloud requires \"githubUserId\"; Code's object has no such field",
-      "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].approval.hostUserId unknown-field: Code sends \"hostUserId\"; Cloud's object is strict and does not list it",
+      "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].headSha pattern: Cloud's pattern is \"^[a-f0-9]{40}$\"; Code's is \"^[a-f0-9]{40,128}$\""
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: LATENT, HIGH IMPACT: Code renamed the field `hostUserId` (core/merge/store.ts:34-38, contracts/src/rovara-code.ts:509); the task view does not carry `mergeTracking` today (nothing in broker/src sets it), but the day it does a Cloud task page read fails on every approved PR (probed: `approval.githubUserId` required). Left accepted: the check still fails on any NEW drift.",
+    "keys": [
+      "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].approval.githubUserId missing-required: Cloud requires \"githubUserId\"; Code's object has no such field"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: see githubUserId: `mergeTracking` is not in the hosted task view; unknown fields are tolerated by the forward reader anyway. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
+      "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].approval.hostUserId unknown-field: Code sends \"hostUserId\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: `mergeTracking` is not in the hosted task view (nothing in broker/src sets it); and the forward reader accepts unknown fields and enum words (probed: ciUnreadableSince, ciEvalSince, ci \"unreadable\" parse). Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].ci enum: Code can send \"required_missing\": not in Cloud's list",
       "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].ci enum: Code can send \"unreadable\": not in Cloud's list",
       "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].ciEval unknown-field: Code sends \"ciEval\"; Cloud's object is strict and does not list it",
@@ -32,17 +79,25 @@
       "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].ciMarkedSince unknown-field: Code sends \"ciMarkedSince\"; Cloud's object is strict and does not list it",
       "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].ciMissingChecks unknown-field: Code sends \"ciMissingChecks\"; Cloud's object is strict and does not list it",
       "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].ciMissingSince unknown-field: Code sends \"ciMissingSince\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].ciUnreadableSince unknown-field: Code sends \"ciUnreadableSince\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].headSha pattern: Cloud's pattern is \"^[a-f0-9]{40}$\"; Code's is \"^[a-f0-9]{40,128}$\"",
-      "developer-tasks.ts#DeveloperTaskViewSchema testing.rows[].madeByRovara unknown-field: Code sends \"madeByRovara\"; Cloud's object is strict and does not list it",
+      "developer-tasks.ts#DeveloperTaskViewSchema mergeTracking[].ciUnreadableSince unknown-field: Code sends \"ciUnreadableSince\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: `testing.rows` (broker/src/core/proof/testing-section.ts) never carries `madeByRovara`; only workflow.verification.results does. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
+      "developer-tasks.ts#DeveloperTaskViewSchema testing.rows[].madeByRovara unknown-field: Code sends \"madeByRovara\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: only a SHA-256 object-format repository has a 64-hex id; GitHub-hosted repositories are SHA-1. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "developer-tasks.ts#DeveloperTaskViewSchema workflow.branchSync.expectedHeadCommit pattern: Cloud's pattern is \"^[a-f0-9]{40}$\"; Code's is \"^[a-f0-9]{40,128}$\"",
-      "developer-tasks.ts#DeveloperTaskViewSchema workflow.critique.critiques[].points[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema workflow.designReview.rounds[].estimateUsd unknown-field: Code sends \"estimateUsd\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema workflow.designReview.rounds[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema workflow.designReview.rounds[].unreadableFindings unknown-field: Code sends \"unreadableFindings\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema workflow.reviews[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema workflow.secondReviewBlock.findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema workflow.verification.results[].madeByRovara unknown-field: Code sends \"madeByRovara\"; Cloud's object is strict and does not list it",
+      "task-workflow.ts#WorkflowSnapshotShapeSchema branchSync.expectedHeadCommit pattern: Cloud's pattern is \"^[a-f0-9]{40}$\"; Code's is \"^[a-f0-9]{40,128}$\""
+    ]
+  },
+  {
+    "why": "Class (D) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: error codes are read as plain strings (ui/src/api/errors.ts:22 accepts any [A-Z][A-Z0-9_]*); only the invite-admin client enum-parses and falls back to REQUEST_FAILED, and no invite route returns these codes. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "errors.ts#AgentXErrorCodeSchema (root) enum: Code can send \"COMMITTED_REFRESH_NEEDED\": not in Cloud's list",
       "errors.ts#AgentXErrorCodeSchema (root) enum: Code can send \"GITHUB_ACCOUNT_LINK_EXISTS\": not in Cloud's list",
       "errors.ts#AgentXErrorCodeSchema (root) enum: Code can send \"GITHUB_ACCOUNT_TAKEN\": not in Cloud's list",
@@ -57,30 +112,79 @@
       "errors.ts#AgentXErrorCodeSchema (root) enum: Code can send \"SLACK_CHANNEL_TAKEN\": not in Cloud's list",
       "errors.ts#AgentXErrorCodeSchema (root) enum: Code can send \"SLACK_COMPANY_HAS_WORKSPACE\": not in Cloud's list",
       "errors.ts#AgentXErrorCodeSchema (root) enum: Code can send \"SLACK_NOT_CONNECTED\": not in Cloud's list",
-      "errors.ts#AgentXErrorCodeSchema (root) enum: Code can send \"SLACK_WORKSPACE_TAKEN\": not in Cloud's list",
-      "project-playbook.ts#ProjectPlaybookResponseSchema designReviewUnreadable unknown-field: Code sends \"designReviewUnreadable\"; Cloud's object is strict and does not list it",
+      "errors.ts#AgentXErrorCodeSchema (root) enum: Code can send \"SLACK_WORKSPACE_TAKEN\": not in Cloud's list"
+    ]
+  },
+  {
+    "why": "Class (D) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: emitted, but Cloud rebuilds the response from the fields it names and drops the flag (the page cannot say the stored setting was unreadable: a lost warning, not an error). Left accepted: the check still fails on any NEW drift.",
+    "keys": [
+      "project-playbook.ts#ProjectPlaybookResponseSchema designReviewUnreadable unknown-field: Code sends \"designReviewUnreadable\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (D) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: Cloud builds the session view itself (cloud-server/src/session-view.ts) and the app reads it with SessionResponseReaderSchema; Code never sends this schema. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "session-views.ts#SessionViewSchema body(1).chain missing-required: Cloud requires \"chain\"; Code's object has no such field",
       "session-views.ts#SessionViewSchema body(1).kind enum: Code can send \"task\": not the literal Cloud allows",
       "session-views.ts#SessionViewSchema body(1).task unknown-field: Code sends \"task\"; Cloud's object is strict and does not list it",
-      "session-views.ts#SessionViewSchema display unknown-field: Code sends \"display\"; Cloud's object is strict and does not list it",
-      "setup-agent-web.ts#SetupAgentViewSchema summary.cannot unknown-field: Code sends \"cannot\"; Cloud's object is strict and does not list it",
-      "setup-agent-web.ts#SetupAgentViewSchema summary.pause unknown-field: Code sends \"pause\"; Cloud's object is strict and does not list it",
+      "session-views.ts#SessionViewSchema display unknown-field: Code sends \"display\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: only set when the broker's poll answers `companyOff`, which no broker code returns (worker/src/setup-agent-run.ts:355-357; grep `companyOff` finds only the worker). Left accepted: the check still fails on any NEW drift.",
+    "keys": [
+      "setup-agent-web.ts#SetupAgentViewSchema summary.cannot unknown-field: Code sends \"cannot\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: only an unattended repair-draft run sets it (worker/src/setup-agent-run.ts:306-308), and that automatic path is off until every lock is open (core/setup-agent/repair-draft.ts header: system-runs gate, upkeep switch, enforced cap); also to confirm that a repair run is not the project's setup-agent view. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
+      "setup-agent-web.ts#SetupAgentViewSchema summary.pause unknown-field: Code sends \"pause\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: Code's broker has no `setup-draft/apply` route at either ref (no `setup-draft` route in broker/src; code-contract-v0 lists it \"later\"), so nothing sends the answer. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "setup-proposal.ts#SetupApplyResponseSchema results[].outcome enum: Code can send \"proposed\": not in Cloud's list",
-      "setup-proposal.ts#SetupApplyResponseSchema results[].proposalDigest unknown-field: Code sends \"proposalDigest\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema branchSync.expectedHeadCommit pattern: Cloud's pattern is \"^[a-f0-9]{40}$\"; Code's is \"^[a-f0-9]{40,128}$\"",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema critique.critiques[].points[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema designReview.rounds[].estimateUsd unknown-field: Code sends \"estimateUsd\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema designReview.rounds[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema designReview.rounds[].unreadableFindings unknown-field: Code sends \"unreadableFindings\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema reviews[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema secondReviewBlock.findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema verification.results[].madeByRovara unknown-field: Code sends \"madeByRovara\"; Cloud's object is strict and does not list it",
+      "setup-proposal.ts#SetupApplyResponseSchema results[].proposalDigest unknown-field: Code sends \"proposalDigest\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (D) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: Cloud builds the state itself from Code's hosted view (cloud-server/src/saved-env-routes.ts:190-215) and writes none of these keys; Code never sends this shape. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.draft.looked unknown-field: Code sends \"looked\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.approval.approvalId unknown-field: Code sends \"approvalId\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.approval.askedByYou unknown-field: Code sends \"askedByYou\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.approval.waitingFor unknown-field: Code sends \"waitingFor\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.approval.youConfirm unknown-field: Code sends \"youConfirm\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.dependencySeeds unknown-field: Code sends \"dependencySeeds\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.seedRisks unknown-field: Code sends \"seedRisks\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.draft.looked unknown-field: Code sends \"looked\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.approval.approvalId unknown-field: Code sends \"approvalId\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.approval.askedByYou unknown-field: Code sends \"askedByYou\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.approval.waitingFor unknown-field: Code sends \"waitingFor\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.approval.youConfirm unknown-field: Code sends \"youConfirm\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.dependencySeeds unknown-field: Code sends \"dependencySeeds\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.seedRisks unknown-field: Code sends \"seedRisks\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.draft.looked unknown-field: Code sends \"looked\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.approval.approvalId unknown-field: Code sends \"approvalId\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.approval.askedByYou unknown-field: Code sends \"askedByYou\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.approval.waitingFor unknown-field: Code sends \"waitingFor\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.approval.youConfirm unknown-field: Code sends \"youConfirm\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.dependencySeeds unknown-field: Code sends \"dependencySeeds\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.seedRisks unknown-field: Code sends \"seedRisks\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvironmentStateSchema draft.looked unknown-field: Code sends \"looked\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.approval.approvalId unknown-field: Code sends \"approvalId\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.approval.askedByYou unknown-field: Code sends \"askedByYou\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.approval.waitingFor unknown-field: Code sends \"waitingFor\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.approval.youConfirm unknown-field: Code sends \"youConfirm\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.dependencySeeds unknown-field: Code sends \"dependencySeeds\"; Cloud's object is strict and does not list it",
+      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.seedRisks unknown-field: Code sends \"seedRisks\"; Cloud's object is strict and does not list it"
+    ]
+  },
+  {
+    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: `proposal.environment` is passed through from Code unchanged (saved-env-routes.ts:213), but hosted Code never stores a proposal: only the local app calls proposeTestEnvironment (broker/src/local/app/test-environment.ts:215); the hosted GET carries a proposal only if one exists. Left accepted: the check still fails on any NEW drift.",
+    "keys": [
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.environment.dependencies[].backing(3).awsServices limit: Code allows up to 64 items; Cloud allows 24",
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.environment.dependencies[].backing(5).kind enum: Code can send \"vendor_test\": not the literal Cloud allows",
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.environment.dependencies[].backing(6).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it",
@@ -89,13 +193,6 @@
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.environment.dependencies[].seeds[](1).lock unknown-field: Code sends \"lock\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.environment.dependencies[].workingBacking(3).awsServices limit: Code allows up to 64 items; Cloud allows 24",
       "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.environment.dependencies[].workingBacking(4).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvApplyAnswerSchema state.proposal.seedRisks unknown-field: Code sends \"seedRisks\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.draft.looked unknown-field: Code sends \"looked\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.approval.approvalId unknown-field: Code sends \"approvalId\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.approval.askedByYou unknown-field: Code sends \"askedByYou\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.approval.waitingFor unknown-field: Code sends \"waitingFor\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.approval.youConfirm unknown-field: Code sends \"youConfirm\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.dependencySeeds unknown-field: Code sends \"dependencySeeds\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.environment.dependencies[].backing(3).awsServices limit: Code allows up to 64 items; Cloud allows 24",
       "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.environment.dependencies[].backing(5).kind enum: Code can send \"vendor_test\": not the literal Cloud allows",
       "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.environment.dependencies[].backing(6).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it",
@@ -104,13 +201,6 @@
       "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.environment.dependencies[].seeds[](1).lock unknown-field: Code sends \"lock\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.environment.dependencies[].workingBacking(3).awsServices limit: Code allows up to 64 items; Cloud allows 24",
       "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.environment.dependencies[].workingBacking(4).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvApproveAnswerSchema state.proposal.seedRisks unknown-field: Code sends \"seedRisks\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.draft.looked unknown-field: Code sends \"looked\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.approval.approvalId unknown-field: Code sends \"approvalId\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.approval.askedByYou unknown-field: Code sends \"askedByYou\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.approval.waitingFor unknown-field: Code sends \"waitingFor\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.approval.youConfirm unknown-field: Code sends \"youConfirm\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.dependencySeeds unknown-field: Code sends \"dependencySeeds\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.environment.dependencies[].backing(3).awsServices limit: Code allows up to 64 items; Cloud allows 24",
       "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.environment.dependencies[].backing(5).kind enum: Code can send \"vendor_test\": not the literal Cloud allows",
       "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.environment.dependencies[].backing(6).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it",
@@ -119,13 +209,6 @@
       "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.environment.dependencies[].seeds[](1).lock unknown-field: Code sends \"lock\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.environment.dependencies[].workingBacking(3).awsServices limit: Code allows up to 64 items; Cloud allows 24",
       "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.environment.dependencies[].workingBacking(4).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvRequestApprovalAnswerSchema state.proposal.seedRisks unknown-field: Code sends \"seedRisks\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvironmentStateSchema draft.looked unknown-field: Code sends \"looked\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.approval.approvalId unknown-field: Code sends \"approvalId\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.approval.askedByYou unknown-field: Code sends \"askedByYou\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.approval.waitingFor unknown-field: Code sends \"waitingFor\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.approval.youConfirm unknown-field: Code sends \"youConfirm\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.dependencySeeds unknown-field: Code sends \"dependencySeeds\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].backing(3).awsServices limit: Code allows up to 64 items; Cloud allows 24",
       "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].backing(5).kind enum: Code can send \"vendor_test\": not the literal Cloud allows",
       "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].backing(6).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it",
@@ -133,8 +216,7 @@
       "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].fallback(1).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].seeds[](1).lock unknown-field: Code sends \"lock\"; Cloud's object is strict and does not list it",
       "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].workingBacking(3).awsServices limit: Code allows up to 64 items; Cloud allows 24",
-      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].workingBacking(4).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it",
-      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.seedRisks unknown-field: Code sends \"seedRisks\"; Cloud's object is strict and does not list it"
+      "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].workingBacking(4).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it"
     ]
   }
 ]

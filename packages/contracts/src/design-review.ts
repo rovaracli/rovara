@@ -286,6 +286,14 @@ export const DesignReviewRoundSchema = z.object({
   mergeModel: DesignModelRefSchema.optional(),
   /** The reviewers' findings that were left out because no citation held (broker-made, never the worker's list). Absent in a round recorded before this field. */
   droppedFindings: z.array(DroppedDesignFindingSchema).max(DESIGN_DROPPED_FINDINGS_MAX).optional(),
+  /** How many findings a reader could not use at all (no readable severity or section, not an object): a count only, there is nothing else to keep. Absent when none, and in a round recorded before this field. */
+  unreadableFindings: z.number().int().min(1).max(DESIGN_DROPPED_FINDINGS_MAX).optional(),
+  /**
+   * What the review's estimate was when this round was recorded: the estimate made at the round's start, for the rounds then still to run (round 1 of two covers both, round 2 only itself). The review's own
+   * `estimateUsd` is cleared when the round resolves (round 2 is priced afresh), so this copy is what lets a finished review show "estimated $x, spent $y". Absent in a round recorded before this field, and
+   * when the round ran unpriced.
+   */
+  estimateUsd: Usd.optional(),
 }).strict();
 export type DesignReviewRound = z.infer<typeof DesignReviewRoundSchema>;
 
