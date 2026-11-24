@@ -87,13 +87,16 @@ function messagesOf(m: Json): Json[] | undefined {
 /**
  * The checked Anthropic body as a Chat Completions request for `model`, held to `maxTokens`. undefined: something these sources are
  * not offered with (refused before any hold). `metadata` (a user id for Anthropic's abuse checks) and cache markers are dropped:
- * they carry no meaning for the answer. `thinking` is accepted only as disabled.
+ * they carry no meaning for the answer. `thinking` is accepted only as disabled, except on OpenRouter, where an enabled or adaptive request is
+ * DROPPED: the translated body is built field by field (so no client thinking or budget_tokens is forwarded), and with a reviewed row
+ * openRouterRequest sets the only reasoning field the upstream carries (bounded at the row's max_tokens, or disabled). Pi sends
+ * `thinking: {type:"enabled", ...}` for OpenRouter reasoning models and cannot be told to stop.
  */
 export function toChatCompletions(body: Json, model: string, maxTokens: number, provider: ChatDialect, policy?: OpenRouterPolicy): Json | undefined {
   if ((provider === "openrouter" && model.includes(":")) || !OPENAI_AGENT_MODEL.test(model) || !whole(maxTokens) || maxTokens < 1) return undefined;
   const allowed = new Set(["model", "messages", "max_tokens", "stream", "system", "temperature", "top_p", "stop_sequences", "metadata", "tools", "tool_choice", "thinking"]);
   if (Object.keys(body).some((k) => !allowed.has(k))) return undefined;
-  if (body.thinking !== undefined && record(body.thinking)?.type !== "disabled") return undefined;
+  if (body.thinking !== undefined && record(body.thinking)?.type !== "disabled" && provider !== "openrouter") return undefined;
   if (!Array.isArray(body.messages) || body.messages.length === 0) return undefined;
   const messages: Json[] = [];
   if (body.system !== undefined) {
