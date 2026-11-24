@@ -68,7 +68,7 @@ export const CARD = Object.freeze({
   stoppedPerson: { title: (by: string | undefined) => by === undefined ? "Setup was stopped" : `Setup was stopped by ${by}`, body: "The commands it ran are kept below. Nothing was checked or applied." },
   repair: { title: "Setup stopped working after recent code changes", body: (step: string, p: string) => `It fails at: ${step}. Work on ${p} continues; results may be less reliable until setup is fixed.` },
   off: { title: (company: string) => `Setup runs are turned off for ${company}`, body: "A company owner or admin can turn them on in Company settings." },
-  held: { title: (company: string) => `Setup runs are on hold for ${company}`, body: "The company's setup locks can't be read, so setup runs are held until a company admin repairs them." },
+  held: { title: (company: string) => `Setup runs are on hold for ${company}`, body: "The company's setup locks can't be read, so setup runs are held. Contact Rovara support to get them running again." },
   unreadable: { title: "Rovara couldn't read where setup stands", body: "That doesn't mean setup failed." },
   approvedFailed: { title: "The setup in use failed its check", body: "The setup you approved no longer passes on a second machine." },
   approvedUnchecked: { title: "The setup in use hasn't been checked on a second machine", body: "Run setup again to check it from nothing." },

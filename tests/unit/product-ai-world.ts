@@ -3,6 +3,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { CodeClient, LocalCloudAuditStore, LocalCompanyStore, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, defaultCompanySettings, type BedrockBackend, type CloudRequest, type ProductAiStore } from "../../packages/cloud-server/src/index.js";
 import { InMemoryProductKeyTable, ProductKeyStore, type BedrockCheck, type TableWrite, type VertexCheck } from "../../packages/model-gateway/src/product-keys.js";
+import type { OpenAiKeyCheck } from "../../packages/model-gateway/src/openai-key-check.js";
 import { hmacFingerprinter, localProductKeyService, ProductKeySealer } from "../../packages/model-gateway/src/product-seal.js";
 
 export const CODE = "https://code.example.test";
@@ -29,7 +30,7 @@ const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64url")
 export type Body = Record<string, unknown> & { error?: { code: string; message: string } };
 export const write = (expectedRevision: number, more: Record<string, unknown> = {}) => ({ requestId: randomUUID(), expectedRevision, ...more });
 
-export interface WorldOptions { /** More of Code's routes, answered as the signed-in person (the person's company is Code's live answer); undefined means Code has no such route. */ code?: (call: { method: string; pathname: string; body: unknown }, person: Person) => Response | undefined; vertexCheck?: VertexCheck; bedrockCheck?: BedrockCheck; bedrock?: BedrockBackend; /** L4-T4: Rovara's Vertex federation role, for the Vertex guide's values. */ vertexFederationRoleArn?: string; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** DEC 254t: the install's switched-on AI source kinds (company backend). */ aiSourceKinds?: ReadonlySet<string>; /** DEC 254zzz3(1): the operator's exempt (pilot) companies (company backend). */ rovaraAiExempt?: ReadonlySet<string>; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number; /** Code's answer to a member change (default 200), and what happens while Code makes it. */ memberStatus?: number; duringMemberChange?: () => Promise<void> }
+export interface WorldOptions { /** More of Code's routes, answered as the signed-in person (the person's company is Code's live answer); undefined means Code has no such route. */ code?: (call: { method: string; pathname: string; body: unknown }, person: Person) => Response | undefined; vertexCheck?: VertexCheck; openaiCheck?: OpenAiKeyCheck; bedrockCheck?: BedrockCheck; bedrock?: BedrockBackend; /** L4-T4: Rovara's Vertex federation role, for the Vertex guide's values. */ vertexFederationRoleArn?: string; beforeCommit?: (writes: readonly TableWrite[]) => boolean | void; company?: boolean; /** DEC 254t: the install's switched-on AI source kinds (company backend). */ aiSourceKinds?: ReadonlySet<string>; /** DEC 254zzz3(1): the operator's exempt (pilot) companies (company backend). */ rovaraAiExempt?: ReadonlySet<string>; /** Code's access check takes this long (the clock moves while it runs). */ accessMs?: number; /** Code's answer to a member change (default 200), and what happens while Code makes it. */ memberStatus?: number; duringMemberChange?: () => Promise<void> }
 
 export function world(options: WorldOptions = {}) {
   const clock = { at: START }; let tokens = 0;
@@ -56,7 +57,7 @@ export function world(options: WorldOptions = {}) {
   const client = new CodeClient({ baseUrl: CODE, clientId: "rovara-cloud", clientSecret: "secret", redirectUri: `${ORIGIN}/callback`, scopes: "", fetch: fetchImpl });
   const sessions = new LocalSessionStore(undefined, { now: () => clock.at, environment: {} });
   const table = new InMemoryProductKeyTable(options.beforeCommit);
-  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(localProductKeyService(randomBytes(32))), fingerprint: hmacFingerprinter(randomBytes(32)), now: () => clock.at, ...(options.vertexCheck === undefined ? {} : { vertexCheck: options.vertexCheck }), ...(options.bedrockCheck === undefined ? {} : { bedrockCheck: options.bedrockCheck }) });
+  const store = new ProductKeyStore({ table, sealer: new ProductKeySealer(localProductKeyService(randomBytes(32))), fingerprint: hmacFingerprinter(randomBytes(32)), now: () => clock.at, ...(options.vertexCheck === undefined ? {} : { vertexCheck: options.vertexCheck }), ...(options.openaiCheck === undefined ? {} : { openaiCheck: options.openaiCheck }), ...(options.bedrockCheck === undefined ? {} : { bedrockCheck: options.bedrockCheck }) });
   const typed: ProductAiStore = store;
   const audit = new LocalCloudAuditStore(undefined, {});
   const companies = new LocalCompanyStore();

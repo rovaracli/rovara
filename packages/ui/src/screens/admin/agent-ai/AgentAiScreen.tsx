@@ -4,7 +4,8 @@ import { TextField } from "../../../design/TextField.js";
 import { Button } from "../../../design/Button.js";
 import { VisibleText } from "../../../design/VisibleText.js";
 import { AdminSection } from "../parts.js";
-import { CONNECTION_UNKNOWN, useConnectionChange } from "../ai-spending/connection-change.js";
+import { useConnectionChange } from "../ai-spending/connection-change.js";
+import { HeldConnection } from "../ai-spending/HeldConnection.js";
 
 /** One model per line: `<name the endpoint serves>=<catalog provider>/<catalog model>` (the catalog model sets prices and limits). */
 export function parseEndpointModels(text: string): Array<{ name: string; catalog: { provider: string; modelId: string } }> | undefined {
@@ -34,9 +35,9 @@ export function Endpoint({ settings, reload }: { settings: AgentAiRead; reload: 
   void send("PUT", { baseUrl: baseUrl.trim(), key: key.trim(), models: parsed }, settings.endpointConnected === true ? "Endpoint replaced." : "Endpoint connected.");
  }
  return <AdminSection title="Your own endpoint" note={settings.endpointConnected === true ? "Connected" : "Not connected"}>
-  {notice !== undefined && <p role={notice.ok ? "status" : "alert"}><VisibleText text={notice.text} /></p>}
+  {!change.held && notice !== undefined && <p role={notice.ok ? "status" : "alert"}><VisibleText text={notice.text} /></p>}
   {validation && <p role="alert">{validation}</p>}
-  {change.held && <><p role="alert">{CONNECTION_UNKNOWN}</p><Button disabled={busy} onClick={() => { void change.check(); }}>Check own endpoint</Button></>}
+  <HeldConnection change={change} checkLabel="Check own endpoint" />
   <fieldset disabled={busy || change.held} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
   <form data-testid="agent-ai-endpoint-form" onSubmit={event => { event.preventDefault(); connect(); }}>
    <TextField label="Address (https, port 443)" value={baseUrl} onChange={event => setBaseUrl(event.target.value)} spellCheck={false} autoComplete="off" />

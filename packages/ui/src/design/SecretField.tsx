@@ -7,10 +7,10 @@ export const SECRET_FILE_MAX_BYTES = 4_096;
  * A write-only value: typed or pasted into a password box, or (with `allowFile`) read from a file the person picks, in the browser only.
  * A file's text fills the same box, trimmed, and is sent only when the person presses the button; it is never shown.
  */
-export function SecretField({ label, onSubmit, submitLabel = "Save", allowFile = false }: { label: string; onSubmit: (value: string) => void | Promise<void>; submitLabel?: string; allowFile?: boolean }) {
- const [value, setValue] = useState(""), [busy, setBusy] = useState(false), [failed, setFailed] = useState(false), [fileProblem, setFileProblem] = useState<string | undefined>(undefined), [fromFile, setFromFile] = useState(false);
+export function SecretField({ label, onSubmit, submitLabel = "Save", allowFile = false, validate }: { label: string; onSubmit: (value: string) => void | Promise<void>; submitLabel?: string; allowFile?: boolean; validate?: (value: string) => string | undefined }) {
+ const [value, setValue] = useState(""), [busy, setBusy] = useState(false), [failed, setFailed] = useState(false), [fileProblem, setFileProblem] = useState<string | undefined>(undefined), [fromFile, setFromFile] = useState(false), [problem, setProblem] = useState<string | undefined>(undefined);
  const file = useRef<HTMLInputElement>(null);
- async function submit() { if (busy || !value) return;setBusy(true);setFailed(false);try { await onSubmit(value); } catch { setFailed(true); } finally { setValue("");setFromFile(false);setBusy(false); } }
+ async function submit() { if (busy || !value) return;const refused = validate?.(value);if (refused !== undefined) { setProblem(refused); return; }setProblem(undefined);setBusy(true);setFailed(false);try { await onSubmit(value); } catch { setFailed(true); } finally { setValue("");setFromFile(false);setBusy(false); } }
  async function pick(picked: File | undefined) {
   setFileProblem(undefined);
   if (picked === undefined) return;
@@ -18,11 +18,11 @@ export function SecretField({ label, onSubmit, submitLabel = "Save", allowFile =
   let text: string;
   try { text = (await picked.text()).trim(); } catch { setFileProblem("That file could not be read. Try again, or paste the key."); return; }
   if (text === "") { setFileProblem("That file is empty. Choose the file that holds the key."); return; }
-  setValue(text); setFromFile(true);
+  setValue(text); setFromFile(true); setProblem(undefined);
  }
- const error = failed ? "Could not save. Enter the value and try again." : fileProblem;
+ const error = failed ? "Could not save. Enter the value and try again." : fileProblem ?? problem;
  return <form className="rv-secret-field" onSubmit={event => { event.preventDefault();void submit(); }}>
-  <TextField label={label} type="password" value={value} onChange={event => { setValue(event.target.value);setFromFile(false); }} autoComplete="new-password" spellCheck={false} {...(error === undefined ? {} : { error })} {...(fromFile ? { hint: "Read from the file. It is sent only when you press " + submitLabel + "." } : {})} />
+  <TextField label={label} type="password" value={value} onChange={event => { setValue(event.target.value);setFromFile(false);setProblem(undefined); }} autoComplete="new-password" spellCheck={false} {...(error === undefined ? {} : { error })} {...(fromFile ? { hint: "Read from the file. It is sent only when you press " + submitLabel + "." } : {})} />
   <div className="rv-secret-actions">
    <Button type="submit" variant="primary" busy={busy} disabled={!value}>{submitLabel}</Button>
    {allowFile && <>

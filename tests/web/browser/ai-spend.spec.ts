@@ -177,7 +177,7 @@ for (const entry of ["setup", "admin"] as const) for (const form of ["key", "end
     await expect(page.getByText("Company access changed. Reload to check access.", { exact: true })).toBeVisible();
     expect(writes).toEqual([]);
   });
-  test(`${entry} ${form}: an unknown send stays held until Check reads a newer revision`, async ({ page }) => {
+  for (const release of ["a newer revision", "an explicit continue"] as const) test(`${entry} ${form}: an unknown send stays held until Check reads a newer revision or the person continues (${release})`, async ({ page }) => {
     await mockCompanyDefault(page);
     let revision = 1;
     const writes: string[] = [];
@@ -191,11 +191,19 @@ for (const entry of ["setup", "admin"] as const) for (const form of ["key", "end
     await field.fill("fixture-private-marker");
     if (form === "endpoint") { await page.getByLabel("Address (https, port 443)").fill("https://llm.example.com/v1"); await page.getByLabel("Models, one per line: name=provider/model").fill("coder=openai/gpt-5-mini"); }
     await (form === "key" ? page.getByRole("region", { name: "Anthropic", exact: true }).getByRole("button", { name: "Connect key" }) : page.getByRole("button", { name: "Connect endpoint" })).click();
-    const held = page.getByText("Rovara didn't confirm this yet. Check the connection before making another change.", { exact: true });
-    await expect(held).toBeVisible(); await expect(field).toBeDisabled(); expect(writes).toEqual(["PUT"]);
-    const check = page.getByRole("button", { name: form === "key" ? "Check company AI keys" : "Check own endpoint" });
-    await check.click(); await expect(check).toBeEnabled(); await expect(held).toBeVisible(); expect(writes).toEqual(["PUT"]);
-    revision = 2; await check.click(); await expect(held).toHaveCount(0); expect(writes).toEqual(["PUT"]);
+    const paused = page.getByText("A key change on this page isn't confirmed yet, so changes are paused. Check the connection to continue.", { exact: true }).first();
+    const callout = page.getByTestId("held-connection");
+    await expect(paused).toBeVisible(); await expect(field).toBeDisabled(); expect(writes).toEqual(["PUT"]);
+    const check = page.getByRole("button", { name: form === "key" ? "Check Anthropic key" : "Check own endpoint" });
+    // Same revision: not confirmed, still held, no resend. The pause line is replaced by the not-confirmed words and Continue is offered.
+    await check.click(); await expect(check).toBeEnabled();
+    await expect(page.getByText("Not confirmed. The settings shown are current. If they look right, choose Continue with these settings.", { exact: true }).first().or(page.getByText(/Rovara still shows the same settings as before your change/u)).first()).toBeVisible();
+    await expect(paused).toHaveCount(0); await expect(field).toBeDisabled(); expect(writes).toEqual(["PUT"]);
+    const next = page.getByRole("button", { name: "Continue with these settings" }).first();
+    await expect(next).toBeVisible();
+    if (release === "a newer revision") { revision = 2; await check.click(); }
+    else await next.click();
+    await expect(callout).toHaveCount(0); await expect(field).toBeEnabled(); expect(writes).toEqual(["PUT"]);
   });
 }
 

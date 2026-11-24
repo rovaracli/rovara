@@ -10,6 +10,8 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "design/parts/decision-timeline.css",
  "design/parts/table-toast-dialog.css",
  "design/parts/outcome-delivery-held.css",
+ // AI connection hold: the held-connection warning callout.
+ "design/parts/held-connection.css",
  "design/parts/shell-gallery.css",
  // Lane B: allowed-websites editor, shared by admin and own-project surfaces.
  "screens/admin/projects/allowed-websites.css",

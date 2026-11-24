@@ -42,3 +42,30 @@ export function readLearningAi(body: unknown): LearningAiRead {
     pauseReasons: (Array.isArray(body["pauseReasons"]) ? body["pauseReasons"] : []).filter(isRecord).filter(r => typeof r["reason"] === "string" && REASON.test(r["reason"]) && typeof r["message"] === "string" && r["message"].length <= 300).map(r => ({ reason: r["reason"] as string, message: r["message"] as string })),
   };
 }
+
+const SHORT_NAMES: Readonly<Record<LearningProvider, string>> = Object.freeze({ anthropic: "Anthropic", openai: "OpenAI", gemini: "Google AI Studio", openrouter: "OpenRouter" });
+/** The provider a key's own prefix names: OpenRouter "sk-or-", Anthropic "sk-ant-", Google "AIza", else any other "sk-" is OpenAI's. Undefined when the shape says nothing. */
+function shapeOf(key: string): LearningProvider | undefined {
+  if (key.startsWith("sk-or-")) return "openrouter";
+  if (key.startsWith("sk-ant-")) return "anthropic";
+  if (key.startsWith("AIza")) return "gemini";
+  return key.startsWith("sk-") ? "openai" : undefined;
+}
+/**
+ * A hint only (the server's own check, cloud-server learning-ai-routes.ts, is the authority and says the same words): when a key's prefix
+ * plainly belongs to a different provider than the slot it was pasted into, say where to paste it. Undefined for any key that could be the slot's.
+ */
+export function wrongProviderKeyHint(provider: LearningProvider, key: string, listed: readonly LearningProvider[] = LEARNING_PROVIDERS): string | undefined {
+  const shape = shapeOf(key.trim());
+  if (shape === undefined || shape === provider) return undefined;
+  const looks = `This looks like ${shape === "gemini" ? "a" : "an"} ${SHORT_NAMES[shape]} key.`;
+  // Where that provider's slot is switched off there is nowhere to paste it, so say no more.
+  return listed.includes(shape) ? `${looks} Paste it under ${SHORT_NAMES[shape]}.` : looks;
+}
+
+/** The words for a key with spaces or line breaks inside it (a pasted console command, not a key). The server's refusal says the same. */
+export const KEY_WHITESPACE_WORDS = "A key can't contain spaces or line breaks. Copy just the key.";
+/** A hint only. The page already trims leading and trailing whitespace before sending, so only whitespace INSIDE the trimmed value is refused. */
+export function keyWhitespaceHint(key: string): string | undefined {
+  return /\s/u.test(key.trim()) ? KEY_WHITESPACE_WORDS : undefined;
+}

@@ -1,0 +1,6 @@
+/* A company AI change that Rovara could not confirm: a warning callout (tint, border, icon), with room before the form it pauses. */
+.rv-held-connection{display:grid;gap:var(--rv-space-3);margin-block:var(--rv-space-3) var(--rv-space-5);padding:var(--rv-space-4);border:calc(var(--rv-space-1)/4) solid var(--rv-border);border-left:var(--rv-space-1) solid var(--rv-status-needs-you);border-radius:var(--rv-radius-md);background:var(--rv-status-needs-you-bg);color:var(--rv-text);font-size:var(--rv-font-md);overflow-wrap:anywhere}
+.rv-held-connection p{margin:0}
+.rv-held-connection-head{display:flex;align-items:baseline;gap:var(--rv-space-3)}
+.rv-held-connection-icon{flex:none;width:var(--rv-space-4);height:var(--rv-space-4);color:var(--rv-status-needs-you);align-self:flex-start;margin-top:calc(var(--rv-space-1)/2)}
+.rv-held-connection-actions{display:flex;flex-wrap:wrap;gap:var(--rv-space-3)}
