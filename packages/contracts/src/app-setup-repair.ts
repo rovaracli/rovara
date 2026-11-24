@@ -17,10 +17,23 @@ export const SETUP_REPAIR_PATHS = { read: "setup-repair", recheck: "setup-repair
 /** What "Fix setup" may spend, as the design states it ("uses your AI, up to $4"). The figure is the design's; the run's own limit is Code's and the gateway's (decision pending: read it from the setup run when it is exposed). */
 export const SETUP_FIX_UP_TO_USD = 4;
 
+/** Skew (DEC 254zzz447): a Code that has not shipped the "don't block work" change still ends its card sentence and its admins' notice with the OLD sentence. Cloud accepts it and shows the new one. */
+export const SETUP_REPAIR_OLD_TAIL = "Rovara cannot build on this project until it is fixed.";
+/** What Code's card sentence and admins' notice end with once Code ships the change (the same words as the banner's second half). */
+export const SETUP_REPAIR_NEW_TAIL = "Work continues; results may be less reliable until setup is fixed.";
+/** The words a person reads for a setup that needs repair: Code's OLD "cannot build" sentence becomes the new "work continues" one; anything else is returned as it came. */
+export function softenSetupRepairWords(words: string): string {
+  return words.includes(SETUP_REPAIR_OLD_TAIL) ? words.split(SETUP_REPAIR_OLD_TAIL).join(SETUP_REPAIR_NEW_TAIL) : words;
+}
+
 export const SETUP_REPAIR_SENTENCES = Object.freeze({
   title: "Setup needs repair",
-  /** Code's card sentence (`setupRepairCardOf`) and the admins' notice (`setupAdminNoticeWords`) build on it. The step is the check's own redacted failing step. */
-  body: (step: string): string => `The project's setup stopped working after recent code changes (${step}). Rovara cannot build on this project until it is fixed.`,
+  /** DEC 254zzz447 ("don't block work"): a broken setup no longer pauses or refuses tasks, so the card says work continues. This is the banner line, word for word. */
+  banner: "Setup needs repair: work continues; results may be less reliable until setup is fixed.",
+  /** What broke, without the tail: the card shows this under the banner. The step is the check's own redacted failing step. */
+  what: (step: string): string => `The project's setup stopped working after recent code changes (${step}).`,
+  /** Code's card sentence (`setupRepairCardOf`) and the admins' notice (`setupAdminNoticeWords`) build on it, as Code says it once it ships DEC 254zzz447 (Code's OLD tail is `SETUP_REPAIR_OLD_TAIL`). */
+  body: (step: string): string => `The project's setup stopped working after recent code changes (${step}). ${SETUP_REPAIR_NEW_TAIL}`,
   fixSetup: "Fix setup",
   approveNewSetup: "Approve new setup",
   /** The button: the same label the design gives it, with what it costs. The cost is said here and only here. */

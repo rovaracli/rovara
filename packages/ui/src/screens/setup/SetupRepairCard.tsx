@@ -1,6 +1,7 @@
 // L4-U5 (setup-upkeep-plan.md step 3c), reshaped by the Setup tab (FABLE-REVIEW 3.1): the "Setup needs repair" card on a project's page stays ABOVE the tabs as a short banner with one link, "Open Setup". The work (Fix setup,
 // Check again without AI, approving a checked fix) is done in the Setup tab's status card. The banner says what Code's chat thread and the admins' notice say, in the same words (`SETUP_REPAIR_SENTENCES`, a byte mirror of Code):
-// the title and the sentence with the check's own failing step. Silent when the setup works. Code decides who may act; this banner only points.
+// the banner sentence (DEC 254zzz447, "don't block work": "Setup needs repair: work continues; results may be less reliable until setup is fixed.") and what broke, with the check's own failing step. A warning, never an alert or the danger
+// style: a broken setup does not stop work. Only the text is a live region; the link is not. Silent when the setup works. Code decides who may act; this banner only points.
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { SETUP_REPAIR_SENTENCES } from "@agentx/contracts/web";
@@ -20,9 +21,11 @@ export function SetupRepairCard({ project }: { project: string }) {
  if (read.isPending || read.isError || read.data === undefined) return null;
  const card = read.data.repair;
  if (card === undefined) return null;
- return <section className="rv-setup-repair" aria-labelledby="rv-setup-repair-title" data-testid="setup-repair-card" data-fix-ready={card.fixReady ? "true" : "false"}>
-  <h2 id="rv-setup-repair-title">{SETUP_REPAIR_SENTENCES.title}</h2>
-  <p data-testid="setup-repair-body"><VisibleText text={SETUP_REPAIR_SENTENCES.body(card.step)} /></p>
+ return <section className="rv-setup-repair rv-setup-repair-warning" data-tone="warning" aria-labelledby="rv-setup-repair-title" data-testid="setup-repair-card" data-fix-ready={card.fixReady ? "true" : "false"}>
+  <div role="status" data-testid="setup-repair-status">
+   <h2 id="rv-setup-repair-title" data-testid="setup-repair-banner">{SETUP_REPAIR_SENTENCES.banner}</h2>
+   <p data-testid="setup-repair-body"><VisibleText text={SETUP_REPAIR_SENTENCES.what(card.step)} /></p>
+  </div>
   <div className="rv-setup-repair-actions"><Link className="rv-button rv-button-secondary" data-testid="setup-repair-open" to={`/app/projects/${encodeURIComponent(project)}?tab=setup`}>{ACTIONS.openSetup}</Link></div>
  </section>;
 }

@@ -155,7 +155,7 @@ export const DeveloperTaskViewSchema = z.object({
   sessionId: SessionIdSchema.optional(),
   sessionUrl: z.string().url().optional(),
   /**
-   * Setup and test health (SH28, switch `nh`): present on a task start and a task read ONLY while the project's setup needs repair. The task still starts and runs; this says its testing may be blocked.
+   * Setup and test health (SH28, switch `nh`): present on a task start and a task read ONLY while the project's setup needs repair. The task still starts and runs (DEC 254zzz447: a broken setup never pauses or refuses work); this says results may be less reliable until setup is fixed.
    * Fixed words from the broker. Absent with the switch off, and for every project that is not in that state.
    */
   testingNotice: z.object({ state: z.literal("needs_repair"), text: z.string().min(1).max(200) }).strict().optional(),

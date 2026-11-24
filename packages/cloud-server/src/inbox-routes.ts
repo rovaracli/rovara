@@ -11,6 +11,7 @@
 //     session of the task, never taken from the browser. A row Cloud cannot place is left out.
 // Every write is a non-GET under /v1/web, so the handler's CSRF check (the `x-rovara-csrf` header against the sign-in's token) covers it already.
 import { createHash } from "node:crypto";
+import { softenSetupRepairWords } from "@agentx/contracts/web";
 import { CodeError } from "./code-client.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
@@ -127,7 +128,8 @@ function projectNotice(value: unknown): { id: string; kind: string; project: str
   if (typeof status !== "string" || status.length < 1 || status.length > 500) return undefined;
   const time = typeof at === "string" ? Date.parse(at) : Number.NaN;
   if (Number.isNaN(time)) return undefined;
-  return { id, kind, project, status, at: new Date(time).toISOString() };
+  // DEC 254zzz447: a Code from before "don't block work" still says it cannot build; the person reads the new words (work continues).
+  return { id, kind, project, status: softenSetupRepairWords(status), at: new Date(time).toISOString() };
 }
 /** The most project notices one read holds (Code checks at most 50 rows). */
 const NOTICES_MAX = 50;

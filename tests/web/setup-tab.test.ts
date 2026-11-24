@@ -27,10 +27,10 @@ describe("the header's time is the time of the state it names", () => {
 });
 
 describe("where it lives", () => {
-  it("is the second tab of the project page, at ?tab=setup, with the state as a chip and one line beside the project name", async () => {
+  it("is the tab just before Settings on the project page, at ?tab=setup, with the state as a chip and one line beside the project name", async () => {
     const f = mountSetupTab({ run: { status: "none", basedOnRevision: 3, canManage: true }, row: failedRow({ state: "needs_you", status: "none" }) });
     await card();
-    expect(screen.getAllByRole("tab").map(tab => tab.textContent).slice(0, 3)).toEqual(["Overview", "Setup", "How we work"]);
+    expect(screen.getAllByRole("tab").map(tab => tab.textContent).slice(0, 3)).toEqual(["Overview", "How we work", "Setup"]);
     expect(screen.getByRole("tab", { name: "Setup" }).getAttribute("aria-selected")).toBe("true");
     const header = screen.getByRole("banner");
     expect(within(header).getByRole("img", { name: "Needs you" })).toBeTruthy();
@@ -350,8 +350,8 @@ describe("the setup broke later, and the company's switch", () => {
   it("the banner above the tabs is short with one link, Open Setup; on the tab the status card does the work: Fix setup, with its cost in the muted line, and Check again without AI", async () => {
     const f = mountSetupTab({ run: { ...ready }, row: approvedRow(), repair: broken() }, { path: "/app/projects/payments" });
     const banner = await screen.findByTestId("setup-repair-card");
-    expect(within(banner).getByRole("heading").textContent).toBe("Setup needs repair");
-    expect(within(banner).getByTestId("setup-repair-body").textContent).toBe("The project's setup stopped working after recent code changes (npm test). Rovara cannot build on this project until it is fixed.");
+    expect(within(banner).getByRole("heading").textContent).toBe("Setup needs repair: work continues; results may be less reliable until setup is fixed.");
+    expect(within(banner).getByTestId("setup-repair-body").textContent).toBe("The project's setup stopped working after recent code changes (npm test).");
     expect(within(banner).getByRole("link", { name: "Open Setup" }).getAttribute("href")).toBe("/app/projects/payments?tab=setup");
     expect(within(banner).queryAllByRole("button")).toHaveLength(0);
     f.close(); cleanup();

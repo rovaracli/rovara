@@ -9,7 +9,7 @@ import {
   CodeClient, LocalSessionStore, LocalWorkSessionStore, SETUP_REPAIR_ANSWERS, SETUP_REPAIR_WORDS, createCloudHandler, recheckBody, setupRepairView, upkeepAnswer, type CloudRequest, type CodeSession,
 } from "../../packages/cloud-server/src/index.js";
 import {
-  SETUP_FIX_UP_TO_USD, SETUP_REPAIR_PATHS, SETUP_REPAIR_REFUSALS, SETUP_REPAIR_SENTENCES, SetupRecheckAnswerSchema, SetupRecheckBodySchema, SetupRepairViewSchema, UPKEEP_PAUSE_SENTENCES,
+  SETUP_FIX_UP_TO_USD, SETUP_REPAIR_NEW_TAIL, SETUP_REPAIR_OLD_TAIL, SETUP_REPAIR_PATHS, SETUP_REPAIR_REFUSALS, SETUP_REPAIR_SENTENCES, SetupRecheckAnswerSchema, SetupRecheckBodySchema, SetupRepairViewSchema, softenSetupRepairWords, UPKEEP_PAUSE_SENTENCES,
 } from "../../packages/contracts/src/app-setup-repair.js";
 import { WikiSetupUpkeepSchema } from "../../packages/contracts/src/app-wiki-setup.js";
 
@@ -20,7 +20,9 @@ const LEAK = "SENSITIVE-CODE-DETAIL";
 const RID = "11111111-1111-4111-8111-111111111111";
 const STEP = "setup: npm ci - setup step 0 (npm ci) failed: exit 1";
 // The text Code's fixture holds (Code core/setup-agent/recheck-rows.ts and contracts upkeep.ts), copied here so the two repositories cannot drift apart unseen.
+// Prod Code still says the OLD tail until the "don't block work" lane (DEC 254zzz447) ships; Cloud accepts both and shows its own words.
 const CODE_BODY = `The project's setup stopped working after recent code changes (${STEP}). Rovara cannot build on this project until it is fixed.`;
+const CODE_BODY_NEW = `The project's setup stopped working after recent code changes (${STEP}). Work continues; results may be less reliable until setup is fixed.`;
 const CODE_PAUSE = {
   no_budget: "Nightly upkeep is paused: no spending limit is set for it. Set one on Spending limits.",
   monthly_limit: "Nightly upkeep is paused: this month's upkeep limit is used up. Raise it on Spending limits, or it resumes next month.",
@@ -110,7 +112,9 @@ describe("the words and the contract", () => {
 
   it("the card's sentences are the ones Code says in the chat, the ticket and the admins' notice; only the button names a cost, and Code's pause sentences are mirrored exactly", () => {
     expect(SETUP_REPAIR_SENTENCES.title).toBe("Setup needs repair");
-    expect(SETUP_REPAIR_SENTENCES.body(STEP)).toBe(CODE_BODY);
+    expect(SETUP_REPAIR_SENTENCES.body(STEP)).toBe(CODE_BODY_NEW);
+    expect(SETUP_REPAIR_SENTENCES.what(STEP)).toBe(`The project's setup stopped working after recent code changes (${STEP}).`);
+    expect(SETUP_REPAIR_SENTENCES.banner).toBe("Setup needs repair: work continues; results may be less reliable until setup is fixed.");
     expect(SETUP_REPAIR_SENTENCES.fixSetup).toBe("Fix setup");
     expect(SETUP_REPAIR_SENTENCES.approveNewSetup).toBe("Approve new setup");
     expect(SETUP_REPAIR_SENTENCES.recheck).toBe("Re-check setup");
@@ -130,7 +134,7 @@ describe("reading the card", () => {
     expect(answer.status).toBe(200);
     const view = SetupRepairViewSchema.parse(answer.body);
     expect(view).toEqual({ state: "failed", canManage: true, repair: { step: STEP, changed: "dependency files", at: "2026-11-17T09:05:00.000Z", fixReady: false, actions: [{ id: "fix_setup", label: "Fix setup" }] } });
-    expect(SETUP_REPAIR_SENTENCES.body(view.repair!.step)).toBe(CODE_BODY);
+    expect(SETUP_REPAIR_SENTENCES.body(view.repair!.step)).toBe(CODE_BODY_NEW);
     expect(s.checkCalls()).toEqual([{ method: "GET", path: "/v1/app/projects/payments/setup-check", search: "", authorization: "Bearer ada-token", body: undefined }]);
   });
 
@@ -186,6 +190,28 @@ describe("reading the card", () => {
       expect(answer.status, name).toBe(503);
       expect(answer.body.error, name).toEqual({ code: "RUNTIME_UNAVAILABLE", message: SETUP_REPAIR_WORDS.unavailable });
     }
+  });
+
+  // DEC 254zzz447 skew: prod Code still says "cannot build"; the Code lane changes it to "work continues". Cloud reads both and only ever says the new words.
+  it("reads Code's OLD card sentence and its NEW one the same way, and the app view carries the step only (the new words are Cloud's own)", async () => {
+    for (const body of [CODE_BODY, CODE_BODY_NEW]) {
+      const s = setUp((call, person) => (call.method === "GET" && call.path.endsWith("/setup-check") && person.id === ID("a") ? json(200, { status: "failed", canManage: true, repair: CARD({ body }) }) : undefined));
+      const answer = await s.send("GET", READ, await s.as("ada-token"));
+      expect(answer.status, body).toBe(200);
+      expect(answer.body.repair.step).toBe(STEP);
+      expect(answer.text, body).not.toContain("cannot build");
+      expect(answer.text, body).not.toMatch(/paus|refus/iu);
+    }
+  });
+
+  it("softens Code's OLD 'cannot build' tail into the new 'work continues' one, leaves every other sentence alone, and says nothing about pausing or refusing", () => {
+    expect(softenSetupRepairWords(CODE_BODY)).toBe(CODE_BODY_NEW);
+    expect(softenSetupRepairWords(`Setup needs repair. ${CODE_BODY} Fix setup on the setup page.`)).toBe(`Setup needs repair. ${CODE_BODY_NEW} Fix setup on the setup page.`);
+    expect(softenSetupRepairWords(CODE_BODY_NEW)).toBe(CODE_BODY_NEW);
+    expect(softenSetupRepairWords("Setup needs repair.")).toBe("Setup needs repair.");
+    expect(CODE_BODY_NEW.endsWith(SETUP_REPAIR_NEW_TAIL)).toBe(true);
+    expect(SETUP_REPAIR_OLD_TAIL).toBe("Rovara cannot build on this project until it is fixed.");
+    for (const words of [SETUP_REPAIR_SENTENCES.banner, SETUP_REPAIR_SENTENCES.what(STEP), SETUP_REPAIR_SENTENCES.body(STEP)]) expect(words).not.toMatch(/paus|refus|cannot|can't|blocked/iu);
   });
 
   it("reads a step Code cut in the middle of a bracket, one with a lone bracket and one at the longest, and still refuses a step with a control character or past the limit", async () => {

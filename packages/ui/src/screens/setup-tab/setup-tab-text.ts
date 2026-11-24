@@ -66,7 +66,7 @@ export const CARD = Object.freeze({
   codeChange: { title: (p: string) => `${p} needs a change in its code before it can be set up` },
   changedFiles: { title: "Setup stopped: a command changed the project's files", body: "Setup must not change your code, so Rovara ended the run. Nothing was pushed." },
   stoppedPerson: { title: (by: string | undefined) => by === undefined ? "Setup was stopped" : `Setup was stopped by ${by}`, body: "The commands it ran are kept below. Nothing was checked or applied." },
-  repair: { title: "Setup stopped working after recent code changes", body: (step: string, p: string) => `It fails at: ${step}. Rovara can't build on ${p} until it is fixed.` },
+  repair: { title: "Setup stopped working after recent code changes", body: (step: string, p: string) => `It fails at: ${step}. Work on ${p} continues; results may be less reliable until setup is fixed.` },
   off: { title: (company: string) => `Setup runs are turned off for ${company}`, body: "A company owner or admin can turn them on in Company settings." },
   held: { title: (company: string) => `Setup runs are on hold for ${company}`, body: "The company's setup locks can't be read, so setup runs are held until a company admin repairs them." },
   unreadable: { title: "Rovara couldn't read where setup stands", body: "That doesn't mean setup failed." },

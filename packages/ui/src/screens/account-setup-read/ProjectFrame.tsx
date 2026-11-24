@@ -3,7 +3,7 @@ import { PageHeader } from "../../design/PageHeader.js";
 import type { StatusChipProps } from "../../design/StatusChip.js";
 import { ReconnectingLine } from "./reconnecting.js";
 
-const TABS = ["Tasks", "Setup", "How we work", "Sources", "People", "Settings"] as const;
+const TABS = ["Tasks", "How we work", "Sources", "People", "Setup", "Settings"] as const;
 /**
  * The project page's own header and section tabs, as the boards frame the Setup pages. The project page owns the real ones;
  * this frame is used where a Setup page stands alone (and in capture). Only the project name is known here, so the state chip is

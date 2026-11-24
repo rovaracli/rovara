@@ -5,3 +5,4 @@
 .rv-setup-recheck { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .rv-wikis-paused { margin: 8px 0; padding: 8px 12px; border: 1px solid var(--rv-border-strong, currentColor); border-radius: 6px; }
 .rv-wikis-paused p { margin: 2px 0; }
+.rv-setup-repair-warning { border-left-color: var(--rv-status-needs-you, currentColor); }

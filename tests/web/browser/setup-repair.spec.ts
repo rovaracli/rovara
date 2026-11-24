@@ -26,8 +26,9 @@ for (const scheme of ["light", "dark"] as const) {
     await page.goto(ROUTES.project(PROJECT));
     const banner = page.getByTestId("setup-repair-card");
     await expect(banner).toBeVisible();
-    await expect(banner.getByRole("heading", { name: "Setup needs repair" })).toBeVisible();
-    await expect(banner.getByTestId("setup-repair-body")).toHaveText(`The project's setup stopped working after recent code changes (${STEP}). Rovara cannot build on this project until it is fixed.`);
+    await expect(banner.getByRole("heading", { name: "Setup needs repair: work continues; results may be less reliable until setup is fixed." })).toBeVisible();
+    await expect(banner).toHaveAttribute("data-tone", "warning");
+    await expect(banner.getByTestId("setup-repair-body")).toHaveText(`The project's setup stopped working after recent code changes (${STEP}).`);
     await expect(banner.getByRole("button")).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath(`setup-repair-banner-${scheme}.png`), fullPage: true });
     await banner.getByRole("link", { name: "Open Setup" }).click();
@@ -64,7 +65,9 @@ test("a developer reads the same words and who can act, with nothing to press", 
   await setFakePerson(page, "sam");
   const tab = new SetupTabPage(page);
   await tab.open(PROJECT);
-  await expect(tab.card).toContainText("Rovara can't build on");
+  await expect(tab.card).toContainText("Work on");
+  await expect(tab.card).toContainText("continues; results may be less reliable until setup is fixed.");
+  await expect(tab.card).not.toContainText("can't build");
   await expect(tab.card.getByTestId("setup-reader-note")).toHaveText("A project admin, or a company owner or admin, can do this.");
   await expect(tab.card.getByRole("button")).toHaveCount(0);
 });

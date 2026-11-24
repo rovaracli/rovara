@@ -181,12 +181,12 @@ describe("the status card, every state (3.5)", () => {
     const model = card({ run: run({ stop: "attempts_used", status: "ready", proposal: {} }) });
     expect(rowsText(model)).toContain("The commands it ran are kept below. What it found so far is kept below too.");
   });
-  it("the setup broke later (the repair read): Blocked, Fix setup primary with its cost in the muted line, Check again without AI free", () => {
+  it("the setup broke later (the repair read): a warning (Needs you, never Blocked; work continues), Fix setup primary with its cost in the muted line, Check again without AI free", () => {
     const repair = { state: "failed", canManage: true, repair: { step: "npm test", at: "2026-11-24T09:05:00.000Z", fixReady: false, actions: [{ id: "fix_setup", label: "Fix setup" }] } } as CardInput["repair"];
     const model = card({ run: run({ status: "ready", stop: "proposed" }), repair, row: row({ state: "done", status: "ready", approval: "approved", check: { status: "failed", failedStep: "npm test" } }) });
-    expect(model.state).toBe("repair"); expect(model.chip.state).toBe("blocked");
+    expect(model.state).toBe("repair"); expect(model.chip.state).toBe("needs_you");
     expect(model.title).toBe("Setup stopped working after recent code changes");
-    expect(model.body).toBe("It fails at: npm test. Rovara can't build on acme/payments until it is fixed.");
+    expect(model.body).toBe("It fails at: npm test. Work on acme/payments continues; results may be less reliable until setup is fixed.");
     expect(model.primary).toMatchObject({ id: "fix", label: "Fix setup", hints: ["Uses your AI, up to $4.00."] }); expect(model.secondary).toEqual([{ id: "recheck", label: "Check again without AI", hints: ["Runs the saved setup once more. Free."] }]);
     expect(model.notes).toEqual([]);
     expect(model.primary!.label).not.toContain("$");
@@ -194,6 +194,21 @@ describe("the status card, every state (3.5)", () => {
     expect(ready.state).toBe("repair_fix_ready"); expect(ready.primary).toMatchObject({ id: "review_newer", label: "Approve new setup" });
     const reader = card({ run: run({ status: "ready", stop: "proposed" }), repair: { ...repair!, canManage: false }, mayAct: false });
     expect(labels(reader)).toEqual([]);
+  });
+  it("DEC 254zzz447 review: every repair state (fix ready, reader, no run to act on) is a warning chip (Needs you), never Blocked, and none says work cannot continue", () => {
+    const repair = { state: "failed", canManage: true, repair: { step: "npm test", at: "2026-11-24T09:05:00.000Z", fixReady: false, actions: [{ id: "fix_setup", label: "Fix setup" }] } } as CardInput["repair"];
+    const approvedRow = row({ state: "done", status: "ready", approval: "approved", check: { status: "failed", failedStep: "npm test" } });
+    const models = [
+      card({ run: run({ status: "ready", stop: "proposed" }), repair, row: approvedRow }),
+      card({ run: run({ status: "ready", stop: "proposed" }), repair: { ...repair!, repair: { ...repair!.repair!, fixReady: true } }, row: approvedRow }),
+      card({ run: run({ status: "ready", stop: "proposed" }), repair: { ...repair!, canManage: false }, mayAct: false, row: approvedRow }),
+    ];
+    expect(models.map(model => model.state)).toEqual(["repair", "repair_fix_ready", "repair"]);
+    for (const model of models) {
+      expect(model.chip.state).toBe("needs_you");
+      expect(model.body).toContain("continues; results may be less reliable until setup is fixed.");
+      expect(`${model.headline} ${model.title} ${model.body ?? ""}`).not.toMatch(/can't build|cannot build|can't continue|paused|blocked/iu);
+    }
   });
   it("turned off for the company: Blocked, who can turn it on; the Company settings button only for an owner or admin", () => {
     const off = card({ run: run({ status: "none", companySetupOff: true }) });
