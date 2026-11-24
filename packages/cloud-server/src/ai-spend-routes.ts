@@ -68,7 +68,7 @@ export const PER_TASK_FIELD = "model_budget_usd";
 /** The most a per-task limit may be, in US dollars (as the company budgets allow: $1,000,000). */
 export const PER_TASK_USD_MAX = 1_000_000;
 /** The gateway's model ids (Code's AGENT_MODEL_NAME). */
-const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const MODEL_ID = /^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}|[a-z0-9][a-z0-9._-]{0,62}\/[a-z0-9][a-z0-9._-]{0,62})$/u;
 /** Code's project names (AGENTX_NAME_PATTERN). */
 const PROJECT_NAME = /^[a-z][a-z0-9-]{0,62}$/u;
 /** The longest offered list Cloud passes on; a longer one is not Code's answer. */

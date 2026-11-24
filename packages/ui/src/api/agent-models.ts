@@ -11,7 +11,7 @@ export const STEP_GROUPS = [
 ] as const;
 export type StepStage = "understand" | "plan" | "plan_check" | "build" | "code_review" | "security_review" | "pull_request";
 const STAGES: readonly string[] = ["understand", "plan", "plan_check", "build", "code_review", "security_review", "pull_request"];
-const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const MODEL = /^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}|[a-z0-9][a-z0-9._-]{0,62}\/[a-z0-9][a-z0-9._-]{0,62})$/u;
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const money = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
 

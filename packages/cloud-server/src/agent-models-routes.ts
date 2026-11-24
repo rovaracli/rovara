@@ -20,7 +20,7 @@ export const AGENT_MODELS_CODE_PATH = "/v1/app/agent-models";
 export const AGENT_MODEL_STAGES = ["understand", "plan", "plan_check", "build", "code_review", "security_review", "pull_request"] as const;
 export type AgentModelStage = typeof AGENT_MODEL_STAGES[number];
 /** The gateway's model names (Code's AGENT_MODEL_NAME). */
-const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const MODEL_NAME = /^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}|[a-z0-9][a-z0-9._-]{0,62}\/[a-z0-9][a-z0-9._-]{0,62})$/u;
 const OFFERED_MAX = 64;
 const BODY_BYTES_MAX = 1_024;
 /** The reasons that mean "the step follows the company's model" (no step setting: the company's engine model, else the install's). */
@@ -74,8 +74,9 @@ const isStage = (value: unknown): value is AgentModelStage => typeof value === "
  * never one: Bedrock names a vendor first (`openai.gpt-oss-120b-1:0`).
  */
 const OPENAI_AGENT_MODEL = /^(?:gpt-[0-9]|o[1-9])[a-z0-9.-]*$/u;
-/** A Claude model is named by Anthropic's engine name, an OpenAI model by OpenAI's own name, and every other model by its Bedrock id (Code's agentModelIdentity). */
-export const modelIdentityOf = (name: string) => name.startsWith("claude-") ? { provider: "anthropic", modelId: name }
+/** A `vendor/model` name is an OpenRouter model (Code's agentModelIdentity), never a Rovara-billed provider; a Claude model is named by Anthropic's engine name, an OpenAI model by OpenAI's own name, and every other model by its Bedrock id (Code's agentModelIdentity). */
+export const modelIdentityOf = (name: string) => name.includes("/") ? { provider: "openrouter", modelId: name }
+  : name.startsWith("claude-") ? { provider: "anthropic", modelId: name }
   : OPENAI_AGENT_MODEL.test(name) ? { provider: "openai", modelId: name } : { provider: "amazon-bedrock", modelId: name };
 /** The gateway name of Code's model identity, or undefined when it is not one the gateway names (Code's agentModelName). */
 export function modelNameOf(value: unknown): string | undefined {

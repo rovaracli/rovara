@@ -10,7 +10,7 @@ export const spendLimitsPath = (project: string) => `/v1/app/projects/${encodeUR
 export const COMPANY_MONTHLY_DEFAULT_USD = 500;
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const MODEL_ID = /^(?:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}|[a-z0-9][a-z0-9._-]{0,62}\/[a-z0-9][a-z0-9._-]{0,62})$/u;
 
 export interface EngineModelRead {
  /** What the company's tasks use now: its own model, else this Rovara's default; null when there is none. */
