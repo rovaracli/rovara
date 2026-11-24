@@ -10,6 +10,7 @@ import { ArchiveProject } from "./ArchiveProject.js";
 import { ProjectSpendLimits } from "../../setup/ProjectSpendLimits.js";
 import { useAdminContext } from "../AdminLayout.js";
 import { projectSetupLabel } from "./labels.js";
+import { ALLOWED_LIST_NAME } from "./allowed-list-name.js";
 import { Link, useParams, useSearchParams } from "react-router";
 import { AppProjectDetailSchema, AppProjectLifecycleSchema, PROJECT_LIFECYCLE_WORDS } from "@agentx/contracts/web";
 import { ApiError } from "../../../api/errors.js";
@@ -35,7 +36,7 @@ export function ProjectDetailScreen() {
  <WorkingBranches name={name} projectRevision={p.latestRevision} available={p.name === name && p.status === "active" && p.myRole === "maintainer" && !read.isFetching && !read.isError && !context.checking} />
  </WorkingBranchesReadPanel>
  <h2>Setup</h2><p>Setup status: {projectSetupLabel[p.setup.status]}</p><p>Checked revision: {p.setup.checkedRevision ?? "Unavailable"}</p><p>Setup commands: {p.settings.setupCommandCount} configured. Test commands: {p.settings.testCommandCount} configured.</p><p>Devcontainer: {p.settings.devcontainer ? <VisibleText text={`${p.settings.devcontainer.repository} · ${p.settings.devcontainer.configPath}`} /> : "Not configured"}</p>
- <h2>Allowed websites</h2>{p.settings.allowedDomains.length === 0 ? <p>No project websites returned.</p> : <ul>{p.settings.allowedDomains.map(d=><li key={d.domain}><VisibleText text={d.domain} /> · {d.status}</li>)}</ul>}<p>The website editor shows mandatory defaults and staff decisions. Pending websites require staff approval on Rovara Cloud.</p>
+ <h2>{ALLOWED_LIST_NAME}</h2>{p.settings.allowedDomains.length === 0 ? <p>No project addresses returned.</p> : <ul>{p.settings.allowedDomains.map(d=><li key={d.domain}><VisibleText text={d.domain} /> · {d.status}</li>)}</ul>}<p>The address editor shows mandatory defaults and staff decisions. Pending addresses require staff approval on Rovara Cloud.</p>
  <AllowedWebsites orgId={context.orgId} project={name} available={p.name === name && p.status === "active" && p.myRole === "maintainer" && !read.isFetching && !read.isError && !context.checking} />
  {p.name===name && p.status==="active" && p.myRole==="maintainer" && !read.isFetching && !read.isError && !context.checking && <ContextSources key={`sources:${context.orgId}:${name}`} project={name} />}
  {p.name===name && p.status==="active" && <ProjectIntegrations key={`integrations:${context.orgId}:${name}`} project={name} canEdit={p.myRole === "maintainer" && !context.checking} />}

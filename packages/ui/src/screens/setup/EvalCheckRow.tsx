@@ -43,7 +43,7 @@ function Proposal({ item, busy, onUse }: { item: EvalCheckProposal; busy: boolea
   </li>;
 }
 
-export function EvalCheckRow({ project, alone = false }: { project: string; /** On its own (a finished checklist leaves the project page): the row brings its own list. */ alone?: boolean }) {
+export function EvalCheckRow({ project, alone = false, bare = false }: { project: string; /** Only the body: the Setup tab's "Also for this project" row names it and opens it. */ bare?: boolean; /** On its own (a finished checklist leaves the project page): the row brings its own list. */ alone?: boolean }) {
   const api = useEvalCheckApi(), query = useQueryClient();
   const read = useQuery({ queryKey: evalCheckKey(project), queryFn: () => api.read(project), retry: false });
   const [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [saved, setSaved] = useState(false);
@@ -52,6 +52,7 @@ export function EvalCheckRow({ project, alone = false }: { project: string; /** 
   const sending = useRef(false);
   if (read.isError && evalCheckAbsent(read.error)) return null;
   const wrap = (pill: { label: string; tone: "ok" | "idle" }, body: ReactNode, open = false) => {
+    if (bare) return <div className="rv-checklist-body" data-testid="project-eval-check-bare">{body}</div>;
     const row = <li className="rv-checklist-row" data-testid="checklist-row-evalCheck" data-state={pill.label === "Done" ? "done" : "optional"}>
       <details open={open}><summary><span className="rv-checklist-title">{W.title}</span> <StatusPill tone={pill.tone} label={pill.label} /></summary><div className="rv-checklist-body">{body}</div></details>
     </li>;

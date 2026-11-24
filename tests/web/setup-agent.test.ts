@@ -224,10 +224,10 @@ it("opens an approval link only when it is this cell's confirmation page, and of
   approved.close();
 });
 
-it("sends a website to website access instead of widening it, shows what cannot be set up from here without a control, and lists what it will not propose", async () => {
+it("sends an address to address access instead of widening it, shows what cannot be set up from here without a control, and lists what it will not propose", async () => {
   const f = setup(h(OnboardScreen), { draft: READY });
   await screen.findByText("npm ci");
-  const link = screen.getByRole("link", { name: "Open website access" });
+  const link = screen.getByRole("link", { name: "Open address access" });
   expect(link.getAttribute("href")).toBe("/app/admin/projects/web");
   expect(screen.queryByRole("checkbox", { name: /allowed domain/ })).toBeNull();
   expect(screen.getByText("Rovara can't set this up from here yet.")).toBeTruthy();

@@ -62,9 +62,8 @@ test("the owner maps the files, reads the forecast in pages, builds, stops, cont
   await panel.continue.click();
   await expect(panel.row).toHaveAttribute("data-state", "running");
   await setWikiSetup(page, PROJECT, { status: "built" });
-  await page.reload();
-  await expect(panel.row).toHaveAttribute("data-state", "done");
   await panel.open(PROJECT);
+  await expect(panel.row).toHaveAttribute("data-state", "done");
   await expect(panel.byId("wiki-setup-message")).toContainText("Wiki built.");
   const report = panel.byId("wiki-setup-report");
   await expect(report).toContainText("Pages written");
@@ -176,7 +175,7 @@ test("a person who cannot give the consent sees no choice (Sam: consent off, the
   await expect(panel.byId("wiki-setup-upkeep-needs-admin")).toHaveCount(0);
   await expect(panel.upkeep).toHaveCount(0);
   await setWikiSetup(page, PROJECT, { consent: true, upkeepOn: true });
-  await page.reload();
+  await panel.open(PROJECT);
   await expect(panel.byId("wiki-setup-upkeep-state")).toContainText("Nightly upkeep is on.");
   await expect(panel.upkeep).toHaveCount(0);
   await expect(panel.byId("wiki-setup-cap")).toHaveCount(0);
@@ -235,9 +234,9 @@ test("no AI key: Build says so and cannot be pressed; a Code without the build r
   await expect(panel.byId("wiki-setup-connect-key")).toContainText("Connect an AI key to build the wiki.");
   await expect(panel.byId("wiki-setup-connect-key").getByRole("link", { name: "Connect an AI key" })).toHaveAttribute("href", "/app/admin/ai-spending");
   await setWikiSetup(page, PROJECT, { off: true });
-  await page.reload();
-  await expect(page.getByTestId("project-checklist")).toBeVisible();
-  await expect(panel.row).toHaveCount(0);
+  await page.goto(`/app/projects/${PROJECT}?tab=setup`);
+  await expect(page.getByTestId("setup-tab")).toBeVisible();
+  await expect(page.getByTestId("also-wiki")).toHaveCount(0);
 });
 
 test("phone width and dark mode keep the panel readable", async ({ page }, testInfo) => {

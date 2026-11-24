@@ -12,16 +12,16 @@ it("checks fresh identity on explicit open and hides controls during focus reval
  let denied = false;
  const f = fakeHost(async input => input.path === "/v1/app/me" ? { status: denied ? 403 : 200, body: denied ? {} : meFixture() } : { status: 200, body: review });
  renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsites, { project: "payments", orgId: FIXTURE_ORG, available: true }) }));
- expect(f.request).not.toHaveBeenCalled();fireEvent.click(screen.getByRole("button", { name: "Edit allowed websites" }));
- await screen.findByRole("button", { name: "Review website change" });expect(f.request.mock.calls[0]?.[0].path).toBe("/v1/app/me");
+ expect(f.request).not.toHaveBeenCalled();fireEvent.click(screen.getByRole("button", { name: "Edit allowed addresses" }));
+ await screen.findByRole("button", { name: "Review address change" });expect(f.request.mock.calls[0]?.[0].path).toBe("/v1/app/me");
  denied = true;await act(async () => { window.dispatchEvent(new Event("focus")); });
- await screen.findByText(/Website editing access could not be verified/);
- expect(screen.queryByRole("button", { name: "Review website change" })).toBeNull();
+ await screen.findByText(/Address editing access could not be verified/);
+ expect(screen.queryByRole("button", { name: "Review address change" })).toBeNull();
  expect(f.request.mock.calls.filter(([r]) => r.method === "POST")).toHaveLength(0);
 });
 it("a switched company cannot open the same-named project under an old page scope", async () => {
  const f = fakeHost(async () => ({ status: 200, body: meFixture({ org: { orgId: "org_bbbbbbbbbbbbbbbbbbbb", name: "Other", plan: "team" } }) }));
  renderUi(h(AppHostProvider, { host: f.host, children: h(AllowedWebsites, { project: "payments", orgId: FIXTURE_ORG, available: true }) }));
- fireEvent.click(screen.getByRole("button", { name: "Edit allowed websites" }));await screen.findByText(/Website editing access could not be verified/);
+ fireEvent.click(screen.getByRole("button", { name: "Edit allowed addresses" }));await screen.findByText(/Address editing access could not be verified/);
  await waitFor(() => expect(f.request).toHaveBeenCalledTimes(1));expect(screen.queryByRole("textbox")).toBeNull();
 });

@@ -53,7 +53,7 @@ test("medium and high risk say why; a person who may not approve gets one line a
   await setSetupApply(page, PROJECT, { risk: "high", changes: [{ area: "websites", risk: "high" }, { area: "setup_commands", risk: "low" }], canApprove: false, canReject: true });
   approval = await open(page);
   await expect(approval.card.getByTestId("setup-approval-risk")).toContainText("High risk");
-  await expect(approval.card.getByTestId("setup-approval-risk")).toContainText("allowed websites");
+  await expect(approval.card.getByTestId("setup-approval-risk")).toContainText("allowed addresses");
   await expect(approval.card.getByTestId("setup-approval-who")).toHaveText("A company owner or admin approves high-risk changes.");
   await expect(approval.approve).toHaveCount(0);
   await expect(approval.reject).toBeVisible();

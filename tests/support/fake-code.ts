@@ -156,6 +156,18 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   const setupSkips = new Map<string, Set<"slackChannel" | "linear" | "invites">>();
   type FakeRun = { status: "none" | "running" | "ready" | "failed"; startedAt?: string; taskId?: string; stop?: "stopped_by_person" | "proposed"; /** L4-T2: a person approved the setup and its check is ready (Code's rule for Done). A ready run is not approved until a spec says so. */ approved?: boolean };
   const setupRuns = new Map<string, FakeRun>();
+  /** SETUP-TAB (2026-11-24): a project's setup scenario, set by the specs and the screen captures through /__fake/setup-scenario: fields merged over the run read and over the checklist's Setup run row, the run's commands, and the limits' company cap. */
+  interface SetupScenario { run?: Record<string, unknown>; row?: Record<string, unknown>; entries?: unknown[]; companyLock?: Record<string, number> }
+  const setupScenarios = new Map<string, SetupScenario>();
+  /** `over` laid over `base`; a `null` removes the field. */
+  const laid = (base: object, over: Record<string, unknown> | undefined): Record<string, unknown> => { const out: Record<string, unknown> = { ...base }; for (const [key, value] of Object.entries(over ?? {})) { if (value === null) delete out[key]; else out[key] = value; } return out; };
+  const setupLimits = new Map<string, { revision: number; limits: Record<string, number> }>();
+  const LIMIT_DEFAULTS = { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, LIMIT_MAXIMA = { commands: 120, sameStepTries: 5, wallClockMin: 120, budgetCents: 2000, hostAsks: 10 };
+  const limitsView = (name: string) => {
+    const own = setupLimits.get(name) ?? { revision: 0, limits: {} }, lock = setupScenarios.get(name)?.companyLock ?? {};
+    const effective = Object.fromEntries(Object.keys(LIMIT_DEFAULTS).map((key) => { const k = key as keyof typeof LIMIT_DEFAULTS; return [k, Math.min(own.limits[k] ?? LIMIT_DEFAULTS[k], lock[k] ?? LIMIT_MAXIMA[k], LIMIT_MAXIMA[k])]; }));
+    return { revision: own.revision, limits: own.limits, companyLock: lock, effective, defaults: LIMIT_DEFAULTS, maxima: LIMIT_MAXIMA };
+  };
   // Lead 4 W5 (Code W2): the pretend wiki, per project (set by the specs through /__fake/wiki); `off` makes Code answer its unknown-route 404, as a Code without the wiki does.
   const wikis = new Map<string, WikiFixtureOptions & { off?: boolean; broken?: boolean }>();
   /** Who may read a project's wiki, as Code decides it: someone with a role on the project, in the project's own company (an administrator reads every project of their company). */
@@ -535,8 +547,10 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
       : { state: "failed" as const, status: "failed" as const, approval: "none" as const, startedAt: run.startedAt, elapsedMs: 300_000, costCents: 31, commandsRun: 4, commandsFound: { setup: 1, tests: 1 }, testOutcome: "failed" as const, ...(run.stop === undefined ? {} : { stop: run.stop }), failure: "A test command failed.", failedCommand: FAILED_COMMAND };
     // L4-T2: a candidate waiting for a decision (/__fake/setup-apply) is Needs you (its check ready or failed) or Running (its check going), as Code says.
     const waiting = setupApplies.get(name);
-    const runRow = waiting === undefined || run.status === "running" || run.status === "failed" ? baseRow
-      : { ...baseRow, state: waiting.check === "checking" ? "running" as const : "needs_you" as const, approval: waiting.check === "checking" ? "checking" as const : "candidate" as const,
+    const merged = laid(baseRow, setupScenarios.get(name)?.row) as typeof baseRow;
+    const runRow = waiting === undefined || run.status === "running" || run.status === "failed" ? merged
+      : merged["approval"] === "approved" ? merged
+      : { ...merged, state: waiting.check === "checking" ? "running" as const : "needs_you" as const, approval: waiting.check === "checking" ? "checking" as const : "candidate" as const,
         check: { status: waiting.check, ...(waiting.failedStep === undefined ? {} : { failedStep: waiting.failedStep }) } };
     const setupDone = run.status === "ready";
     const evalRow = setupDone && evalOf(name).state === "approved" ? { state: "done" as const, report: "confirmed" as const, confirmedSelection: "npm run evals" } : setupDone ? { state: "needs_you" as const, report: "reported" as const, suites: [{ selection: "npm test", questions: 3 }] } : { state: "needs_you" as const, report: "none" as const, blockedBy: "setupRun" as const };
@@ -559,7 +573,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   };
   const setupRunView = (name: string, manage: boolean) => {
     const run = runOf(name);
-    return { status: run.status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, ...(run.taskId === undefined ? {} : { taskId: run.taskId }), ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }), ...(run.status === "failed" ? { failure: "A test command failed.", ...(run.stop === undefined ? {} : { stop: run.stop }) } : {}), canManage: manage, ...(setupApplies.has(name) ? { apply: applyView(setupApplies.get(name)!) } : {}) };
+    return laid({ status: run.status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, ...(run.taskId === undefined ? {} : { taskId: run.taskId }), ...(run.startedAt === undefined ? {} : { startedAt: run.startedAt }), ...(run.status === "failed" ? { failure: "A test command failed.", ...(run.stop === undefined ? {} : { stop: run.stop }) } : {}), canManage: manage, ...(setupApplies.has(name) ? { apply: applyView(setupApplies.get(name)!) } : {}) }, setupScenarios.get(name)?.run);
   };
   // L4-EVC (DEC 254zzz20): the setup flow's ONE eval card, in dollars (Code's hosted eval routes, small). A project with a finished setup run has an eval to approve; the specs set the stage through /__fake/eval-card.
   type FakeWrapperStep = "needs_file" | "pull_request_open" | "file_found" | "dismissed" | "not_offered" | "custom";
@@ -633,21 +647,32 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
   };
   /** The hosted setup run's answer (Code #844 serves the laptop's /v1/app path), or undefined when the path is not one of its four. */
   const setupRunAnswer = (method: string, path: string, query: URLSearchParams, person: Person, body: unknown): { status: number; body: unknown } | undefined => {
-    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|confirm|discard|decide|host-decide|eval|eval-approve|eval-decide|eval-health|eval-wrapper))?$/u.exec(path);
+    const match = /^\/v1\/app\/projects\/([^/]+)\/setup-agent(?:\/(stop|journal|limits|confirm|discard|decide|host-decide|eval|eval-approve|eval-decide|eval-health|eval-wrapper))?$/u.exec(path);
     if (match === null) return undefined;
     const tail = match[2];
-    if (!((method === "GET" && (tail === undefined || tail === "journal" || tail === "eval")) || (method === "POST" && tail !== "journal" && tail !== "eval"))) return undefined;
+    if (!((method === "GET" && (tail === undefined || tail === "journal" || tail === "limits" || tail === "eval")) || (method === "PUT" && tail === "limits") || (method === "POST" && tail !== "journal" && tail !== "limits" && tail !== "eval"))) return undefined;
     const name = decodeURIComponent(match[1]!), entry = project(name), grant = roleIn(person, name);
     const manage = !companyless.has(person.developerId) && (person.administrator || grant === "administrator");
     if (entry === undefined || companyless.has(person.developerId) || (!manage && grant === undefined)) return failure(404, "NOT_FOUND", "project not found");
     if (tail === "eval" || tail === "eval-approve" || tail === "eval-decide" || tail === "eval-health" || tail === "eval-wrapper") return evalCardAnswer(method, tail, name, manage, body);
     if (method === "GET" && tail === undefined) return { status: 200, body: setupRunView(name, manage) };
+    if (method === "GET" && tail === "limits") return { status: 200, body: limitsView(name) };
+    if (method === "PUT" && tail === "limits") {
+      if (!manage) return failure(403, "FORBIDDEN", "Only company owners and admins, or this project's admins, can change the project's setup limits.");
+      const sent = body as { requestId?: unknown; expectedRevision?: unknown; limits?: Record<string, number> };
+      if (typeof sent?.requestId !== "string" || typeof sent.expectedRevision !== "number" || sent.limits === undefined) return failure(400, "CONFIG_INVALID", "the request is not valid");
+      const current = limitsView(name);
+      if (sent.expectedRevision !== current.revision) return failure(409, "CHANGE_STALE", "The limits changed since you looked. Refresh and try again.");
+      setupLimits.set(name, { revision: current.revision + 1, limits: sent.limits });
+      return { status: 200, body: limitsView(name) };
+    }
     if (method === "GET") {
       const run = runOf(name), after = Number(query.get("after") ?? "0");
-      const all = run.status === "none" ? [] : [
+      const standard: Array<Record<string, unknown> & { n: number }> = run.status === "none" ? [] : [
         { n: 1, source: "agent", command: "npm ci", exitCode: 0, durationMs: 42_000, timedOut: false, flagged: false, blockedHosts: [], tail: "added 812 packages in 41s", startedAt: run.startedAt ?? CREATED },
         ...(run.status === "running" ? [] : [{ n: 2, source: "agent", command: "npm test", exitCode: run.status === "failed" ? 1 : 0, durationMs: 61_000, timedOut: false, flagged: false, blockedHosts: [], tail: run.status === "failed" ? FAILED_COMMAND.lastLines.join("\n") : "Tests: 42 passed", startedAt: run.startedAt ?? CREATED }]),
       ];
+      const all = (setupScenarios.get(name)?.entries as Array<Record<string, unknown> & { n: number }> | undefined) ?? standard;
       // An open ask carries what a company owner or admin decides it on; anyone else sees where it stands (Code's `canDecide`).
       const mayDecide = !companyless.has(person.developerId) && person.administrator;
       const hostAsks = (setupHostAsks.get(name) ?? []).map((ask) => ({ host: ask.host, status: ask.status, journalN: 1, ...(ask.status === "open" ? { canDecide: mayDecide, approval: { requestId: hostAskRequestId(ask.host), revision: 1, artifactDigest: HOST_ASK_DIGEST, kind: "setup_host", risk: "high" } } : {}) }));
@@ -2215,6 +2240,14 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
           setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: iso(), taskId: randomUUID(), ...(status === "ready" && given.approved === true ? { approved: true } : {}) });
           setupSkips.delete(given.project);
           return send(200, { status });
+        }
+        if (method === "POST" && url.pathname === "/__fake/setup-scenario") {
+          const given = JSON.parse(raw) as { project?: unknown; status?: unknown; approved?: unknown; run?: Record<string, unknown>; row?: Record<string, unknown>; entries?: unknown[]; companyLock?: Record<string, number>; reset?: unknown };
+          if (typeof given.project !== "string" || project(given.project) === undefined) return send(400, { error: { code: "CONFIG_INVALID", message: "project is required" } });
+          if (given.reset === true) { setupScenarios.delete(given.project); setupLimits.delete(given.project); setupRuns.delete(given.project); setupHostAsks.delete(given.project); setupApplies.delete(given.project); return send(200, { ok: true }); }
+          if (["none", "running", "ready", "failed"].includes(given.status as string)) { const status = given.status as FakeRun["status"]; setupRuns.set(given.project, status === "none" ? { status } : { status, startedAt: typeof given.run?.["startedAt"] === "string" ? given.run["startedAt"] : iso(), taskId: randomUUID(), ...(status === "ready" && given.approved === true ? { approved: true } : {}) }); }
+          setupScenarios.set(given.project, { ...(given.run === undefined ? {} : { run: given.run }), ...(given.row === undefined ? {} : { row: given.row }), ...(given.entries === undefined ? {} : { entries: given.entries }), ...(given.companyLock === undefined ? {} : { companyLock: given.companyLock }) });
+          return send(200, { ok: true });
         }
         if (method === "POST" && url.pathname === "/__fake/eval-card") {
           const given = JSON.parse(raw) as { project?: unknown; state?: unknown; health?: unknown };

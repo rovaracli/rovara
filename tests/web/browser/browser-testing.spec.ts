@@ -4,7 +4,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test, type Page } from "@playwright/test";
-import { BrowserTestingPage, FAKE_CODE_URL, PROJECT, ROUTES, SetupChecklistPage, browserTestingWrites, setBrowserTesting, setFakePerson, setSetupRun } from "./pages/index.js";
+import { BrowserTestingPage, FAKE_CODE_URL, PROJECT, ROUTES, SetupTabPage, browserTestingWrites, setBrowserTesting, setFakePerson, setSetupRun } from "./pages/index.js";
 import { accounts, approval, btView, candidate, draft, found, proof, summary } from "../support/browser-testing-fixtures.js";
 
 test.afterEach(async ({ page }) => { await setBrowserTesting(page, {}); await setSetupRun(page, PROJECT, "none"); await setFakePerson(page, "priya"); });
@@ -13,11 +13,11 @@ const view = (state: Parameters<typeof btView>[0], over: Record<string, unknown>
 test("the owner sets it up from the checklist: Start, Check, Approve, then Pause and Resume; every change reaches Code once, with the listed members only", async ({ page }) => {
   await setSetupRun(page, PROJECT, "ready", true);
   await setBrowserTesting(page, { view: view("not-set-up"), next: view("draft") });
-  const checklist = new SetupChecklistPage(page), bt = new BrowserTestingPage(page);
-  await checklist.open(PROJECT);
+  const tab = new SetupTabPage(page), bt = new BrowserTestingPage(page);
+  await tab.open(PROJECT);
   await expect(bt.row).toContainText("Browser testing");
-  await expect(bt.row.locator(".rv-status-pill")).toHaveText("Optional");
-  await bt.row.getByRole("link", { name: "Set up browser testing" }).click();
+  await expect(bt.row.getByTestId("also-browser-line")).toContainText("Not set up.");
+  await bt.row.getByRole("link", { name: "Open" }).click();
   await expect(bt.root).toBeVisible();
   await expect(bt.chip).toHaveText("Not set up");
   await bt.button("Start setting up").click();
@@ -57,16 +57,16 @@ test("a Code without the routes shows no row and the page says it is not availab
   await setSetupRun(page, PROJECT, "ready", true);
   await setBrowserTesting(page, { off: true });
   const bt = new BrowserTestingPage(page);
-  await new SetupChecklistPage(page).open(PROJECT);
+  await new SetupTabPage(page).open(PROJECT);
   await expect(bt.row).toHaveCount(0);
   await page.goto(`/app/projects/${PROJECT}/browser-testing`);
   await expect(page.getByTestId("bt-not-yet")).toBeVisible();
 });
 
-test("Project settings links to the page", async ({ page }) => {
+test("the Setup tab's Also for this project row links to the page", async ({ page }) => {
   await setBrowserTesting(page, { view: view("on") });
-  await new SetupChecklistPage(page).openSettings(PROJECT);
-  await page.getByTestId("project-settings-browser-testing").getByRole("link", { name: "Open browser testing" }).click();
+  await new SetupTabPage(page).open(PROJECT);
+  await page.getByTestId("also-browser-open").click();
   await expect(page.getByTestId("bt-page")).toBeVisible();
 });
 
@@ -134,11 +134,10 @@ test.describe("capture of every state", () => {
         await setBrowserTesting(page, { ...(scenario.view === undefined ? {} : { view: scenario.view }), ...(scenario.next === undefined ? {} : { next: scenario.next }), ...(scenario.failRead === undefined ? {} : { failRead: scenario.failRead }) });
         const bt = new BrowserTestingPage(page);
         if (scenario.where === "checklist") {
-          await page.goto(ROUTES.project(PROJECT));
+          await page.goto(`${ROUTES.project(PROJECT)}?tab=setup`);
           await expect(bt.row).toBeVisible();
           await expect(bt.row).not.toContainText("Reading");
-          await bt.row.locator("details").evaluate((node) => { (node as HTMLDetailsElement).open = true; });
-          await page.getByTestId("project-checklist").screenshot({ path: join(out, `${scenario.name}-${size.width}-${theme}.png`) });
+          await page.getByTestId("setup-also").screenshot({ path: join(out, `${scenario.name}-${size.width}-${theme}.png`) });
           continue;
         }
         if (scenario.stalledRead === true) await page.route("**/v1/web/projects/*/browser-testing", () => undefined);

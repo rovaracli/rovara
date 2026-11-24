@@ -19,7 +19,7 @@ export function riskReason(apply: Pick<SetupApplyView, "risk" | "changes">): str
   return high.length === 0 ? T.why.highUnknown : `It changes ${high.join(", ")}.`;
 }
 
-function changeLines(apply: SetupApplyView): string[] {
+export function changeLines(apply: SetupApplyView): string[] {
   return apply.changes.map(change => {
     if (change.area === "setup_commands") return `Setup commands: ${String(apply.setup.length)} to run`;
     if (change.area === "test_commands") return `Test commands: ${String(apply.readiness.length)} to run`;

@@ -8,7 +8,6 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { SetupRunRow } from "../../packages/ui/src/screens/setup/SetupRunRow.js";
 import { OnboardScreen } from "../../packages/ui/src/screens/onboarding/OnboardScreen.js";
 import { HOSTS_STOP_WORDS, STOP_WORDS, hostsStopCause, hostsStopWords } from "../../packages/ui/src/screens/setup/words.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -19,11 +18,11 @@ const OPEN = [{ host: "registry.example-build.io", status: "open", journalN: 1 }
 const DECIDED = [{ host: "registry.example-build.io", status: "approved", journalN: 1 }, { host: "cdn.example-files.net", status: "refused", journalN: 2 }];
 
 it("each cause has its own sentence: an open decision, a limit reached, and the words true of both when the cause is unknown", () => {
-  expect(hostsStopWords(OPEN)).toBe("A website decision is still open: allow it, then run the setup again to include it.");
+  expect(hostsStopWords(OPEN)).toBe("An address decision is still open: allow it, then run the setup again to include it.");
   expect(hostsStopWords([...DECIDED, ...OPEN])).toBe(HOSTS_STOP_WORDS.decisionOpen);
   expect(hostsStopWords(DECIDED)).toBe(HOSTS_STOP_WORDS.limitReached);
   expect(HOSTS_STOP_WORDS.limitReached).toMatch(/reached its limit/u);
-  expect(HOSTS_STOP_WORDS.limitReached).toMatch(/No website decision is open now/u);
+  expect(HOSTS_STOP_WORDS.limitReached).toMatch(/No address decision is open now/u);
   expect(HOSTS_STOP_WORDS.decisionOpen).not.toMatch(/limit/u);
   expect(new Set([HOSTS_STOP_WORDS.decisionOpen, HOSTS_STOP_WORDS.limitReached, HOSTS_STOP_WORDS.unknown]).size).toBe(3);
 });
@@ -32,7 +31,7 @@ it("an older Code (no list of website requests), an empty list or an unreadable 
   expect(hostsStopCause([])).toBe("unknown");
   expect(hostsStopWords(undefined)).toBe(HOSTS_STOP_WORDS.unknown);
   expect(HOSTS_STOP_WORDS.unknown).toBe(STOP_WORDS.hosts_waiting);
-  expect(HOSTS_STOP_WORDS.unknown).not.toMatch(/No website decision is open/u);
+  expect(HOSTS_STOP_WORDS.unknown).not.toMatch(/No address decision is open/u);
   expect(HOSTS_STOP_WORDS.unknown).not.toMatch(/is still open:/u);
 });
 
@@ -93,42 +92,5 @@ it("the Setup screen: a run that stopped for any other reason keeps its own word
   const section = await region();
   expect(await within(section).findByText(STOP_WORDS.time_used)).toBeTruthy();
   expect(within(section).queryByTestId("hosts-stop")).toBeNull();
-  f.close();
-});
-
-// ---- the project checklist's Setup run row says the same ----
-function mountRow(row: Record<string, unknown>, journal: { status: number; body?: unknown }) {
-  const f = fakeHost(async (request) => {
-    if (request.path === "/v1/app/projects/web/setup-agent") return { status: 200, body: { status: row["status"], basedOnRevision: 2, limits: LIMITS, canManage: false } };
-    if (request.path === "/v1/app/projects/web/setup-agent/journal") return journal.status === 200 ? { status: 200, body: journal.body } : { status: journal.status, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "No." } } };
-    return { status: 404, body: { error: { code: "NOT_FOUND", message: "route not found" } } };
-  });
-  const query = createQueryClient();
-  const run = { state: row["status"] === "failed" ? "failed" : "needs_you", approval: "none", ...row };
-  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(SetupRunRow, { project: "web", row: run as never, onChanged: () => undefined }) }) }) }), { theme: "light" });
-  return { ...f, close() { ui.unmount(); query.clear(); } };
-}
-const CODE_SENTENCE = "The setup run ended: it needs websites an administrator has not allowed yet (it waits at most 2 hours for a decision). Allow them, then run the setup again.";
-it("the checklist row: a failed run that stopped on websites says the cause, in place of Code's one sentence", async () => {
-  const f = mountRow({ status: "failed", stop: "hosts_waiting", failure: CODE_SENTENCE }, journal(DECIDED));
-  await waitFor(() => expect(screen.getByTestId("setup-run-hosts-stop").textContent).toBe(HOSTS_STOP_WORDS.limitReached));
-  expect(screen.queryByTestId("setup-run-failure")).toBeNull();
-  f.close();
-  const open = mountRow({ status: "failed", stop: "hosts_waiting", failure: CODE_SENTENCE }, journal(OPEN));
-  await waitFor(() => expect(screen.getByTestId("setup-run-hosts-stop").textContent).toBe(HOSTS_STOP_WORDS.decisionOpen));
-  open.close();
-});
-it("the checklist row: a ready run with a partial setup that stopped on websites says the cause; an unreadable list gives the fallback", async () => {
-  const f = mountRow({ status: "ready", stop: "hosts_waiting", partial: true }, journal(OPEN));
-  await waitFor(() => expect(screen.getByTestId("setup-run-hosts-stop").textContent).toBe(HOSTS_STOP_WORDS.decisionOpen));
-  f.close();
-  const unknown = mountRow({ status: "ready", stop: "hosts_waiting", partial: true }, { status: 503 });
-  await waitFor(() => expect(screen.getByTestId("setup-run-hosts-stop").textContent).toBe(HOSTS_STOP_WORDS.unknown));
-  unknown.close();
-});
-it("the checklist row: any other failure keeps Code's own sentence and no website line", async () => {
-  const f = mountRow({ status: "failed", stop: "time_used", failure: "Rovara ran out of time before the setup worked. It kept what it learned." }, journal(DECIDED));
-  expect((await screen.findByTestId("setup-run-failure")).textContent).toContain("ran out of time");
-  expect(screen.queryByTestId("setup-run-hosts-stop")).toBeNull();
   f.close();
 });

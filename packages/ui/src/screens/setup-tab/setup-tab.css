@@ -1,0 +1,114 @@
+/* The project's Setup tab (FABLE-REVIEW 2026-11-23). Tokens and the shared components only: no new colours, light and dark come with the tokens. Cards are for decisions (the status card and the two review cards);
+   everything else is a plain section with a 20 px heading and a bordered row list. Layout follows the setup boards (boards-v2 setup-progress, setup-journal): a 760 px main column and a help column beside it,
+   which goes under the status card on a phone. */
+.rv-setup-tab{min-width:0;color:var(--rv-text)}
+.rv-setup-cols{display:grid;grid-template-columns:minmax(0,var(--rv-reading-width,760px)) 312px;column-gap:var(--rv-space-6);row-gap:var(--rv-space-5);align-items:start;max-width:calc(var(--rv-reading-width,760px) + 312px + var(--rv-space-6))}
+.rv-setup-cols>*{grid-column:1;min-width:0}
+.rv-setup-cols>.rv-setup-help{grid-column:2;grid-row:1}
+.rv-setup-help h2{margin:0 0 var(--rv-space-3);font-size:var(--rv-font-xl);line-height:1.4;font-weight:600}
+.rv-setup-help p{margin:0;font-size:var(--rv-font-lg);line-height:1.6;color:var(--rv-text-muted)}
+
+/* The status card */
+.rv-setup-card{border:1px solid var(--rv-border);border-radius:var(--rv-radius-lg);background:var(--rv-bg-raised);padding:var(--rv-space-5) var(--rv-space-6);display:flex;flex-direction:column;gap:var(--rv-space-3)}
+.rv-setup-card h2,.rv-setup-card h3{margin:0;display:flex;align-items:flex-start;gap:var(--rv-space-3);font-size:var(--rv-font-xl);line-height:1.35;font-weight:600;letter-spacing:-.005em}
+.rv-setup-card h3{font-size:var(--rv-font-lg)}
+.rv-setup-card-mark{flex:none;width:20px;height:20px;margin-top:3px}
+.rv-setup-card-mark[data-state=needs_you]{color:var(--rv-status-needs-you)}
+.rv-setup-card-mark[data-state=done]{color:var(--rv-status-done)}
+.rv-setup-card-mark[data-state=failed],.rv-setup-card-mark[data-state=blocked]{color:var(--rv-status-failed)}
+.rv-setup-card-mark[data-state=setting_up],.rv-setup-card-mark[data-state=checking]{color:var(--rv-status-running)}
+.rv-setup-card-mark[data-state=stopped],.rv-setup-card-mark[data-state=could_not_run],.rv-setup-card-mark[data-state=unknown]{color:var(--rv-text-muted)}
+.rv-setup-card h2 code{font-size:.85em;font-weight:400}
+.rv-setup-card p{margin:0}
+.rv-setup-card-body{font-size:var(--rv-font-md);line-height:1.6}
+.rv-setup-three{margin:0;display:flex;flex-direction:column;gap:var(--rv-space-3)}
+.rv-setup-three>div{display:grid;grid-template-columns:minmax(0,132px) minmax(0,1fr);gap:var(--rv-space-4);align-items:baseline;font-size:var(--rv-font-md);line-height:1.55}
+.rv-setup-three dt{font-weight:600}
+.rv-setup-three dd{margin:0;min-width:0}
+.rv-setup-card-actions{display:flex;flex-wrap:wrap;align-items:flex-start;gap:var(--rv-space-3);margin-top:var(--rv-space-1)}
+.rv-setup-card-actions a.rv-button{text-decoration:none}
+.rv-setup-card-note{font-size:var(--rv-font-sm)}
+.rv-setup-card-quiet{padding:var(--rv-space-4) var(--rv-space-5)}
+.rv-setup-found-group h4{margin:var(--rv-space-2) 0 var(--rv-space-1);font-size:var(--rv-font-md)}
+.rv-setup-found-group ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:var(--rv-space-2)}
+.rv-setup-found-group code{overflow-wrap:anywhere;white-space:pre-wrap}
+
+/* Plain sections: heading, one muted line, a bordered list of rows */
+.rv-setup-section{display:flex;flex-direction:column;gap:var(--rv-space-3)}
+.rv-setup-section>h2,.rv-setup-section-head h2{margin:0;font-size:var(--rv-font-xl);line-height:1.4;font-weight:600}
+.rv-setup-section>p{margin:0}
+.rv-setup-section-head{display:flex;align-items:center;justify-content:space-between;gap:var(--rv-space-4);flex-wrap:wrap}
+.rv-setup-rows{list-style:none;margin:0;padding:0;border:1px solid var(--rv-border);border-radius:var(--rv-radius-md);background:var(--rv-bg-raised)}
+.rv-setup-row{display:flex;align-items:flex-start;gap:var(--rv-space-3);padding:var(--rv-space-3) var(--rv-space-4);border-bottom:1px solid var(--rv-border)}
+.rv-setup-row:last-child{border-bottom:0}
+.rv-setup-row-main{flex:1;min-width:0}
+.rv-setup-row-main strong{font-weight:600}
+.rv-setup-row-main p{margin:2px 0 0;font-size:var(--rv-font-sm);line-height:1.5}
+.rv-setup-row-main p:first-of-type:not(.rv-muted){font-size:var(--rv-font-md)}
+.rv-setup-row-main code{font-size:12.5px;overflow-wrap:anywhere}
+.rv-setup-row-end{flex:none;display:flex;gap:var(--rv-space-2);flex-wrap:wrap;justify-content:flex-end}
+.rv-setup-mark{flex:none;width:16px;height:16px;margin-top:4px}
+.rv-setup-mark[data-tone=attention]{color:var(--rv-status-needs-you)}
+.rv-setup-mark[data-tone=ok]{color:var(--rv-status-done)}
+.rv-setup-mark[data-tone=no]{color:var(--rv-text-muted)}
+.rv-setup-allow.rv-button{background:var(--rv-bg-sunken);font-weight:600}
+.rv-setup-note{margin:0;font-size:var(--rv-font-sm)}
+.rv-setup-extra .rv-setup-row-main>div,.rv-setup-extra .rv-setup-row-main>section{margin-top:var(--rv-space-3)}
+
+/* This run: facts line, folds, log */
+.rv-setup-folds{border-top:1px solid var(--rv-border);margin-top:var(--rv-space-2)}
+.rv-setup-fold{border-bottom:1px solid var(--rv-border)}
+.rv-setup-fold>summary{display:grid;grid-template-columns:16px minmax(0,auto) minmax(0,1fr);gap:var(--rv-space-3);align-items:center;list-style:none;cursor:pointer;padding:var(--rv-space-4) 0;font-size:var(--rv-font-md)}
+.rv-setup-fold>summary::-webkit-details-marker{display:none}
+.rv-setup-fold>summary svg{width:16px;height:16px;transition:transform .1s}
+.rv-setup-fold[open]>summary svg{transform:rotate(90deg)}
+.rv-setup-fold>summary strong{font-size:var(--rv-font-lg);font-weight:600}
+.rv-setup-fold-hint{color:var(--rv-text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;text-align:right}
+.rv-setup-fold-hint code{font-size:12.5px}
+.rv-setup-fold-body{padding:0 0 var(--rv-space-4) 28px}
+.rv-setup-journal{list-style:none;margin:0;padding:var(--rv-space-3) var(--rv-space-4);border-radius:var(--rv-radius-md);background:var(--rv-bg-sunken);display:flex;flex-direction:column;gap:var(--rv-space-3)}
+.rv-setup-journal p{margin:0;font-size:var(--rv-font-sm);overflow-wrap:anywhere}
+.rv-setup-journal code{font-size:12.5px}
+.rv-setup-journal pre{margin:var(--rv-space-1) 0 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:14rem;overflow:auto;font-size:12.5px}
+.rv-setup-line{display:flex;align-items:center;gap:var(--rv-space-3);flex-wrap:wrap}
+
+/* Limits: the form's fields, a unit beside each (about 120 px, never full width) */
+.rv-setup-limit-field{display:grid;grid-template-columns:minmax(0,132px) minmax(0,1fr);column-gap:var(--rv-space-4);row-gap:var(--rv-space-1);align-items:center;padding:var(--rv-space-3) 0;border-bottom:1px solid var(--rv-border)}
+.rv-setup-limit-field label{font-weight:600;grid-row:1}
+.rv-setup-limit-field>p{grid-column:2;margin:0;font-size:var(--rv-font-sm)}
+.rv-setup-limit-input{display:flex;align-items:center;gap:var(--rv-space-2);flex-wrap:wrap}
+.rv-setup-limit-input .rv-input{width:120px}
+.rv-setup-limit-input .rv-button-quiet{min-height:0;padding:0 var(--rv-space-2);font-size:var(--rv-font-sm)}
+
+@media (max-width:900px){
+ .rv-setup-cols{grid-template-columns:minmax(0,1fr)}
+ .rv-setup-cols>.rv-setup-help{grid-column:1;grid-row:auto;order:2}
+ .rv-setup-fold>summary{grid-template-columns:16px minmax(0,1fr)}
+ .rv-setup-fold-hint{grid-column:2;white-space:normal;text-align:left;overflow:visible}
+ .rv-setup-cols>*{order:4}
+ .rv-setup-cols>.rv-setup-card:first-of-type{order:0}
+ .rv-setup-cols>#setup-addresses{order:1}
+ .rv-setup-card{padding:var(--rv-space-4)}
+ .rv-setup-three>div,.rv-setup-limit-field{grid-template-columns:minmax(0,1fr)}
+ .rv-setup-limit-field>p{grid-column:1}
+ .rv-setup-row{flex-wrap:wrap}
+ .rv-setup-row-end{width:100%;justify-content:flex-start}
+ .rv-setup-row>.rv-setup-mark+.rv-setup-row-main+.rv-setup-row-end{padding-left:calc(16px + var(--rv-space-3))}
+}
+
+.rv-setup-action{display:flex;flex-direction:column;gap:var(--rv-space-1);align-items:flex-start}
+.rv-setup-action>.rv-setup-card-note{margin:0;max-width:46ch}
+.rv-setup-found-group .rv-setup-found-commands{margin:0 0 var(--rv-space-1) calc(var(--rv-control-size,36px) + var(--rv-space-3));display:flex;flex-direction:column;gap:2px}
+.rv-setup-found-group p{margin:0 0 0 calc(var(--rv-control-size,36px) + var(--rv-space-3));font-size:var(--rv-font-sm)}
+.rv-setup-allow.rv-button{border-color:var(--rv-text)}
+
+/* The details fold of the approval card uses the same chevron as every other fold on the tab */
+.rv-setup-card .rv-approval-details>summary{list-style:none;display:flex;align-items:center;gap:var(--rv-space-3);cursor:pointer;padding:var(--rv-space-1) 0}
+.rv-setup-card .rv-approval-details>summary::-webkit-details-marker{display:none}
+.rv-setup-card .rv-approval-details>summary::before{content:"";width:7px;height:7px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .1s;margin:0 5px}
+.rv-setup-card .rv-approval-details[open]>summary::before{transform:rotate(45deg)}
+/* smaller, quieter ticks in the found-setup list */
+.rv-setup-found-group .rv-check-row{min-height:0;gap:var(--rv-space-2)}
+.rv-setup-found-group .rv-checkbox{width:22px;height:22px}
+.rv-setup-found-group .rv-setup-found-commands{margin-left:calc(22px + var(--rv-space-2))}
+.rv-setup-found-group p{margin-left:calc(22px + var(--rv-space-2))}

@@ -20,7 +20,7 @@ import { COULDNT_REFRESH, rereadFailed, servedFacts, useNoteWrite, useReadIdenti
 
 const ROLE = { owner: "Owner", admin: "Admin", member: "Member" } as Record<string, string>;
 const WHEN = [
- ["A decision is waiting for you", "Plan approvals, merges, site requests"],
+ ["A decision is waiting for you", "Plan approvals, merges, address requests"],
  ["A task you own is blocked or failed", "With the reason and the next step"],
  ["A task you own finished", "Merged, closed or answered"],
 ] as const;

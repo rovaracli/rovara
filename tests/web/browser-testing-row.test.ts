@@ -1,12 +1,11 @@
 // @vitest-environment jsdom
-// Browser testing's row of the project's setup checklist (the approved mock: checklist-none / -waiting / -on): optional, not counted in the progress, words from the page's own read, absent while Code does not serve it.
+// Browser testing's row (the approved mock: checklist-none / -waiting / -on), now one of the Setup tab's "Also for this project" rows: optional, words from the page's own read, absent while Code does not serve it.
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
-import { ProjectChecklist } from "../../packages/ui/src/screens/setup/ProjectChecklist.js";
 import { BrowserTestingRow } from "../../packages/ui/src/screens/setup/browser-testing/BrowserTestingRow.js";
 import { BT } from "../../packages/ui/src/screens/setup/browser-testing/browser-testing-text.js";
 import { btView, candidate, draft, found } from "./support/browser-testing-fixtures.js";
@@ -24,14 +23,14 @@ const checklist = (percent = 38) => ({
   aiAndSpend: { state: "done", source: "default", companyModelSaved: false, modelBudgetUsd: null },
   slackChannel: { state: "optional", channels: [] }, linear: { state: "optional", team: null }, invites: { state: "optional" }, firstTask: percent >= 100 ? { state: "done", hasTask: true, canStart: false } : { state: "needs_you", hasTask: false, canStart: false },
 });
-function mount(read: () => ReturnType<typeof ok>, percent = 38) {
+function mount(read: () => ReturnType<typeof ok>, percent = 38, alone = false) {
   const f = fakeHost(async (request) => {
     if (request.path === "/v1/app/projects/payments/setup-status") return ok(checklist(percent));
     if (request.path === PATH) return read();
     return fail(404, "NOT_FOUND", "route not found");
   });
   const query = createQueryClient();
-  renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(ProjectChecklist, { project: "payments" }) }) }) }), { theme: "light" });
+  renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h("ol", { className: "rv-checklist-rows", "data-testid": "rows" }, h(BrowserTestingRow, { project: "payments", ...(alone ? { alone: true } : {}) })) }) }) }), { theme: "light" });
   return f;
 }
 const row = async () => {
@@ -64,17 +63,13 @@ describe("the row", () => {
     expect(within(one).getByRole("link", { name: BT.rowOpen })).toBeTruthy();
     expect(within(one).queryByRole("link", { name: BT.rowReview })).toBeNull();
   });
-  it("is not counted in the progress (Code's number is shown as served) and is absent while Code does not serve the page", async () => {
-    mount(() => ok(btView("on")));
-    await row();
-    expect(screen.getByTestId("checklist-progress").textContent).toContain("38% done (3 of 8)");
-    cleanup();
+  it("is absent while Code does not serve the page", async () => {
     mount(() => fail(501, "NOT_ON_CODE_YET", "Browser testing isn't available on this Rovara yet."));
-    await screen.findByTestId("project-checklist");
+    await screen.findByTestId("rows");
     await waitFor(() => expect(screen.queryByTestId("checklist-row-browserTesting")).toBeNull());
   });
-  it("stays reachable once the checklist is finished (on its own), for people who may change the project", async () => {
-    mount(() => ok(btView("on")), 100);
+  it("brings its own list when it stands on its own", async () => {
+    mount(() => ok(btView("on")), 100, true);
     expect(await screen.findByTestId("project-browser-testing-only")).toBeTruthy();
   });
   it("a read that fails says so and offers to try again; the row is not hidden by a transient failure", async () => {

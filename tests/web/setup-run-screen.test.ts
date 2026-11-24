@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// SH15: the Setup step's run of Rovara's own. Nothing at all while the feature is off; start and stop; the journal and the websites it asked for; steer and a command; and "Use this setup", which PROPOSES the ticked
+// SH15: the Setup step's run of Rovara's own. Nothing at all while the feature is off; start and stop; the journal and the addresses it asked for; steer and a command; and "Use this setup", which PROPOSES the ticked
 // commands and says nothing is applied until they pass on a fresh machine and are approved in the test environment. An item that does not match the code cannot be used.
 import { expect, it } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -78,22 +78,22 @@ it("offers to run the setup, and starts it with a request id of its own", async 
   f.close();
 });
 
-it("while it runs: shows the journal as quoted text, the websites it asked for, steer and a command box, and stops on request", async () => {
+it("while it runs: shows the journal as quoted text, the addresses it asked for, steer and a command box, and stops on request", async () => {
   const f = setup({
     read: { status: 200, body: view({ status: "running", taskId: TASK, sessionId: "ses_aaaaaaaaaaaaaaaaaaaa", startedAt: "2026-11-02T12:00:00.000Z" }) },
     journal: { status: "running", entries: [ENTRY], hostAsks: [{ host: "registry.example-build.io", status: "open", journalN: 1 }] },
     answers: { "/stop": { status: 200, body: view({ status: "failed", stop: "stopped_by_person", failure: "You stopped this run.", taskId: TASK }) }, "/command": { status: 200, body: { seq: 1, state: "queued" } } },
   });
   const section = await region();
-  expect(await within(section).findByText("npm ci")).toBeTruthy();
-  expect(within(section).getByText("Exit 1")).toBeTruthy();
+  expect((await within(section).findAllByText("npm ci")).length).toBeGreaterThan(0);
+  expect(within(section).getByText("Failed (code 1)")).toBeTruthy();
   expect(within(section).getByText(/Waiting for a company owner or admin to decide/u)).toBeTruthy();
   expect(within(section).getAllByText("registry.example-build.io").length).toBeGreaterThan(0);
-  fireEvent.change(within(section).getByLabelText("Run a command in the sandbox"), { target: { value: "ls -la" } });
-  fireEvent.click(within(section).getByRole("button", { name: "Run" }));
+  fireEvent.change(within(section).getByLabelText("Run a command yourself"), { target: { value: "ls -la" } });
+  fireEvent.click(within(section).getByRole("button", { name: "Run command" }));
   await waitFor(() => expect(posts(f, "/setup-agent/command")).toHaveLength(1));
   expect(posts(f, "/setup-agent/command")[0]!.body).toMatchObject({ command: "ls -la" });
-  fireEvent.change(within(section).getByLabelText("Tell Rovara how to set it up"), { target: { value: "Use pnpm, not npm" } });
+  fireEvent.change(within(section).getByLabelText("Tell Rovara something about this project"), { target: { value: "Use pnpm, not npm" } });
   fireEvent.click(within(section).getByRole("button", { name: "Send to Rovara" }));
   await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.method === "POST" && r.path === "/v1/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa/messages")).toBe(true));
   const steer = f.request.mock.calls.map(([r]) => r).find((r) => r.path.endsWith("/messages"))!;
@@ -107,12 +107,12 @@ it("while it runs: shows the journal as quoted text, the websites it asked for, 
 it("with no session there is no steer box, and the command box is only for a run that is going", async () => {
   const f = setup({ read: { status: 200, body: view({ status: "running", taskId: TASK }) } });
   const section = await region();
-  expect(within(section).queryByLabelText("Tell Rovara how to set it up")).toBeNull();
-  expect(within(section).getByLabelText("Run a command in the sandbox")).toBeTruthy();
+  expect(within(section).queryByLabelText("Tell Rovara something about this project")).toBeNull();
+  expect(within(section).getByLabelText("Run a command yourself")).toBeTruthy();
   f.close();
   const done = setup({ read: { status: 200, body: view({ status: "ready", stop: "proposed", summary: SUMMARY, proposal: PROPOSAL, verified: true, verification: { "setup-web": "verified", "tests-web": "verified" }, taskId: TASK }) } });
   const finished = await region();
-  expect(within(finished).queryByLabelText("Run a command in the sandbox")).toBeNull();
+  expect(within(finished).queryByLabelText("Run a command yourself")).toBeNull();
   done.close();
 });
 

@@ -10,7 +10,6 @@ import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { readUpkeepCap, parseUsd } from "../../packages/ui/src/api/wiki-setup.js";
-import { ProjectChecklist } from "../../packages/ui/src/screens/setup/ProjectChecklist.js";
 import { WikiChecklistRow } from "../../packages/ui/src/screens/setup/wiki/WikiChecklistRow.js";
 import { rowStateOf, skippedLine } from "../../packages/ui/src/screens/setup/wiki/wiki-setup-text.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -719,32 +718,21 @@ function noControlsExceptOffer() {
   expect(screen.queryByTestId("wiki-setup-upkeep-needs-admin")).toBeNull();
 }
 
-describe("in the checklist", () => {
-  it("it is one more row, not counted in the progress Code computes, and the other rows are unchanged", async () => {
-    const f = mount(h(ProjectChecklist, { project: "web" }));
-    const list = await screen.findByTestId("project-checklist");
-    await screen.findByTestId("checklist-row-wiki");
-    expect(within(list).getAllByRole("listitem").some((item) => item.getAttribute("data-testid") === "checklist-row-wiki")).toBe(true);
-    expect(screen.getByTestId("checklist-progress").textContent).toContain("25% done (2 of 8)");
-    expect(screen.getByTestId("checklist-row-setupRun")).toBeTruthy();
+describe("on the Setup tab", () => {
+  it("the row stands on its own with its own list, and in the Also for this project row it opens as a body without a second title", async () => {
+    const alone = mount(h(WikiChecklistRow, { project: "web", companyAdmin: true, alone: true }));
+    await screen.findByTestId("project-wiki-only");
+    expect(screen.getByTestId("checklist-row-wiki")).toBeTruthy();
     await expectNoAxeViolations(document.body);
-    f.close();
+    alone.close();
+    const bare = mount(h(WikiChecklistRow, { project: "web", companyAdmin: true, bare: true, startOpen: true }));
+    await screen.findByTestId("project-wiki-bare");
+    expect(screen.queryByTestId("checklist-row-wiki")).toBeNull();
+    bare.close();
   });
 
-  it("a finished checklist leaves the project page, but the wiki row stays for people who may change the project, and not for others", async () => {
-    const done = () => ({ status: 200, body: checklist({ progress: { done: 8, total: 8, percent: 100, nextRequired: null } }) });
-    const f = mount(h(ProjectChecklist, { project: "web" }), { status: done });
-    await screen.findByTestId("project-wiki-only");
-    expect(screen.queryByTestId("project-checklist")).toBeNull();
-    expect(screen.getByTestId("checklist-row-wiki")).toBeTruthy();
-    f.close();
-    const g = mount(h(ProjectChecklist, { project: "web" }), { status: () => ({ status: 200, body: checklist({ viewer: { companyRole: "member", projectAdmin: false, canSkip: false }, progress: { done: 8, total: 8, percent: 100, nextRequired: null } }) }) });
-    await waitFor(() => expect(calls(g, "GET", ROOT + "/setup-status")).toHaveLength(1));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(screen.queryByTestId("checklist-row-wiki")).toBeNull();
-    expect(screen.queryByTestId("project-wiki-only")).toBeNull();
-    g.close();
-    const k = mount(h(ProjectChecklist, { project: "web" }), { status: done, build: () => err(501, "NOT_ON_CODE_YET", WIKI_SETUP_WORDS.notYet) });
+  it("an absent wiki build (Code does not serve it) leaves nothing", async () => {
+    const k = mount(h(WikiChecklistRow, { project: "web", companyAdmin: true, alone: true }), { build: () => err(501, "NOT_ON_CODE_YET", WIKI_SETUP_WORDS.notYet) });
     await waitFor(() => expect(calls(k, "GET", ROOT + "/wiki-build")).toHaveLength(1));
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(screen.queryByTestId("project-wiki-only")).toBeNull();

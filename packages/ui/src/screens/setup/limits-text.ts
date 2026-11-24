@@ -7,9 +7,9 @@ export const LIMIT_LABELS: Record<SetupLimitName, string> = {
  sameStepTries: "Tries of the same failing step",
  wallClockMin: "Time a run may take, in minutes",
  budgetCents: "Model spend of a run, in dollars",
- hostAsks: "New websites a run may ask for",
+ hostAsks: "New addresses a run may ask for",
 };
-export const LIMIT_SHORT: Record<SetupLimitName, string> = { commands: "Commands", sameStepTries: "Tries of the same step", wallClockMin: "Minutes", budgetCents: "Model spend", hostAsks: "Website asks" };
+export const LIMIT_SHORT: Record<SetupLimitName, string> = { commands: "Commands", sameStepTries: "Tries of the same step", wallClockMin: "Minutes", budgetCents: "Model spend", hostAsks: "Address asks" };
 
 export const PROJECT_LIMITS = {
  HEADING: "Setup limits",

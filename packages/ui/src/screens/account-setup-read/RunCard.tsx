@@ -21,7 +21,7 @@ export function runHeading(data: SetupAgentView): string {
  return "No setup run yet";
 }
 /** The heading, one muted line and one plain line of the run card. */
-export function RunSummary({ data, project, hostAsks }: { data: SetupAgentView; project: string; /** The run's website requests, when the journal was read: they tell why a run that stopped on websites stopped (unknown when absent). */ hostAsks?: SetupJournalReply["hostAsks"] | undefined }) {
+export function RunSummary({ data, project, hostAsks }: { data: SetupAgentView; project: string; /** The run's address requests, when the journal was read: they tell why a run that stopped on addresses stopped (unknown when absent). */ hostAsks?: SetupJournalReply["hostAsks"] | undefined }) {
  return <>
   <h2>{runHeading(data)}</h2>
   {(data.summary !== undefined || data.verified !== undefined) && <p className="g5-muted">{data.summary !== undefined && minutes(data.summary.elapsedMs)}{data.verified !== undefined && <>{data.summary !== undefined ? " · " : ""}{data.verified ? "Verified on a fresh machine" : "Not verified"}</>}</p>}
@@ -55,10 +55,10 @@ export function LogFold({ query, open }: { query: ReturnType<typeof useJournalRe
   </details>;
  }}</ReadState>;
 }
-/** Websites the run asked for, and what became of each. */
+/** Addresses the run asked for, and what became of each. */
 export function HostsFold({ query }: { query: ReturnType<typeof useJournalRead> }) {
- return <ReadState query={query} label="the setup journal" shell={() => null}>{data => <details className="g5-fold" aria-label="Websites requested">
-  <summary><Chevron /><strong>Host requests</strong><span className="g5-pre">{data.hostAsks.map(ask => ask.host).join(" · ")}</span><span className="g5-end">{data.hostAsks.length} {data.hostAsks.length === 1 ? "request" : "requests"}</span></summary>
-  <div className="g5-fold-body">{data.hostAsks.length === 0 ? <p className="g5-note">No website requests returned.</p> : <div className="g5-table"><div className="rv-table-wrap rv-table-v2-wrap"><table className="rv-table rv-table-v2" aria-label="Websites requested"><thead><tr><th scope="col">Need</th><th scope="col">Observed result</th></tr></thead><tbody>{data.hostAsks.map(ask => <tr key={ask.host}><td><strong><code><VisibleText text={ask.host} /></code></strong></td><td>{HOST[ask.status]}</td></tr>)}</tbody></table></div></div>}</div>
+ return <ReadState query={query} label="the setup journal" shell={() => null}>{data => <details className="g5-fold" aria-label="Addresses requested">
+  <summary><Chevron /><strong>Address requests</strong><span className="g5-pre">{data.hostAsks.map(ask => ask.host).join(" · ")}</span><span className="g5-end">{data.hostAsks.length} {data.hostAsks.length === 1 ? "request" : "requests"}</span></summary>
+  <div className="g5-fold-body">{data.hostAsks.length === 0 ? <p className="g5-note">No address requests returned.</p> : <div className="g5-table"><div className="rv-table-wrap rv-table-v2-wrap"><table className="rv-table rv-table-v2" aria-label="Addresses requested"><thead><tr><th scope="col">Need</th><th scope="col">Observed result</th></tr></thead><tbody>{data.hostAsks.map(ask => <tr key={ask.host}><td><strong><code><VisibleText text={ask.host} /></code></strong></td><td>{HOST[ask.status]}</td></tr>)}</tbody></table></div></div>}</div>
  </details>}</ReadState>;
 }

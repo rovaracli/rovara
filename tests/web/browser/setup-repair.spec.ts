@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { expect, test, type Page } from "@playwright/test";
-import { PROJECT, ROUTES, WikiSetupPanel, setFakePerson, setSetupRun, setWikiSetup } from "./pages/index.js";
+import { PROJECT, ROUTES, SetupTabPage, WikiSetupPanel, setFakePerson, setSetupRun, setWikiSetup } from "./pages/index.js";
 
 const STEP = "setup: npm ci - setup step 0 (npm ci) failed: exit 1";
 test.afterEach(async ({ page }) => { await setWikiSetup(page, PROJECT); await setSetupRun(page, PROJECT, "none"); await setFakePerson(page, "priya"); });
@@ -19,48 +19,57 @@ async function violations(page: Page): Promise<string[]> {
 }
 
 for (const scheme of ["light", "dark"] as const) {
-  test(`the owner reads the repair card, its one action and Re-check setup (${scheme})`, async ({ page }, testInfo) => {
+  test(`the owner reads the repair banner, then the status card's one action and Check again without AI (${scheme})`, async ({ page }, testInfo) => {
     await page.emulateMedia({ colorScheme: scheme });
+    await setSetupRun(page, PROJECT, "ready", true);
     await setWikiSetup(page, PROJECT, { repair: { step: STEP, fixReady: false, changed: "dependency files" } });
     await page.goto(ROUTES.project(PROJECT));
-    const card = page.getByTestId("setup-repair-card");
-    await expect(card).toBeVisible();
-    await expect(card.getByRole("heading", { name: "Setup needs repair" })).toBeVisible();
-    await expect(card.getByTestId("setup-repair-body")).toHaveText(`The project's setup stopped working after recent code changes (${STEP}). Rovara cannot build on this project until it is fixed.`);
-    await expect(card.getByRole("button", { name: "Fix setup (uses your AI, up to $4)" })).toBeVisible();
-    await expect(card.getByRole("button", { name: "Re-check setup" })).toBeVisible();
-    await expect(card.getByTestId("setup-repair-changed")).toBeHidden();
+    const banner = page.getByTestId("setup-repair-card");
+    await expect(banner).toBeVisible();
+    await expect(banner.getByRole("heading", { name: "Setup needs repair" })).toBeVisible();
+    await expect(banner.getByTestId("setup-repair-body")).toHaveText(`The project's setup stopped working after recent code changes (${STEP}). Rovara cannot build on this project until it is fixed.`);
+    await expect(banner.getByRole("button")).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath(`setup-repair-banner-${scheme}.png`), fullPage: true });
+    await banner.getByRole("link", { name: "Open Setup" }).click();
+    const tab = new SetupTabPage(page);
+    await expect(tab.card).toHaveAttribute("data-state", "repair");
+    await expect(tab.card.getByRole("heading")).toHaveText("Setup stopped working after recent code changes");
+    await expect(tab.card.getByRole("button", { name: "Fix setup" })).toBeVisible();
+    await expect(tab.card).toContainText("Uses your AI, up to $4.00.");
+    await expect(page.getByTestId("setup-repair-card")).toHaveCount(0);
     await page.screenshot({ path: testInfo.outputPath(`setup-repair-${scheme}.png`), fullPage: true });
     expect(await violations(page)).toEqual([]);
-    await card.getByRole("button", { name: "Re-check setup" }).click();
-    await expect(card.getByTestId("setup-recheck-started")).toContainText("Checking setup again.");
+    await tab.card.getByRole("button", { name: "Check again without AI" }).click();
+    await expect(tab.card.getByTestId("setup-recheck-started")).toContainText("Checking setup again.");
     // A second press while Code's check runs is refused in a fixed sentence.
-    await card.getByRole("button", { name: "Re-check setup" }).click();
-    await expect(card.getByTestId("setup-recheck-error")).toBeVisible();
-    await expect(card.getByTestId("setup-recheck-error")).not.toContainText("ws-recheck");
+    await tab.card.getByRole("button", { name: "Check again without AI" }).click();
+    await expect(tab.card.getByTestId("setup-run-error")).toBeVisible();
+    await expect(tab.card.getByTestId("setup-run-error")).not.toContainText("ws-recheck");
   });
 }
 
-test("a checked fix waiting turns the action into Approve new setup, a link to the setup page", async ({ page }, testInfo) => {
+test("a checked fix waiting turns the action into Approve new setup, in the status card", async ({ page }, testInfo) => {
+  await setSetupRun(page, PROJECT, "ready", true);
   await setWikiSetup(page, PROJECT, { repair: { step: STEP, fixReady: true } });
-  await page.goto(ROUTES.project(PROJECT));
-  const card = page.getByTestId("setup-repair-card");
-  await expect(card.getByRole("link", { name: "Approve new setup" })).toHaveAttribute("href", new RegExp(`/app/projects/${PROJECT}#setup-checklist$`, "u"));
-  await expect(card.getByRole("button", { name: /Fix setup/u })).toHaveCount(0);
+  const tab = new SetupTabPage(page);
+  await tab.open(PROJECT);
+  await expect(tab.card.getByRole("button", { name: "Approve new setup" })).toBeVisible();
+  await expect(tab.card.getByRole("button", { name: /^Fix setup/u })).toHaveCount(0);
   await page.screenshot({ path: testInfo.outputPath("setup-repair-approve.png"), fullPage: true });
 });
 
-test("a developer reads the same card and the line that the admins were asked, with nothing to press", async ({ page }) => {
+test("a developer reads the same words and who can act, with nothing to press", async ({ page }) => {
+  await setSetupRun(page, PROJECT, "ready", true);
   await setWikiSetup(page, PROJECT, { repair: { step: STEP, fixReady: false } });
   await setFakePerson(page, "sam");
-  await page.goto(ROUTES.project(PROJECT));
-  const card = page.getByTestId("setup-repair-card");
-  await expect(card.getByTestId("setup-repair-body")).toContainText("Rovara cannot build on this project until it is fixed.");
-  await expect(card.getByTestId("setup-repair-reader")).toHaveText("The project's admins have been asked to fix it.");
-  await expect(card.getByRole("button")).toHaveCount(0);
+  const tab = new SetupTabPage(page);
+  await tab.open(PROJECT);
+  await expect(tab.card).toContainText("Rovara can't build on");
+  await expect(tab.card.getByTestId("setup-reader-note")).toHaveText("A project admin, or a company owner or admin, can do this.");
+  await expect(tab.card.getByRole("button")).toHaveCount(0);
 });
 
-test("there is no card while the setup works, and none for a Code with no such read", async ({ page }) => {
+test("there is no banner while the setup works, and none for a Code with no such read", async ({ page }) => {
   await page.goto(ROUTES.project(PROJECT));
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   await expect(page.getByTestId("setup-repair-card")).toHaveCount(0);

@@ -11,7 +11,7 @@
 //   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
 //   POST /v1/app/projects/{p}/setup-agent/discard {requestId}                              -> Code POST .../setup-agent/discard  (drop the waiting candidate)
 //   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: Code's risk-based approver rule)
-//   POST /v1/app/projects/{p}/setup-agent/host-decide {requestId, host, outcome, seen, reason?} -> Code POST .../setup-agent/host-decide (allow or refuse a website a setup run asked for: Code's rule is a live company owner or admin; Cloud adds none)
+//   POST /v1/app/projects/{p}/setup-agent/host-decide {requestId, host, outcome, seen, reason?} -> Code POST .../setup-agent/host-decide (allow or refuse an address a setup run asked for: Code's rule is a live company owner or admin; Cloud adds none)
 //   The setup-run read also carries Code's `apply` (the waiting candidate: risk, changes, who approves, the check, the approval binding), rebuilt field by field (L4-D2).
 //
 // Rules:
@@ -229,7 +229,7 @@ const runPath = (project: string, tail = "") => `/v1/app/projects/${encodeURICom
 
 /** Code's setup-run answer: a plain object whose status is a known word and whose `canManage`, when sent, is a boolean. */
 const runAnswerOk = (value: unknown): boolean => plain(value) && oneOf(value["status"], RUN_STATUSES) && (value["canManage"] === undefined || typeof value["canManage"] === "boolean");
-/** One website ask of the journal as Code sends it: a host, a known state, and (open asks only) whether this person may decide it and the id and digest it is decided on. Anything else is unreadable. */
+/** One address ask of the journal as Code sends it: a host, a known state, and (open asks only) whether this person may decide it and the id and digest it is decided on. Anything else is unreadable. */
 const hostAskOk = (ask: unknown): boolean => {
   if (!plain(ask) || typeof ask["host"] !== "string" || !HOST_NAME.test(ask["host"]) || !oneOf(ask["status"], ["open", "approved", "refused"] as const)) return false;
   if (ask["canDecide"] !== undefined && typeof ask["canDecide"] !== "boolean") return false;
@@ -260,6 +260,8 @@ export const SETUP_APPROVAL_CODE_WORDS: readonly string[] = Object.freeze([
   "Another setup is waiting. If its check passed, approve or reject it; otherwise discard it. Then use this one.",
   "A command in this setup is too long to show whole, so it cannot be approved.",
   "There is no setup waiting for a decision. Open the project's setup again.",
+  // The owner chose "address" (2026-11-24). Code sends the new sentence; the old one is still accepted while a Code on the old words runs beside this Cloud (rollout skew), and is said in the new words.
+  "This setup change reaches outside the project's commands (an address, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.",
   "This setup change reaches outside the project's commands (a website, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.",
   "Only the project's maintainers, or a company owner or admin, can decide this setup.",
   "Your approval could not be proved just now, so nothing was decided. Try again.",
@@ -343,11 +345,14 @@ function confirmAnswer(value: unknown): Plain {
 }
 
 type ApprovalKind = "confirm" | "discard" | "decide";
+/** Code's sentences from before it said "address", as the new sentence: an old Code's message is passed on, in today's words. */
+export const SETUP_CODE_WORDS_REWRITE: ReadonlyMap<string, string> = new Map([[`This setup change reaches outside the project's commands (a website, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.`, `This setup change reaches outside the project's commands (an address, a secret, a registry, an integration or something Rovara does not recognise), so a company owner or admin must approve it.`], [`A website for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.`, `An address for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.`], [`That website is not waiting for a decision any more. Open the project's setup again.`, `That address is not waiting for a decision any more. Open the project's setup again.`]]);
+const saidOf = (list: readonly string[], message: unknown): string | undefined => { const found = typeof message === "string" ? list.find((words) => words === message) : undefined; return found === undefined ? undefined : SETUP_CODE_WORDS_REWRITE.get(found) ?? found; };
 /** Code's refusal of a setup approval act in Cloud's fixed words. Only a message that is exactly one of Code's fixed sentences is said (as this file's copy of it); anything else is by code and status. */
 export function approvalRefusal(kind: ApprovalKind, error: CodeError): RouteAnswer {
   if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
-  const code = body?.["code"], said = typeof body?.["message"] === "string" ? SETUP_APPROVAL_CODE_WORDS.find((words) => words === body["message"]) : undefined;
+  const code = body?.["code"], said = saidOf(SETUP_APPROVAL_CODE_WORDS, body?.["message"]);
   if (error.status === 404) {
     if (code === "NOT_FOUND" && body?.["message"] === "route not found") return A.runNotYet;
     if (code === "NOT_FOUND" && body?.["message"] === "Approving a project's setup isn't available on this install yet.") return answer(501, "NOT_ON_CODE_YET", AW.approvalNotYet);
@@ -364,24 +369,27 @@ export function approvalRefusal(kind: ApprovalKind, error: CodeError): RouteAnsw
   if (error.status === 503 && code === "AUDIT_UNAVAILABLE") return answer(503, "AUDIT_UNAVAILABLE", AW.audit);
   return A.unavailable;
 }
-// ---- the website a setup run asked for: allow or refuse (Code's host-decide) ----------------------------------------------------------------------------------------------------------------------
+// ---- the address a setup run asked for: allow or refuse (Code's host-decide) ----------------------------------------------------------------------------------------------------------------------
 
 /** Code's host name pattern (contracts setup-run.ts HOST_PATTERN): lower case, at least one dot. */
 const HOST_NAME = /^(?=.{3,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const HOST_REQUEST_ID = /^host-[A-Za-z0-9_-]{2,122}$/u;
-/** The sentences Code says for a website decision's fixed refusals (setup-run-routes.ts, setup-approval.ts). A Code message is passed on only when it is exactly one of these. */
+/** The sentences Code says for an address decision's fixed refusals (setup-run-routes.ts, setup-approval.ts). A Code message is passed on only when it is exactly one of these. */
 export const SETUP_HOST_CODE_WORDS: readonly string[] = Object.freeze([
+  // The owner chose "address" (2026-11-24): Code now sends the first two; the "website" sentences are still accepted while a Code on the old words runs beside this Cloud (rollout skew), and are said in the new words.
+  "An address for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.",
+  "That address is not waiting for a decision any more. Open the project's setup again.",
   "A website for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.",
   "That website is not waiting for a decision any more. Open the project's setup again.",
   "Your approval could not be proved just now, so nothing was decided. Try again.",
 ]);
 export const SETUP_HOST_WORDS = Object.freeze({
-  cannotDecide: "A website for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.",
-  notWaiting: "That website is not waiting for a decision any more. Open the project's setup again.",
-  notYet: "Allowing a website isn't available on this Rovara yet.",
+  cannotDecide: "An address for a setup run changes what the project's code can reach, so only a company owner or admin can allow or refuse it.",
+  notWaiting: "That address is not waiting for a decision any more. Open the project's setup again.",
+  notYet: "Allowing an address isn't available on this Rovara yet.",
 });
 export interface HostDecideBody { requestId: string; host: string; outcome: "approve" | "reject"; seen: { revision: number; artifactDigest: string }; reason?: string }
-/** The browser's website decision, strictly: the id Code offered, the host, the answer, the revision and digest the person saw, and an optional reason. Nothing else. */
+/** The browser's address decision, strictly: the id Code offered, the host, the answer, the revision and digest the person saw, and an optional reason. Nothing else. */
 export function hostDecideBody(value: unknown): HostDecideBody | undefined {
   if (!plain(value) || Object.keys(value).some((key) => key !== "requestId" && key !== "host" && key !== "outcome" && key !== "seen" && key !== "reason")) return undefined;
   const seen = value["seen"], reason = value["reason"];
@@ -390,11 +398,11 @@ export function hostDecideBody(value: unknown): HostDecideBody | undefined {
   if (reason !== undefined && !(typeof reason === "string" && reason.length <= 500 && !CONTROL.test(reason))) return undefined;
   return { requestId: value["requestId"], host: value["host"], outcome: value["outcome"], seen: { revision: seen["revision"], artifactDigest: seen["artifactDigest"] }, ...(reason === undefined ? {} : { reason }) };
 }
-/** Code's refusal of a website decision in Cloud's fixed words: a Code sentence only when it is exactly a fixed one (then as this file's copy), else by code and status. Never the browser's or Code's other text. */
+/** Code's refusal of an address decision in Cloud's fixed words: a Code sentence only when it is exactly a fixed one (then as this file's copy), else by code and status. Never the browser's or Code's other text. */
 export function hostRefusal(error: CodeError): RouteAnswer {
   if (isCodeOutcomeUnknown(error)) return { status: error.status, body: error.body };
   const body = plain(error.body) && plain(error.body["error"]) ? error.body["error"] : undefined;
-  const code = body?.["code"], said = typeof body?.["message"] === "string" ? SETUP_HOST_CODE_WORDS.find((words) => words === body["message"]) : undefined;
+  const code = body?.["code"], said = saidOf(SETUP_HOST_CODE_WORDS, body?.["message"]);
   if (error.status === 404) {
     if (code === "NOT_FOUND" && (body?.["message"] === "route not found" || body?.["message"] === "Approving a project's setup isn't available on this install yet.")) return answer(501, "NOT_ON_CODE_YET", SETUP_HOST_WORDS.notYet);
     return A.notFound;

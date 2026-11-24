@@ -17,7 +17,7 @@ export function SetupJournalReadPanel({ project, withRun = true }: { project: st
   </div>
   {withRun && <aside className="g5-side"><h2>This run</h2>
    <ReadState query={run} label="the setup run" shell={() => null}>{data => data.summary === undefined ? null : <Facts>
-    <Fact label="Commands">{data.summary.commandsRun}</Fact><Fact label="Host requests">{data.summary.hostAsks}</Fact>
+    <Fact label="Commands">{data.summary.commandsRun}</Fact><Fact label="Address requests">{data.summary.hostAsks}</Fact>
    </Facts>}</ReadState>
    <p className="g5-unknown-line"><Unknown />Step names and timings can&apos;t be told yet.</p>
   </aside>}

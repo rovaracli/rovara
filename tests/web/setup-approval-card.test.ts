@@ -80,13 +80,13 @@ it("low risk: shows the risk with its reason, the changes, the passed check and 
 
 it("medium and high risk say why in plain words; high names the areas it reaches", async () => {
   expect(riskReason({ risk: "medium", changes: [{ area: "test_mocks", risk: "medium" }] })).toBe(T.why.medium);
-  expect(riskReason({ risk: "high", changes: [{ area: "websites", risk: "high" }, { area: "setup_commands", risk: "low" }, { area: "dev_container", risk: "high" }] })).toBe("It changes allowed websites, the dev container.");
+  expect(riskReason({ risk: "high", changes: [{ area: "websites", risk: "high" }, { area: "setup_commands", risk: "low" }, { area: "dev_container", risk: "high" }] })).toBe("It changes allowed addresses, the dev container.");
   expect(riskReason({ risk: "high", changes: [{ area: "setup_commands", risk: "low" }] })).toBe(T.why.highUnknown);
   const f = mount({ read: view({}, { risk: "high", approver: "admin", changes: [{ area: "websites", risk: "high" }, { area: "setup_commands", risk: "low" }] }) });
   const c = await card();
   expect(c.getAttribute("data-risk")).toBe("high");
   expect(within(c).getByTestId("setup-approval-risk").textContent).toContain("High risk");
-  expect(within(c).getByTestId("setup-approval-risk").textContent).toContain("It changes allowed websites.");
+  expect(within(c).getByTestId("setup-approval-risk").textContent).toContain("It changes allowed addresses.");
   expect(within(c).getByTestId("setup-approval-who").textContent).toBe("A company owner or admin approves high-risk changes.");
   f.close();
 });

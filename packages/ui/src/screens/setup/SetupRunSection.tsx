@@ -15,7 +15,7 @@ import { setupAgentKey, setupAgentRefetch } from "./SetupReview.js";
 import { useHostsStopWords } from "./useHostsStopWords.js";
 
 /**
- * Setup with a run (SH15, behind the `su` switch): Rovara runs the project's own commands in a throw-away sandbox, the page shows what it ran and which websites it asked for, a maintainer can steer it or run a
+ * Setup with a run (SH15, behind the `su` switch): Rovara runs the project's own commands in a throw-away sandbox, the page shows what it ran and which addresses it asked for, a maintainer can steer it or run a
  * command, and "Use this setup" proposes what worked. With the switch off the server answers "not found" and this shows nothing at all.
  */
 export default function SetupRunSection({ project, settingsRevision, onDecided }: { project: string; settingsRevision: number; /** A candidate was approved (the project's settings changed): the page reads the project again. */ onDecided?: () => void }) {
@@ -26,7 +26,7 @@ export default function SetupRunSection({ project, settingsRevision, onDecided }
   const [decided, setDecided] = useState<"approved" | "rejected" | "discarded">();
   const [busy, setBusy] = useState<"start" | "stop">(), [error, setError] = useState<string>(), [requestId, setRequestId] = useState(() => crypto.randomUUID());
   const view = query.data;
-  // The cause of a stop on websites is read from the run's website requests; a failed or missing read is "unknown".
+  // The cause of a stop on addresses is read from the run's address requests; a failed or missing read is "unknown".
   const hostWords = useHostsStopWords(project, view?.stop === "hosts_waiting" && view.status !== "running");
   if (query.isError && query.error instanceof ApiError && (query.error.status === 404 || query.error.code === "INVALID_RESPONSE")) return null;
   if (query.isPending) return null;

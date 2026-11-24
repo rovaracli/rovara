@@ -22,7 +22,7 @@ function TaskPreviewRedirect() {
 /** `/app/projects/<p>/setup` (the address Code's website-ask card opens) lands on the project's checklist (on the project page, where every member can read it), never on the old Setup step. */
 function ProjectSetupRedirect() {
  const { name } = useParams();
- return name === undefined || !/^[a-z][a-z0-9-]{0,62}$/u.test(name) ? <NotFound /> : <Navigate to={{ pathname: "/app/projects/" + encodeURIComponent(name), hash: "#setup-checklist" }} replace />;
+ return name === undefined || !/^[a-z][a-z0-9-]{0,62}$/u.test(name) ? <NotFound /> : <Navigate to={{ pathname: "/app/projects/" + encodeURIComponent(name), search: "?tab=setup" }} replace />;
 }
 function PreviewRedirect({ to }: { to: string }) {
  const location = useLocation();
@@ -44,7 +44,7 @@ export function appRoutes(features: AppNav["features"]): RouteObject[] {
  { path: "previews/inbox", element: <PreviewRedirect to="/app/inbox" /> },
  { path: "projects/:name/browser-testing", lazy: async () => ({ Component: (await import("./screens/setup/browser-testing/BrowserTestingScreen.js")).BrowserTestingScreen }) },
  { path: "projects/:name", lazy: async () => ({ Component: (await import("./screens/project/ProjectScreen.js")).ProjectScreen }) },
- // A website ask's card ("Open the setup", from Code) opens `/app/projects/<p>/setup`: the project's checklist is where the setup run, its journal and its website asks are decided.
+ // An address ask's card ("Open the setup", from Code) opens `/app/projects/<p>/setup`: the project's checklist is where the setup run, its journal and its address asks are decided.
  { path: "projects/:name/setup", element: <ProjectSetupRedirect /> }, { path: "sessions/:id", lazy: async () => ({ Component: (await import("./screens/session/SessionScreen.js")).SessionScreen }) },
  // Retire the preview at the canonical task address.
  { path: "task-preview/:id", element: <TaskPreviewRedirect /> },

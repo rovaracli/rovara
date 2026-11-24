@@ -34,6 +34,7 @@ for (const path of ["design/fonts/inter-latin-400.woff2", "design/fonts/inter-la
  "screens/connect/connect.css",
  // Guided onboarding PR 9: the project setup checklist.
  "screens/setup/checklist.css",
+ "screens/setup-tab/setup-tab.css",
  // Lead 4 W5: the project Wiki tab.
  "screens/project/wiki/wiki.css",
  // L4-D2: the setup approval card.

@@ -14,18 +14,18 @@ import { StatusPill } from "../../design/StatusDot.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { SlackChannelRow } from "../connect/SlackChannelRow.js";
 import { LinearTeamRow } from "../connect/LinearTeamRow.js";
-import { SetupRunRow } from "./SetupRunRow.js";
-import { useSetupReview } from "./SetupReview.js";
-import { WikiChecklistRow } from "./wiki/WikiChecklistRow.js";
+import { useSetupReview, type SetupReviewState } from "./SetupReview.js";
+import { HEADLINE } from "../setup-tab/setup-card.js";
+import { ACTIONS } from "../setup-tab/setup-tab-text.js";
 import { CompanySetupLine } from "./CompanySetupLine.js";
 import { EvalCard } from "./EvalCard.js";
-import { EvalCheckRow } from "./EvalCheckRow.js";
-import { BrowserTestingRow } from "./browser-testing/BrowserTestingRow.js";
 import "./checklist.css";
 
 /** The checklist's own address on the project page (`/app/projects/<p>#setup-checklist`): what every "go to the setup" link points at. */
 export const CHECKLIST_ID = "setup-checklist";
 export const checklistPath = (project: string): string => `/app/projects/${encodeURIComponent(project)}#${CHECKLIST_ID}`;
+/** Where setup is DONE (FABLE-REVIEW 3.1): the project page's Setup tab. Every "go to the setup" link points here. */
+export const setupTabPath = (project: string): string => `/app/projects/${encodeURIComponent(project)}?tab=setup`;
 /** The words and tone each row state shows (design: Done, Needs you, Running, Optional, Failed; plus "Skipped (optional)"). */
 export const ROW_STATE_WORDS: Readonly<Record<SetupRowState, { label: string; tone: "ok" | "wait" | "run" | "idle" | "bad" }>> = Object.freeze({
  done: { label: "Done", tone: "ok" }, needs_you: { label: "Needs you", tone: "wait" }, running: { label: "Running", tone: "run" },
@@ -57,6 +57,16 @@ function AdminNames() {
  return <p data-testid="checklist-ask-admins">Ask your company's admins to finish setup.</p>;
 }
 
+/** The Setup run row, one line (3.1): where setup stands, as the status card says it, and a link to the Setup tab where the work is done. */
+function SetupRunLine({ project, row, review }: { project: string; row: ProjectSetupChecklist["setupRun"]; review: SetupReviewState }) {
+  const words = review.stage === "checking" ? HEADLINE.checking : review.stage === "approve" ? HEADLINE.approve : review.stage === "review" ? HEADLINE.review
+    : row.status === "none" ? HEADLINE.none : row.status === "running" ? HEADLINE.running : row.status === "failed" ? HEADLINE.failed : row.state === "done" ? HEADLINE.verified : HEADLINE.review;
+  return <div data-testid="setup-run-row" data-status={row.status}>
+    <p role="status" data-testid="setup-run-line">{words}.</p>
+    <p><Link className="rv-button" data-testid="setup-run-open" to={setupTabPath(project)}>{ACTIONS.openSetup}</Link></p>
+  </div>;
+}
+
 /** The project's setup checklist. `place` "project": shown on the project page, and nothing once every row is done or skipped. */
 export function ProjectChecklist({ project, place = "project" }: { project: string; place?: "project" | "onboard" }) {
  const api = useSetupChecklistApi(), query = useQueryClient();
@@ -72,9 +82,8 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
  if (status.isError) return <section className="rv-checklist" aria-label="Finish setting up"><p role="status" data-testid="checklist-read-error"><VisibleText text={fixedSetupWords(status.error, "The project's setup couldn't be read just now. Try again.")} /></p><Button onClick={() => { void status.refetch(); }}>Try again</Button></section>;
  const data: ProjectSetupChecklist = status.data;
  const canChange = data.viewer.canSkip, admin = data.viewer.companyRole === "owner" || data.viewer.companyRole === "admin";
- // L4-T2c: a finished checklist whose approved setup has a newer proposal waiting (or being checked) stays, so the proposal can be reviewed where it is named; a rejected one needs no decision, and a person who cannot change the project has nothing to do about one, so they leave with the rest. It is read again every 5 s while its check goes (Code keeps the row Done meanwhile).
- // A finished checklist leaves the project page, but the wiki's controls (Refresh now, the agents switch, Delete, nightly upkeep) stay reachable for the people who may use them (lead 4 W6).
- if (data.progress.percent >= 100 && place === "project" && !(canChange && waitingNewer(data.setupRun))) return canChange ? <><WikiChecklistRow project={project} companyAdmin={admin} alone /><EvalCheckRow project={project} alone /><BrowserTestingRow project={project} alone /></> : null;
+ // A finished checklist leaves the project page. Setup itself does not vanish with it: the Setup tab is always there (status, addresses decided, the log, the extras and the limits).
+ if (data.progress.percent >= 100 && place === "project") return null;
  const refresh = () => { void query.invalidateQueries({ queryKey: setupChecklistKey(project) }); };
  async function skip(row: SetupSkippableRow, skipped: boolean) {
   setBusy(row); setError(undefined);
@@ -109,7 +118,7 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
    </Row>
    {/* L4-T2: Code says the truth: Done only with an approved setup whose check is ready, Needs you while a proposal or a candidate waits or the check failed, Running while the check goes. The review read below is only ever fresher (it is asked again every 5 s while the check goes), so what it says about a waiting setup wins. */}
    <Row name="setupRun" state={review.stage === "none" || hasNewer(runRow) ? runRow.state : review.stage === "checking" ? "running" : "needs_you"} open={open("setupRun") || waitingNewer(runRow) || runRow.state === "running" || runRow.state === "failed" || review.stage !== "none"}>
-    <SetupRunRow project={project} row={runRow} onChanged={refresh} review={review} />
+    <SetupRunLine project={project} row={runRow} review={review} />
    </Row>
    {/* L4-T5 (owner D9): the AI evals row shows only when the setup run found evals. A finished run that found none leaves nothing to confirm: Code marks the row done by itself, and nothing is shown here. */}
    {!(data.evalConfirm.state === "done" && data.evalConfirm.report === "none") && <Row name="evalConfirm" state={data.evalConfirm.state} open={open("evalConfirm")}>
@@ -124,12 +133,6 @@ export function ProjectChecklist({ project, place = "project" }: { project: stri
     <p data-testid="checklist-ai-needs-you"><strong>{AI_NEEDS_YOU}</strong></p>
     {admin ? <p><Link className="rv-button rv-button-primary" to="/app/admin/agent-ai">Connect an AI</Link></p> : <p className="rv-muted">Ask your company's admins to connect an AI key or choose Rovara's AI.</p>}
    </Row>}
-   {/* Lead 4 W6: the project wiki is one more row here, not a second setup page. It is not counted in the progress above (Code computes that) and is absent while Code has no wiki build. */}
-   <WikiChecklistRow project={project} companyAdmin={admin} />
-   {/* L4-EVCI2: "Eval check from your CI" is one more row, not counted in the progress above (Code computes that) and absent while Code does not serve it. */}
-   <EvalCheckRow project={project} />
-   {/* DEC 417/420/421: "Browser testing" is one more optional row, not counted in the progress above; the page it opens is /app/projects/{p}/browser-testing. */}
-   <BrowserTestingRow project={project} />
    <Row name="slackChannel" state={data.slackChannel.state} open={open("slackChannel")}>
     <SlackChannelRow project={project} mode="checklist" canEdit={canChange} skipped={data.slackChannel.state === "skipped"} {...(canChange ? { onSkip: () => { void skip("slackChannel", true); }, onUndoSkip: () => { void skip("slackChannel", false); } } : {})} />
    </Row>

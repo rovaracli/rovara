@@ -166,7 +166,7 @@ export interface RegistryProblem { code: RegistryProblemCode; registry: string }
 /** Fixed sentences: they name a registry (a name the project chose), never a host's path or a value. */
 export const REGISTRY_PROBLEM_MESSAGES: Readonly<Record<RegistryProblemCode, string>> = {
   edition_kind: "This edition does not support project package registries yet. Public package registries need no entry.",
-  host_not_approved: "The registry's host is not on the project's approved websites. Ask an admin to approve it, then try again.",
+  host_not_approved: "The registry's address is not on the project's allowed addresses. Ask an admin to allow it, then try again.",
   domain_not_bound: "This registry's CodeArtifact domain and repository are not set up for this organization on this install. Ask the install's admin.",
 };
 
@@ -213,7 +213,7 @@ export function hostMatchesDomain(host: string, patterns: readonly string[]): bo
  * Everything that keeps a project's registries from being used on this install, in registry order:
  *  - Public uses none yet: its install is shared by many companies and a CodeArtifact domain is install-wide until a per-org binding exists;
  *  - a CodeArtifact registry must name a domain, account, region AND repository that the install bound to the requesting org (`boundDomains`); another org's domain gets no token;
- *  - the registry's host must be on the project's approved websites (the normal egress approval).
+ *  - the registry's address must be on the project's allowed addresses (the normal egress approval).
  * Fail closed: an install that has no edition on record is held to Public's rule, and a missing org binds nothing.
  */
 export function registryProblems(input: { edition: Edition | undefined; registries: readonly ProjectRegistry[]; allowedDomains: readonly string[]; orgId?: string | undefined; boundDomains?: readonly BoundRegistryDomain[] }): RegistryProblem[] {

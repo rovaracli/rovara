@@ -12,7 +12,7 @@ import { appRoutes } from "./support/legacy-admin-routes.js";
 import { AppHostProvider, type ApiRequest, type ApiResponse } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ThemeProvider } from "../../packages/ui/src/theme.js";
-import { SetupLimitsSection } from "../../packages/ui/src/screens/setup/SetupLimitsSection.js";
+import { LimitsForSetupRun } from "../../packages/ui/src/screens/setup-tab/LimitsForSetupRun.js";
 import { fakeHost } from "./support/fake-host.js";
 import { renderUi } from "./support/render.js";
 import { h } from "./support/h.js";
@@ -27,11 +27,11 @@ describe("the project's setup limits (setup-agent/limits)", () => {
   for (const [name, reply] of CASES) it(`${name}: the card is left out with no alert and no form, and is not asked again on a remount`, async () => {
     const f = fakeHost(async request => (request.path === LIMITS ? reply : { status: 404, body: {} }));
     const query = createQueryClient();
-    const mountIt = () => renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(SetupLimitsSection, { project: "payments" }) }) }) }));
+    const mountIt = () => renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(LimitsForSetupRun, { project: "payments", canChange: true }) }) }) }));
     const first = mountIt();
     await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.path === LIMITS)).toHaveLength(1));
     await waitFor(() => expect(query.getQueryState(["setup-limits", "payments"])?.status).toBe("success"));
-    expect(screen.queryByRole("region", { name: "Setup limits" })).toBeNull();
+    expect(screen.queryByTestId("setup-limits")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
     first.unmount();
@@ -44,8 +44,8 @@ describe("the project's setup limits (setup-agent/limits)", () => {
   it("any OTHER failure still says it could not load (with Try again): only 'not served' is calm", async () => {
     const f = fakeHost(async request => (request.path === LIMITS ? { status: 503, body: { error: { code: "RUNTIME_UNAVAILABLE", message: "x" } } } : { status: 404, body: {} }));
     const query = createQueryClient();
-    renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(SetupLimitsSection, { project: "payments" }) }) }) }));
-    expect((await screen.findByRole("alert")).textContent).toContain("Couldn't load the setup limits");
+    renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: h(MemoryRouter, { children: h(LimitsForSetupRun, { project: "payments", canChange: true }) }) }) }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Rovara couldn't read this project's limits");
   });
 });
 

@@ -2,7 +2,7 @@
 // read, never from a saved wizard position. It is absent while Code does not serve the page, or for a person who has no access to it. It says where to go; every change is made on the page.
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
-import { browserTestingKey, useBrowserTestingApi } from "../../../api/browser-testing.js";
+import { browserTestingKey, useBrowserTestingApi, type BrowserTestingView } from "../../../api/browser-testing.js";
 import { ApiError } from "../../../api/errors.js";
 import { isAccessEnded, servedReadState } from "../../../api/served-read.js";
 import { Skeleton } from "../../../design/Skeleton.js";
@@ -21,6 +21,22 @@ const pillOf = (state: string, fault: boolean, newer: boolean): { label: string;
   if (state === "check-failed") return { label: BT.chipFailed, tone: "bad" };
   return { label: "Optional", tone: "idle" };
 };
+
+/** The one line a Browser testing read says, by where it stands (the checklist row and the Setup tab's "Also for this project" row both say it). */
+export function browserTestingText(view: BrowserTestingView): string {
+  const newer = view.state === "on" && (view.candidate !== null || view.newerChange !== null);
+  const approved = view.approved === null ? "" : whenOf(view.approved.approvedAt);
+  const kinds = view.approved?.summary === null || view.approved === null ? [] : kindNames(view.approved.summary.found);
+  if (faulty(view)) return BT.rowFault;
+  if (view.state === "not-set-up") return BT.rowNone;
+  if (view.state === "draft") return BT.rowDraft;
+  if (view.state === "checking") return BT.rowChecking;
+  if (view.state === "check-failed") return BT.rowFailed;
+  if (view.state === "waiting") return BT.rowChecked(whenOf(view.candidate?.checkedAt));
+  if (view.state === "paused") return BT.rowPaused;
+  if (newer) return view.candidate === null ? BT.rowNewerUnchecked(approved) : BT.rowNewer(approved);
+  return approved === "" ? BT.rowOnNoDate(kinds) : BT.rowOn(approved, kinds);
+}
 
 export function BrowserTestingRow({ project, alone = false }: { project: string; /** On its own (a finished checklist leaves the project page): the row brings its own list. */ alone?: boolean }) {
   const api = useBrowserTestingApi();

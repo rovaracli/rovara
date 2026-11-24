@@ -45,13 +45,13 @@ export async function setWikiSetup(page: Page, project: string, options: { statu
   expect(answer.status()).toBe(200);
 }
 
-/** The wiki row of the project's setup checklist (lead 4 W6): the forecast, Build, progress, the report, the switches and nightly upkeep. */
+/** The wiki panel on the project's Setup tab ("Also for this project", opened with its Open button): the forecast, Build, progress, the report, the switches and nightly upkeep. */
 export class WikiSetupPanel {
   readonly page: Page;
   readonly row: Locator;
   constructor(page: Page) {
     this.page = page;
-    this.row = page.getByTestId("checklist-row-wiki");
+    this.row = page.getByTestId("project-wiki-bare");
   }
   byId(id: string): Locator { return this.row.getByTestId(id); }
   get map(): Locator { return this.byId("wiki-setup-map"); }
@@ -62,8 +62,8 @@ export class WikiSetupPanel {
   get agents(): Locator { return this.row.getByRole("switch", { name: "Give the wiki to agents" }); }
   get upkeep(): Locator { return this.row.getByRole("switch", { name: "Nightly upkeep" }); }
   async open(project: string): Promise<void> {
-    await this.page.goto(ROUTES.project(project));
+    await this.page.goto(`${ROUTES.project(project)}?tab=setup`);
+    await this.page.getByTestId("also-wiki-open").click();
     await expect(this.row).toBeVisible();
-    if ((await this.row.locator("details").first().getAttribute("open")) === null) await this.row.locator("summary").first().click();
   }
 }

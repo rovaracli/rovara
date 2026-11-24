@@ -46,7 +46,7 @@ describe("Rovara's outbound addresses, on Company settings", () => {
     const line = await screen.findByTestId("outbound-addresses");
     expect(line.textContent).toBe("Rovara's outbound addresses: 44.235.136.195, 44.226.134.187. They're shared by all companies on this Rovara, and we give 30 days' notice before they change.");
     expect(EGRESS_NOTICE_DAYS).toBe(30);
-    expect(screen.getByTestId("outbound-addresses-scope").textContent).toBe("These are the addresses the machines that run tasks connect from. A few calls, such as connector and sign-in checks, don't use them yet. Also add your host to the project's allowed websites.");
+    expect(screen.getByTestId("outbound-addresses-scope").textContent).toBe("These are the addresses the machines that run tasks connect from. A few calls, such as connector and sign-in checks, don't use them yet. Also add your server's address to the project's allowed addresses.");
     expect(screen.getByRole("region", { name: "Rovara's outbound addresses" })).toBeTruthy();
     expect(Array.from(line.querySelectorAll("code")).map((node) => node.textContent)).toEqual(ADDRESSES);
     await expectNoAxeViolations(document.body);

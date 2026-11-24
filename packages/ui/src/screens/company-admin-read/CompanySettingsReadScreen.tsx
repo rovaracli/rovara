@@ -21,6 +21,7 @@ import { useCompanyReadScope } from "./ReadEntry.js";
 import { ReadState, readIsStale } from "./ReadState.js";
 import { Chevron, Fact, Facts, ReadSection, Rows, Stamp } from "./parts.js";
 import { companyReadKey, settingsReader, useCompanyRead, type ReadScope } from "./read-model.js";
+import { ALLOWED_LIST_NAME } from "../admin/projects/allowed-list-name.js";
 
 type Rule = { text: string; priority: "required" | "preferred" };
 type Settings = ReturnType<ReturnType<typeof settingsReader>["parse"]>;
@@ -45,7 +46,7 @@ const edited: readonly (readonly [string, string, string])[] = [
  ["Money", "Limits, who pays, the report", "/app/admin/money/budgets"],
  ["People", "People, roles, invites", "/app/admin/people"],
  ["Connections", "GitHub, Slack, Linear, AI provider", "/app/admin/connections"],
- ["Projects", "Project setup, working branches, allowed websites and archiving", "/app/admin/projects"],
+ ["Projects", "Project setup, working branches, allowed addresses and archiving", "/app/admin/projects"],
  ["How we work", "Company defaults for models, locks, learning and design review", "/app/admin/how-we-work"],
 ];
 
@@ -182,7 +183,7 @@ export function CompanySettingsReadScreen() {
     <Facts>
      <Fact label="Who may start work">{settings.start === undefined ? <HeldState /> : settings.start.allow ? "Starting tasks is on for the company. Project access, estimates and other checks still apply." : "New tasks are paused."}</Fact>
      {settings.start !== undefined && <Fact label="Largest estimate without asking">{settings.start.maxEstimateUsd === undefined ? "No limit" : <Money usd={settings.start.maxEstimateUsd} />}</Fact>}
-     <Fact label="Allowed websites">{settings.websites === undefined ? <HeldState /> : settings.websites.mode === "any" ? "Any website. Each project sets its own list." : <ul className="rv-car-hosts">{settings.websites.hosts.map(host => <li key={host}><code><VisibleText text={host} /></code></li>)}</ul>}</Fact>
+     <Fact label={ALLOWED_LIST_NAME}>{settings.websites === undefined ? <HeldState /> : settings.websites.mode === "any" ? "Any address. Each project sets its own list." : <ul className="rv-car-hosts">{settings.websites.hosts.map(host => <li key={host}><code><VisibleText text={host} /></code></li>)}</ul>}</Fact>
     </Facts>
     <RulesEditor key={`${scope.orgId}:${scope.personId}`} settings={settings} actions={actions} offered={pending === undefined && settings.pendingKnown && settings.instructionsKnown} readOnly={pending === undefined || !settings.pendingKnown ? <><h3>Company rules</h3><p className="rv-car-lede">Every task follows these.</p>{rules}</> : null} />
    </section>

@@ -55,7 +55,7 @@ it("F1/R4: a served budget pause uses the pause view without claiming a monthly 
 it("F1/R1: failed project-site evidence mounts the unavailable view and hides blocked-host facts", async () => {
  const f = mount(workspaceFixture({}, { testingNotice: { state: "needs_repair", text: "Setup needs repair" } }));
  await screen.findByRole("tab", { name: "Evidence" });fireEvent.mouseDown(screen.getByRole("tab", { name: "Evidence" }), { button: 0, ctrlKey: false });
- await screen.findByText("Approved-site details unavailable");expect(screen.queryByText("A setup run recorded a blocked host")).toBeNull();f.close();
+ await screen.findByText("Approved-address details unavailable");expect(screen.queryByText("A setup run recorded a blocked address")).toBeNull();f.close();
 });
 it("F1/R6g: restores only this identity's unsent draft and never sends it on arrival", async () => {
  const f = mount(sessionFixture(), true);fireEvent.click(await screen.findByRole("button", { name: "Talk to this session" }));

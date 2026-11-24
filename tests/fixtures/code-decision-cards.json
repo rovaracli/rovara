@@ -1282,15 +1282,15 @@
      "question": "Let the setup of this project reach artifactory.corp.example?",
      "recommended": {
       "action": "approve",
-      "why": "A setup command could not reach this website. Allow it only if you know what it is."
+      "why": "A setup command could not reach this address. Allow it only if you know what it is."
      },
      "next": {
-      "text": "The website is added to this project's list; Rovara staff then approve it before it works."
+      "text": "The address is added to this project's list; Rovara staff then approve it before it works."
      },
      "evidence": [
       {
        "kind": "environment",
-       "label": "Website",
+       "label": "Address",
        "value": "artifactory.corp.example",
        "state": "warning"
       },
@@ -1309,7 +1309,7 @@
      ],
      "risk": "medium",
      "riskReasons": [
-      "Lets this project's machines reach a new website."
+      "Lets this project's machines reach a new address."
      ],
      "friction": {
       "expandEvidenceFirst": true,
@@ -1355,7 +1355,7 @@
      {
       "title": "Why this needs a look",
       "lines": [
-       "Lets this project's machines reach a new website."
+       "Lets this project's machines reach a new address."
       ]
      }
     ]
@@ -2675,15 +2675,15 @@
      "question": "Let the setup of this project reach artifactory.corp.example?",
      "recommended": {
       "action": "approve",
-      "why": "A setup command could not reach this website. Allow it only if you know what it is."
+      "why": "A setup command could not reach this address. Allow it only if you know what it is."
      },
      "next": {
-      "text": "The website is added to this project's list; Rovara staff then approve it before it works."
+      "text": "The address is added to this project's list; Rovara staff then approve it before it works."
      },
      "evidence": [
       {
        "kind": "environment",
-       "label": "Website",
+       "label": "Address",
        "value": "artifactory.corp.example",
        "state": "warning"
       },
@@ -2702,7 +2702,7 @@
      ],
      "risk": "medium",
      "riskReasons": [
-      "Lets this project's machines reach a new website."
+      "Lets this project's machines reach a new address."
      ],
      "friction": {
       "expandEvidenceFirst": true,
@@ -3338,7 +3338,7 @@
      {
       "title": "Why this needs a look",
       "lines": [
-       "Lets this project's machines reach a new website."
+       "Lets this project's machines reach a new address."
       ]
      }
     ],
