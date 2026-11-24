@@ -85,10 +85,10 @@ describe("learning AI key page", () => {
    fireEvent.click(await screen.findByText("Connect company AI", { selector: "summary" }));
    await screen.findByLabelText("Paste the OpenAI key");
    const secret = `sk-proj-${"Q7w".repeat(16)}`;
-   const uploads = screen.getAllByLabelText("Or upload a file that holds the key");
+   const uploads = screen.getAllByLabelText("Upload a file that holds the key");
    expect(uploads).toHaveLength(3);
    fireEvent.change(uploads[1]!, { target: { files: [new File([`  ${secret}\n`], "openai.key", { type: "text/plain" })] } });
-   await screen.findByText(/The key was read from the file/u);
+   await screen.findByText(/Read from the file/u);
    expect(sent).toHaveLength(0);
    expect(screen.getByLabelText("Paste the OpenAI key").getAttribute("type")).toBe("password");
    fireEvent.click(screen.getAllByRole("button", { name: "Connect key" })[1]!);
@@ -103,9 +103,9 @@ describe("learning AI key page", () => {
   try {
    fireEvent.click(await screen.findByText("Connect company AI", { selector: "summary" }));
    await screen.findByLabelText("Paste the OpenAI key");
-   fireEvent.change(screen.getAllByLabelText("Or upload a file that holds the key")[1]!, { target: { files: [new File(["   \n"], "empty.txt", { type: "text/plain" })] } });
+   fireEvent.change(screen.getAllByLabelText("Upload a file that holds the key")[1]!, { target: { files: [new File(["   \n"], "empty.txt", { type: "text/plain" })] } });
    expect(await screen.findByText(/That file is empty/u)).toBeTruthy();
-   fireEvent.change(screen.getAllByLabelText("Or upload a file that holds the key")[1]!, { target: { files: [new File(["x".repeat(5_000)], "big.txt", { type: "text/plain" })] } });
+   fireEvent.change(screen.getAllByLabelText("Upload a file that holds the key")[1]!, { target: { files: [new File(["x".repeat(5_000)], "big.txt", { type: "text/plain" })] } });
    expect(await screen.findByText(/too large to be a key file/u)).toBeTruthy();
    expect(sent).toHaveLength(0);
   } finally { f.close(); }

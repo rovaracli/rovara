@@ -20,7 +20,7 @@ const when = (ms: number) => viewerTime(new Date(ms), { day: "numeric", month: "
 
 export function CompanyKeyConnections() {
  const read = useAdminRead("learning-ai", LEARNING_AI_PATH, reader, { stable: true });
- return <section><p>Company AI keys are write-only. They are never project test keys. Task work can use connected providers; hosted learning and answers currently require Anthropic, with a restricted Rovara fallback for eligible exempt companies.</p>
+ return <section><p className="rv-muted">Agents can use any provider connected here. Hosted learning and answers currently need Anthropic. These keys are never used for your projects' tests.</p>
   {read.isError && isNotConnected(read.error) && read.error instanceof ApiError && read.error.status === 501 ? <AdminSection title="Learning AI key"><NotConnected what="Learning AI keys" /></AdminSection>
    : <ReadSection read={read} label="Company AI keys">{settings => <Settings settings={settings} reload={() => { void read.refetch(); }} />}</ReadSection>}
  </section>;
@@ -41,15 +41,15 @@ function Settings({ settings, reload }: { settings: LearningAiRead; reload: () =
  return <>
   {notice !== undefined && <p role={notice.ok ? "status" : "alert"}><VisibleText text={notice.text} /></p>}
   {change.held && <><p role="alert">{CONNECTION_UNKNOWN}</p><Button disabled={busy} onClick={() => { void change.check(); }}>Check company AI keys</Button></>}
+  <fieldset disabled={busy || change.held} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
+   {settings.listed.map(provider => <Account key={provider} provider={provider} settings={settings} busy={busy} send={send} />)}
+  </fieldset>
   <AdminSection title="Lessons" note={settings.pausedNow.length === 0 ? "No pause reported; model readiness is checked separately" : "Paused"}>
    {settings.learningCap === undefined ? <p>The learning cap isn't readable here.</p>
     : <p>Lessons may spend up to <b><Money usd={settings.learningCap.monthlyUsdMicros / 1_000_000} /></b> a month on learning{settings.learningCap.companyMonthlyUsdMicros === undefined ? "" : <>, inside the company's monthly cap of <Money usd={settings.learningCap.companyMonthlyUsdMicros / 1_000_000} /></>}. Change it in the company's budgets.</p>}
    {settings.pausedNow.length > 0 && <ul data-testid="paused-now">{settings.pausedNow.map(reason => <li key={reason}><VisibleText text={reasons.get(reason) ?? "Lessons are paused."} /></li>)}</ul>}
    <details><summary>Why lessons can be paused</summary><ul>{settings.pauseReasons.map(r => <li key={r.reason}><VisibleText text={r.message} /></li>)}</ul></details>
   </AdminSection>
-  <fieldset disabled={busy || change.held} style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
-   {settings.listed.map(provider => <Account key={provider} provider={provider} settings={settings} busy={busy} send={send} />)}
-  </fieldset>
  </>;
 }
 

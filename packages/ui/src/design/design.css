@@ -15,6 +15,8 @@ button:disabled{cursor:default;opacity:.65}
 .rv-icon-button{min-width:var(--rv-control-size,36px);padding:0 var(--rv-space-2)}
 .rv-field{display:grid;gap:var(--rv-space-2);margin-bottom:var(--rv-space-4);min-width:0}
 .rv-field label{font-weight:600}
+.rv-secret-field{margin:0}.rv-secret-field .rv-field{margin-bottom:var(--rv-space-3)}
+.rv-secret-actions{display:flex;flex-wrap:wrap;align-items:center;gap:var(--rv-space-3)}
 .rv-muted{color:var(--rv-text-muted)}
 .rv-error{color:var(--rv-danger)}
 .rv-input{display:block;width:100%;height:var(--rv-control-size,36px);padding:0 var(--rv-space-3);color:var(--rv-text);background:var(--rv-bg-raised);border:1px solid var(--rv-border-strong);border-radius:var(--rv-radius-sm)}textarea.rv-input{height:auto;padding:var(--rv-space-2) var(--rv-space-3);min-height:120px;resize:vertical}

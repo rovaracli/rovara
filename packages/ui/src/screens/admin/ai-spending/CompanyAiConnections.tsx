@@ -16,7 +16,9 @@ import { UnfencedHost } from "./UnfencedHost.js";
 export function CompanyAiConnect() {
  const endpoint = useAdminRead("agent-connection", AGENT_AI_PATH, { parse: readAgentAi });
  return <UnfencedHost><CompanyKeyConnections />
-   <ReadSection read={endpoint} label="Own endpoint connection">{settings => settings.listed.includes("custom_endpoint") && settings.keysRevision !== null ? <Endpoint key={settings.keysRevision} settings={settings} reload={() => { void endpoint.refetch(); }} /> : <p>Own endpoint connection is not available on this Rovara.</p>}</ReadSection>
+   {/* The own endpoint is listed only where its kind is switched on; elsewhere nothing is drawn (no "not available" line in the dialog). */}
+   {endpoint.data !== undefined && !(endpoint.data.listed.includes("custom_endpoint") && endpoint.data.keysRevision !== null) ? null
+    : <ReadSection read={endpoint} label="Own endpoint connection">{settings => settings.listed.includes("custom_endpoint") && settings.keysRevision !== null ? <Endpoint key={settings.keysRevision} settings={settings} reload={() => { void endpoint.refetch(); }} /> : null}</ReadSection>}
    <BedrockConnection /><p>Own Bedrock uses Claude for agents. <Link to="/app/admin/product-ai">Your app's tests: project AI connections</Link></p>
  </UnfencedHost>;
 }
