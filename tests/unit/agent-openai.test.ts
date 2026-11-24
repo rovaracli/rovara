@@ -34,6 +34,12 @@ const keyOf = (cid: string, provider: string) => ["sk", provider, "company", cid
 const chunk = (value: Json | string) => Buffer.from(`data: ${typeof value === "string" ? value : JSON.stringify(value)}\n\n`);
 const delta = (d: Json, finish: string | null = null) => chunk({ id: "c1", object: "chat.completion.chunk", choices: [{ index: 0, delta: d, finish_reason: finish }] });
 const usage = (extra: Json = {}) => chunk({ id: "c1", object: "chat.completion.chunk", choices: [], usage: { prompt_tokens: 120, completion_tokens: 30, prompt_tokens_details: { cached_tokens: 20 }, ...extra } });
+// OpenRouter's real final usage chunk: ONE choice with a content-free delta that REPEATS the finish reason, plus usage (OpenAI's own has choices: []).
+const usageWithFinish = (finish: string, extra: Json = {}, d: Json = { role: "assistant", content: "" }, withUsage = true) => chunk({
+  id: "c1", object: "chat.completion.chunk",
+  choices: [{ index: 0, delta: d, finish_reason: finish, native_finish_reason: finish }],
+  ...(withUsage ? { usage: { prompt_tokens: 120, completion_tokens: 30, cost: 0.0000867, prompt_tokens_details: { cached_tokens: 0 }, completion_tokens_details: { reasoning_tokens: 12 }, ...extra } } : {}),
+});
 function* toolStream(extra: Json = {}): Generator<Buffer> {
   yield Buffer.from(": OPENROUTER PROCESSING\n\n");
   yield delta({ role: "assistant", content: null });
@@ -48,7 +54,7 @@ function* toolStream(extra: Json = {}): Generator<Buffer> {
 }
 interface Event { type: string; index?: number; content_block?: Json; delta?: Json; usage?: Json; message?: Json }
 const events = (sse: Buffer): Event[] => sse.toString("utf8").split("\n\n").filter(Boolean).map((block) => JSON.parse(block.split("\n").find((l) => l.startsWith("data: "))!.slice(6)) as Event);
-function convert(parts: Iterable<Buffer>, provider: "openai" | "openrouter" = "openai") {
+function convert(parts: Iterable<Buffer>, provider: "openai" | "openrouter" | "endpoint" = "openai") {
   const c = new ChatStreamToSse(provider, MODEL, "msg_test");
   const out: Buffer[] = [];
   for (const part of parts) for (const byte of [part]) out.push(c.push(byte));
@@ -205,11 +211,81 @@ describe("Chat Completions stream to Anthropic SSE", () => {
     ["cached above the prompt", [delta({ content: "x" }), delta({}, "stop"), chunk({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1, prompt_tokens_details: { cached_tokens: 2 } } }), chunk("[DONE]")]],
     ["not SSE", [Buffer.from("hello\n\n")]],
     ["broken JSON", [chunk("{oops")]],
-    ["a second finish reason", [delta({ content: "x" }, "stop"), delta({}, "stop"), usage(), chunk("[DONE]")]],
+    // A repeated finish reason is accepted ONLY as the SAME reason, on a chunk with usage, with no content (OpenRouter's usage chunk); all else is broken.
+    ["a second finish reason on a chunk without usage", [delta({ content: "x" }, "stop"), delta({}, "stop"), usage(), chunk("[DONE]")]],
+    ["a repeated finish reason without usage (even before a usage chunk)", [delta({ content: "x" }, "stop"), usageWithFinish("stop", {}, { content: "" }, false), usage(), chunk("[DONE]")]],
+    ["a second, different finish reason on the usage chunk", [delta({ content: "x" }, "stop"), usageWithFinish("tool_calls"), chunk("[DONE]")]],
+    ["a repeated finish reason whose delta carries text", [delta({ content: "x" }, "stop"), usageWithFinish("stop", {}, { content: "y" }), chunk("[DONE]")]],
+    ["a repeated finish reason whose delta carries a refusal", [delta({ content: "x" }, "stop"), usageWithFinish("stop", {}, { refusal: "no" }), chunk("[DONE]")]],
+    ["a repeated finish reason whose delta carries a tool call", [delta({ content: "x" }, "stop"), usageWithFinish("stop", {}, { tool_calls: [{ index: 0, id: "a", function: { name: "x" } }] }), chunk("[DONE]")]],
+    ["a third finish reason", [delta({ content: "x" }, "stop"), usageWithFinish("stop"), usageWithFinish("stop"), chunk("[DONE]")]],
+    ["a real mid-stream error chunk (error plus finish_reason error)", [delta({ content: "x" }), chunk({ error: { message: "upstream" }, choices: [{ index: 0, delta: { content: "" }, finish_reason: "error" }] }), chunk("[DONE]")]],
     ["a tool call that returns after another started", [delta({ tool_calls: [{ index: 0, id: "a", function: { name: "x" } }] }), delta({ tool_calls: [{ index: 1, id: "b", function: { name: "y" } }] }), delta({ tool_calls: [{ index: 0, function: { arguments: "{}" } }] })]],
   ];
   it.each(broken)("throws on %s (a broken stream, never a partial success)", (_name, parts) => {
     expect(() => convert(parts)).toThrow("unreadable answer");
+  });
+
+  describe("OpenRouter repeats the finish reason on its final usage chunk (accounting, not a second end)", () => {
+    // The shapes use cost 0.0000867 = 87 micros.
+    const tools = (): Buffer[] => [
+      delta({ role: "assistant", content: null }),
+      delta({ tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "ping", arguments: "{}" } }] }),
+      delta({}, "tool_calls"),
+      usageWithFinish("tool_calls"),
+      chunk("[DONE]"),
+    ];
+    it.each(["openrouter", "endpoint"] as const)("settles the whole answer on the %s dialect", (provider) => {
+      const { sse, cost } = convert(tools(), provider);
+      const evs = events(sse);
+      const md = evs.filter((e) => e.type === "message_delta");
+      expect(md).toHaveLength(1);
+      expect(md[0]!.delta).toEqual({ stop_reason: "tool_use", stop_sequence: null });
+      expect(md[0]!.usage).toMatchObject({ input_tokens: 120, output_tokens: 30 });
+      expect(evs.map((e) => e.type).slice(-2)).toEqual(["message_delta", "message_stop"]);
+      expect(evs.filter((e) => e.type === "content_block_start")).toHaveLength(1);
+      if (provider === "openrouter") expect(cost).toBe(87);
+    });
+    it("a text answer ends once at end_turn, and the cost is the reported one (complete)", () => {
+      const c = new ChatStreamToSse("openrouter", ROUTER_MODEL, "msg_t");
+      const out: Buffer[] = [];
+      for (const part of [delta({ role: "assistant", content: "Hi" }), delta({ content: " there" }, "stop"), usageWithFinish("stop"), chunk("[DONE]")]) out.push(c.push(part));
+      out.push(c.finish());
+      const evs = events(Buffer.concat(out));
+      expect(evs.filter((e) => e.type === "message_delta")).toHaveLength(1);
+      expect(evs.find((e) => e.type === "message_delta")!.delta).toEqual({ stop_reason: "end_turn", stop_sequence: null });
+      expect(evs.filter((e) => e.delta?.type === "text_delta").map((e) => e.delta!.text)).toEqual(["Hi", " there"]);
+      expect(c.reportedCost).toBe(87);
+      expect(c.reportedCostComplete).toBe(true);
+    });
+    // REVIEW-OPUS: only a cost at or after the answer's end, with no answer after it, is final (a failed stream may settle at it).
+    it("reportedCostFinal: true for the usage chunk after the finish, false for a cost before or followed by output", () => {
+      const feed = (parts: Buffer[]) => { const c = new ChatStreamToSse("openrouter", ROUTER_MODEL, "msg_f"); for (const p of parts) { try { c.push(p); } catch { break; } } return c; };
+      expect(feed([delta({ content: "Hi" }, "stop"), usageWithFinish("stop")]).reportedCostFinal).toBe(true);
+      expect(feed([delta({ content: "Hi" }, "stop"), usageWithFinish("length")]).reportedCostFinal).toBe(true);
+      expect(feed([delta({ content: "Hi" }), chunk({ choices: [{ index: 0, delta: { content: "!" }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, cost: 0.000001 } })]).reportedCostFinal).toBe(true);
+      expect(feed([usage({ cost: 0.000001 }), delta({ content: "Hi" })]).reportedCostFinal).toBe(false);
+      expect(feed([delta({ content: "Hi" }, "stop"), usage({ cost: 0.000001 }), delta({ content: "more" })]).reportedCostFinal).toBe(false);
+      expect(feed([delta({ content: "Hi" }, "stop"), usageWithFinish("stop", {}, { content: "y" })]).reportedCostFinal).toBe(false);
+      expect(feed([delta({ content: "Hi" })]).reportedCostFinal).toBe(false);
+    });
+    it("a reasoning model: reasoning fields are dropped, the text and the stop remain", () => {
+      const reasoning = { reasoning: "thinking...", reasoning_details: [{ type: "reasoning.text", text: "thinking...", index: 0 }], content: null };
+      const parts = [
+        delta({ role: "assistant", ...reasoning }),
+        delta({ ...reasoning, reasoning: " more" }),
+        delta({ content: "Answer." }),
+        delta({ content: "", reasoning: null }, "stop"),
+        usageWithFinish("stop", {}, { role: "assistant", content: "", reasoning: null, reasoning_details: [] }),
+        chunk("[DONE]"),
+      ];
+      const { sse, cost } = convert(parts, "openrouter");
+      const evs = events(sse);
+      expect(evs.filter((e) => e.delta?.type === "text_delta").map((e) => e.delta!.text)).toEqual(["Answer."]);
+      expect(sse.toString("utf8")).not.toContain("thinking");
+      expect(evs.find((e) => e.type === "message_delta")!.delta).toEqual({ stop_reason: "end_turn", stop_sequence: null });
+      expect(cost).toBe(87);
+    });
   });
 
   it("REVIEW-1 L5: upstream bytes that make no output are bounded too (comments past the cap break the stream)", () => {

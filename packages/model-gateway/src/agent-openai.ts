@@ -212,13 +212,15 @@ export const MAX_UPSTREAM_STREAM_BYTES = 2 * MAX_RESPONSE_BYTES;
 export class ChatStreamToSse {
   readonly #provider: ChatDialect; readonly #model: string; readonly #id: string;
   #pending = ""; #data: string[] = []; #eventBytes = 0; #upstreamBytes = 0;
-  #started = false; #done = false; #finish: string | undefined; #usage: Json | undefined; #cost: number | undefined; #costComplete = false; #costRegressed = false;
+  #started = false; #done = false; #finish: string | undefined; #finishRepeated = false; #usage: Json | undefined; #cost: number | undefined; #costComplete = false; #costRegressed = false; #costLast = false;
   #open: { kind: "text" } | { kind: "tool"; index: number } | undefined; #next = 0;
   readonly #tools = new Map<number, number>();
   readonly #decoder = new TextDecoder("utf-8", { fatal: true });
   constructor(provider: ChatDialect, model: string, id: string) { this.#provider = provider; this.#model = model; this.#id = id; }
   get reportedCost(): number | undefined { return this.#cost; }
   get reportedCostComplete(): boolean { return this.#costComplete; }
+  /** The complete cost arrived at or after the finish reason and no answer followed it: the whole call's money, usable for a stream that broke afterwards. */
+  get reportedCostFinal(): boolean { return this.#costComplete && this.#costLast; }
   push(bytes: Uint8Array): Buffer {
     const out: Buffer[] = [];
     this.#upstreamBytes += bytes.byteLength;
@@ -266,7 +268,10 @@ export class ChatStreamToSse {
     try { chunk = record(JSON.parse(data) as unknown); } catch { throw new Error("unreadable answer"); }
     if (chunk === undefined || chunk.error !== undefined) throw new Error("unreadable answer");
     this.#start(out);
-    if (chunk.usage !== undefined && chunk.usage !== null) {
+    const withUsage = chunk.usage !== undefined && chunk.usage !== null;
+    // A cost read before the answer ended (a partial, cumulative figure) is not the call's money: only a cost at or after the finish reason, with nothing after it.
+    if (withUsage) this.#costLast = this.#finish !== undefined;
+    if (withUsage) {
       if (this.#provider === "openrouter") {
         const complete = parseReportedCost("openrouter", chunk.usage);
         const amount = complete ?? reportedCostFloor(chunk.usage);
@@ -285,6 +290,15 @@ export class ChatStreamToSse {
     }
     const choices = chunk.choices;
     if (choices === undefined || choices === null) return;
+    const outBefore = out.length; const finishBefore = this.#finish;
+    try { this.#choices(chunk, choices, out); } finally {
+      // The last answer chunk may carry the finish reason and the usage together: that cost covers it.
+      if (withUsage && finishBefore === undefined && this.#finish !== undefined) this.#costLast = true;
+      // Answer output on any other chunk after the cost (more text or tool input, even on a chunk that then breaks) makes that cost partial.
+      else if (out.length > outBefore) this.#costLast = false;
+    }
+  }
+  #choices(chunk: Json, choices: unknown, out: Buffer[]): void {
     if (!Array.isArray(choices) || choices.length > 1) throw new Error("unreadable answer");
     const choice = record(choices[0]);
     if (choices.length === 0) return;
@@ -327,8 +341,16 @@ export class ChatStreamToSse {
       }
     }
     if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
-      if (this.#finish !== undefined) throw new Error("unreadable answer");
-      this.#finish = anthropicStopOf(choice.finish_reason);
+      const stop = anthropicStopOf(choice.finish_reason);
+      if (this.#finish === undefined) this.#finish = stop;
+      // OpenRouter repeats the finish reason on its final usage chunk (one choice with a content-free delta): accounting, not a second end.
+      // Only the SAME reason, on a chunk that carries usage, with no content, refusal or tool call in its delta; anything else is still broken.
+      // The repeat is allowed ONCE.
+      else if (this.#finishRepeated || stop !== this.#finish || chunk.usage === undefined || chunk.usage === null
+        || (delta.content !== undefined && delta.content !== null && delta.content !== "")
+        || (delta.refusal !== undefined && delta.refusal !== null && delta.refusal !== "")
+        || (delta.tool_calls !== undefined && delta.tool_calls !== null && (!Array.isArray(delta.tool_calls) || delta.tool_calls.length > 0))) throw new Error("unreadable answer");
+      else this.#finishRepeated = true;
     }
   }
   #end(out: Buffer[]): void {
@@ -375,7 +397,7 @@ export function translatedAnswer(provider: ChatDialect, facts: { model: string; 
   if (facts.streaming) {
     const converter = new ChatStreamToSse(provider, facts.model, id);
     return {
-      status, cancel, reportedCostMicros: () => converter.reportedCost, reportedCostComplete: () => converter.reportedCostComplete,
+      status, cancel, reportedCostMicros: () => converter.reportedCost, reportedCostComplete: () => converter.reportedCostComplete, reportedCostFinal: () => converter.reportedCostFinal,
       body: (async function* () {
         for await (const chunk of raw) { const out = converter.push(chunk); if (out.length > 0) yield out; }
         const last = converter.finish(); if (last.length > 0) yield last;
@@ -384,7 +406,7 @@ export function translatedAnswer(provider: ChatDialect, facts: { model: string; 
   }
   let cost: number | undefined; let costComplete = false;
   return {
-    status, cancel, reportedCostMicros: () => cost, reportedCostComplete: () => costComplete,
+    status, cancel, reportedCostMicros: () => cost, reportedCostComplete: () => costComplete, reportedCostFinal: () => costComplete,
     body: (async function* () {
       const parts: Buffer[] = []; let size = 0;
       for await (const chunk of raw) { size += chunk.byteLength; if (size > MAX_WHOLE_ANSWER) throw new Error("unreadable answer"); parts.push(Buffer.from(chunk)); }
