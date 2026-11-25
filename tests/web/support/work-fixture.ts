@@ -20,7 +20,7 @@ export const TASKS = [
   task(ID.merged, "Add request IDs to eval logs", { status: "SUCCEEDED", workflow: { stage: "MERGED", state: "COMPLETE", revision: 20, path: "STANDARD", outcome: "MERGED" }, pullRequests: [{ repository: "example/web", number: 40, state: "merged" }] }, "MERGED", "COMPLETE", 2000),
 ];
 
-const NO = { expandEvidenceFirst: false, freshSignIn: false, secondPerson: false };
+const NO = { expandEvidenceFirst: false, secondPerson: false };
 const act = (id: string, kind: "approve" | "reject", label: string) => ({ kind, label, href: `/v1/app/decisions/${id.replace(":", "/")}/${kind}`, method: "POST" as const });
 function card(kind: string, taskId: string, patch: Partial<DecisionCard> & { id: string }): DecisionCard {
   return {

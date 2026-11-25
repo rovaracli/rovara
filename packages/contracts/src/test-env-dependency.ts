@@ -319,7 +319,7 @@ export const TestEnvDependenciesSchema = testEnvDependenciesSchemaFor(TEST_ENV_D
 
 // ---- less-safe fields and the approval card's risk (2.2, 2.7)
 
-/** The dependency fields whose change is a less-safe change (a second person and a fresh sign-in), added to the environment's own list (`TEST_ENV_LESS_SAFE_FIELDS`) when the body is wired. */
+/** The dependency fields whose change is a less-safe change (a second person), added to the environment's own list (`TEST_ENV_LESS_SAFE_FIELDS`) when the body is wired. */
 export const TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS = ["test_account", "project_image", "substitute_image", "schema_synth", "none_excluded_tests", "dependency_seed", "run_cap_raised"] as const;
 export type TestEnvDependencyLessSafeField = (typeof TEST_ENV_DEPENDENCY_LESS_SAFE_FIELDS)[number];
 

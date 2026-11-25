@@ -179,7 +179,7 @@ it("Mark all as read preserves every fifty-id batch after the preceding batch ch
 });
 
 for (const route of ["/app/live", "/app/previews/work"]) for (const merging of [false, true]) it(`confirmation-page parity ${route} merge=${String(merging)}`, async () => {
- const card = merging ? { ...CARDS[1]!, risk: "low" as const, friction: { expandEvidenceFirst: false, freshSignIn: false, secondPerson: false } } : CARDS[0]!;
+ const card = merging ? { ...CARDS[1]!, risk: "low" as const, friction: { expandEvidenceFirst: false, secondPerson: false } } : CARDS[0]!;
  const confirmUrl = "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa";
  const f = mount(route + "?task=" + card.taskId, "work-all", { status: 200, body: { cardId: card.id, outcome: "needs_confirmation", confirmUrl, ...(merging ? { merging: [{ repositoryId: "repo", number: 42, baseBranch: "main" }] } : {}) } }, replies => { replies["/v1/app/decisions"] = { status: 200, body: decisionsView([card]) }; });
  fireEvent.click(await screen.findByRole("button", { name: merging ? "Merge" : "Approve plan v1" }));
@@ -189,7 +189,7 @@ for (const route of ["/app/live", "/app/previews/work"]) for (const merging of [
 });
 // A 202 needs_confirmation passes through to the live handler with its request id (controller Opus F1 on Work+Inbox, PASS 8d8c364c4): the merge prompt or the confirm link shows, the lock stays.
 for (const route of ["/app/live", "/app/previews/work"]) for (const merging of [false, true]) it(`202 confirmation parity ${route} merge=${String(merging)}`, async () => {
- const card = merging ? { ...CARDS[1]!, risk: "low" as const, friction: { expandEvidenceFirst: false, freshSignIn: false, secondPerson: false } } : CARDS[0]!;
+ const card = merging ? { ...CARDS[1]!, risk: "low" as const, friction: { expandEvidenceFirst: false, secondPerson: false } } : CARDS[0]!;
  const confirmUrl = "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa";
  const f = mount(route + "?task=" + card.taskId, "work-all", { status: 202, body: { cardId: card.id, outcome: "needs_confirmation", confirmUrl, ...(merging ? { merging: [{ repositoryId: "repo", number: 42, baseBranch: "main" }] } : {}) } }, replies => { replies["/v1/app/decisions"] = { status: 200, body: decisionsView([card]) }; });
  fireEvent.click(await screen.findByRole("button", { name: merging ? "Merge" : "Approve plan v1" }));

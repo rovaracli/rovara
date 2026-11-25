@@ -11,7 +11,7 @@ import { messageFixture, sessionFixture, taskFixture } from "./support/session-f
 const card = {
  id: "approve_plan:plan2", kind: "approve_plan", taskId: "11111111-1111-4111-8111-111111111111", project: "payments", title: "Retry failed payments",
  question: "Approve this plan and start the build?", recommended: { action: "approve", why: "Every claim has a planned check." }, next: { text: "The plan is ready to review." }, evidence: [], risk: "low", riskReasons: [],
- friction: { expandEvidenceFirst: false, freshSignIn: false, secondPerson: false }, actions: [
+ friction: { expandEvidenceFirst: false, secondPerson: false }, actions: [
   { kind: "approve", label: "Approve", href: "/v1/app/decisions/approve_plan/plan2/approve", method: "POST" },
   { kind: "open", label: "Open", href: "/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa?decision=approve_plan%3Aplan2", method: "GET" },
  ], rejectReasons: [], status: "pending", createdAt: "2026-11-20T10:00:00.000Z",

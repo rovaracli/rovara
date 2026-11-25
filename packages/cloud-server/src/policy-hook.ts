@@ -1,7 +1,7 @@
 // Contract H-1: keep these constants, claim lists and patterns identical to contracts/shared/policy-hook.v1.json and to Rovara Code's copy (checked by a test in each repo).
 //
 // The policy hook's answering route (migration plan v3.2, section 7.5; decision 214.6). A Rovara Code install asks three questions, each a compact JWS signed
-// with the install's key: may this task start, may this person decide this (fresh sign-in, second person), and what are the company's values. This route
+// with the install's key: may this task start, may this person decide this (second person), and what are the company's values. This route
 // checks the question against the asking install's pinned public keys (never a key address the question names), reads the company's rules, and answers with
 // a compact JWS signed by the hook key through an injected signer. The answer is bound to the request id, the question's hash and its kind, and lives at most
 // 300 s. A repeated question (same request id, same text) gets the same answer, so it counts once; the same request id with another text is refused.

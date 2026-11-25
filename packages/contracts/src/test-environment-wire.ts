@@ -327,7 +327,7 @@ export const TestEnvironmentStateSchema = z
         proved: z.boolean(),
         proveSteps: z.array(z.object({ step: z.string().max(40), status: z.enum(["passed", "failed", "skipped"]) }).strict()).max(10),
         /**
-         * What approving it needs. A change that is less safe, or high risk, needs a fresh sign-in from the person who presses Approve; a less-safe one also needs a second person, who
+         * What approving it needs. A change that is less safe, or high risk, needs no recent-sign-in step today (`freshSignIn` is always false, owner DEC 254zzz73); a less-safe one needs a second person, who
          * confirms on the confirmation page (or the one owner of a company with nobody else, by the sole-owner exception).
          */
         needs: z.object({ freshSignIn: z.boolean(), secondPerson: z.boolean() }).strict().default({ freshSignIn: false, secondPerson: false }),

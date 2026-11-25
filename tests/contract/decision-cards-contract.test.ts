@@ -11,7 +11,7 @@ const card = (overrides: Record<string, unknown> = {}) => ({
   recommended: { action: "approve", why: "Every requirement has a planned proof." },
   next: { text: "Builds in about 25 minutes, about $2.10, then opens a pull request.", costUsd: 2.1, minutes: 25 },
   evidence: [{ kind: "risk", label: "Risk", value: "low", state: "good" }],
-  risk: "low", riskReasons: [], friction: { expandEvidenceFirst: false, freshSignIn: false, secondPerson: false },
+  risk: "low", riskReasons: [], friction: { expandEvidenceFirst: false, secondPerson: false },
   actions: [action("approve"), action("reject")], rejectReasons: ["wrong_problem", "too_big", "not_now"], status: "pending", createdAt: at,
   ...overrides,
 });
@@ -43,14 +43,15 @@ describe("decision card", () => {
     for (const extra of [{ bulk: true }, { bulkApprove: true }, { approvedBy: "x" }]) expect(ok(card(extra))).toBe(false);
     expect(cards.DecisionCardsResponseSchema.safeParse({ cards: [], total: 0, bulk: true }).success).toBe(false);
   });
-  it("makes friction follow the tier: low one tap, medium evidence first, high fresh sign-in", () => {
-    expect(cards.decisionFriction("low")).toEqual({ expandEvidenceFirst: false, freshSignIn: false, secondPerson: false });
-    expect(cards.decisionFriction("medium")).toEqual({ expandEvidenceFirst: true, freshSignIn: false, secondPerson: false });
-    expect(cards.decisionFriction("high")).toEqual({ expandEvidenceFirst: true, freshSignIn: true, secondPerson: false });
+  it("makes friction follow the tier: low one tap, medium evidence first, high evidence first and no sign-in flag", () => {
+    expect(cards.decisionFriction("low")).toEqual({ expandEvidenceFirst: false, secondPerson: false });
+    expect(cards.decisionFriction("medium")).toEqual({ expandEvidenceFirst: true, secondPerson: false });
+    expect(cards.decisionFriction("high")).toEqual({ expandEvidenceFirst: true, secondPerson: false });
     expect(cards.decisionFriction("high", true).secondPerson).toBe(true);
     expect(cards.decisionFriction("medium", true).secondPerson).toBe(false);
     expect(ok(medium({ friction: cards.decisionFriction("low") }))).toBe(false);
-    expect(ok(high({ friction: cards.decisionFriction("medium") }))).toBe(false);
+    // The tiers differ only by the second-person extra and the evidence step; high carries no sign-in flag, so a high card with the medium friction is the same card.
+    expect(ok(high({ friction: cards.decisionFriction("medium") }))).toBe(true);
     expect(ok(card({ friction: cards.decisionFriction("medium") }))).toBe(false);
     expect(ok(high({ friction: cards.decisionFriction("high", true) }))).toBe(true);
     expect(ok(medium({ friction: { ...cards.decisionFriction("medium"), secondPerson: true } }))).toBe(false);

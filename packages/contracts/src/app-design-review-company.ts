@@ -35,7 +35,7 @@ export const DesignReviewCompanyBodySchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("save"), expectedRevision: z.number().int().min(0), lock: DesignReviewCompanyLockSchema }).strict(),
   /** Allow (waits for a different admin; only the sole owner alone) or do not allow (applies at once). */
   z.object({ action: z.literal("allow"), expectedRevision: z.number().int().min(0), allowed: z.boolean() }).strict(),
-  /** A different admin approves the waiting request (a sign-in within the last 10 minutes). */
+  /** A different admin approves the waiting request (an ordinary signed-in admin session; no recent-sign-in step). */
   z.object({ action: z.literal("approve"), changeId: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/u) }).strict(),
   /** Withdraws the waiting request (its proposer, or any admin). */
   z.object({ action: z.literal("cancel"), changeId: z.string().min(1).max(100).regex(/^[A-Za-z0-9_-]+$/u) }).strict(),

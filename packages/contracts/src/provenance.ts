@@ -66,7 +66,7 @@ export const ProposalConfidenceSchema = z.enum(PROPOSAL_CONFIDENCE);
 
 /**
  * How much a person's say matters for applying one proposed item:
- * `safe` a maintainer may apply it; `needs_admin` an admin (and a fresh sign-in) must; `needs_second_person` a second person must also approve;
+ * `safe` a maintainer may apply it; `needs_admin` an admin must; `needs_second_person` a second person must also approve;
  * `flagged` it is shown and never proposed as a value (for example a `curl ... | sh` line).
  */
 export const PROPOSAL_RISKS = ["safe", "needs_admin", "needs_second_person", "flagged"] as const;

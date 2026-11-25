@@ -30,7 +30,7 @@ type Failure = { message: string };
 
 /**
  * The Linear and Jira people Rovara could not match to a company member by themselves. An admin maps each to a member of this company (or takes a mapping away). The page shows the name the tool showed and
- * the tool's id, never an email. A change needs a sign-in within the last 10 minutes; the page says so and offers to sign in again.
+ * the tool's id, never an email. A change needs an ordinary signed-in admin session (no recent-sign-in step); a signed-out refusal offers to sign in again.
  */
 export function TrackerPeopleScreen() {
   const { orgId, developerId, role } = useAdminContext();

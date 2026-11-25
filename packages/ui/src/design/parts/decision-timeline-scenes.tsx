@@ -19,7 +19,7 @@ const mergeExample = readDecisions(DecisionCardsViewReaderSchema.parse({
    { kind: "review", label: "Second review", value: "A required second review has not happened. Ana can run it.", state: "unknown" },
   ],
   risk: "medium", riskReasons: ["Two required results are missing."],
-  friction: { expandEvidenceFirst: true, freshSignIn: false, secondPerson: false },
+  friction: { expandEvidenceFirst: true, secondPerson: false },
   actions: [], rejectReasons: [], status: "pending", createdAt: "2026-10-30T14:00:00.000Z",
  }], total: 1, tabs: {}, details: {}, digests: { "merge:example42": "a".repeat(64) }, dropped: 0, unconfirmed: [],
 }))[0]!;

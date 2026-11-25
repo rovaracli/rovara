@@ -16,7 +16,7 @@ const limitsText = (setting: LimitSetting): string => SETUP_LIMIT_NAMES.filter(n
 
 /**
  * The company's setup locks (SU-1), for a company admin: whether setup runs are off, the caps on a run's limits, any change that loosens a lock and waits for a DIFFERENT admin (with the time it expires), Approve for that
- * other admin (a sign-in within the last 10 minutes; a refusal for it shows "Sign in again"), and Repair when the stored locks do not read. The server decides who may and what a change is; this row shows its answer and sends one
+ * other admin (an ordinary signed-in admin session; a signed-out refusal shows "Sign in again"), and Repair when the stored locks do not read. The server decides who may and what a change is; this row shows its answer and sends one
  * press. Absent (NOT_FOUND) while the setup agent is off. Loaded lazily with the How we work page.
  */
 export default function SetupLocksRow() {
@@ -58,7 +58,6 @@ export default function SetupLocksRow() {
   <p className="rv-muted">{locks.setupAgentOff ? T.AGENT_OFF_HELP : T.AGENT_ON_HELP}</p>
   <p>{T.CAPS}: {Object.keys(locks.limits).length === 0 ? T.NO_CAPS : limitsText(locks.limits)}</p>
   <p>{T.IMAGES}: {locks.devcontainerImages === null ? T.IMAGES_NONE : <VisibleText text={locks.devcontainerImages.join(", ")} />}</p>
-  <p className="rv-muted">{locks.noSoleOwnerException ? T.SOLE_OWNER_OFF : T.SOLE_OWNER_ON}</p>
   {pending !== undefined && <section aria-label={T.PENDING}><p role="status"><strong>{T.PENDING}</strong></p>
    <p>{T.PENDING_WOULD}: {pending.setupAgentOff ? T.AGENT_OFF : T.AGENT_ON}; {Object.keys(pending.limits).length === 0 ? T.NO_CAPS : limitsText(pending.limits)}.</p>
    <p className="rv-muted">{expiresText(pending.proposedAt)}</p>

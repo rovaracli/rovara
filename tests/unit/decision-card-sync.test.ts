@@ -17,9 +17,9 @@ const view = (name: string): Record<string, unknown> & { cards: Array<Record<str
 describe("Code's decision-card contract copy", () => {
   it("is Code's file, byte for byte (Code 250282ac2)", () => {
     expect(FIXTURE.codeSha).toBe("5b8f7f5046b269af433cf3758d9e9cf48951b4c7");
-    expect(sha("decision-cards")).toBe("3b4531d60fe857777ba087d40392f306d5b9b022990a9b3626711582a2ad8701");
-    expect(sha("decision-card-tabs")).toBe("40efc8ee9b8a14580b2d932496c879340669f6ca7b431f8adf841f995cedbd10");
-    expect(sha("decision-focus")).toBe("7393f3c37f0d26b6106e20c1232ac76d52ad728d1f93272bc6da4d3208a1c832");
+    expect(sha("decision-cards")).toBe("e4ce4ad8730ea3d242de598e3c2af6026649715f0a9517edcb1ea35ff92decd8");
+    expect(sha("decision-card-tabs")).toBe("54207e57d627dfe5af841d207780cdf78c9f2b6e25514c2f6f02474681107fab");
+    expect(sha("decision-focus")).toBe("526fee08b799d9db27a8336dcae0d6892c7fe0524c5eba1473372086ccd33247");
   });
 });
 
@@ -63,6 +63,19 @@ describe("real Code decision cards", () => {
 });
 
 describe("a newer server's extra fields", () => {
+  it("reads a card from an older Code that still sends friction.freshSignIn (removed, owner DEC 254zzz540): the flag is accepted and nothing shows it", () => {
+    for (const [kind, flag] of [["approve_plan", false], ["merge", true]] as const) {
+      const value = view(kind);
+      value.cards[0]!["friction"] = { ...(value.cards[0]!["friction"] as Record<string, unknown>), freshSignIn: flag };
+      const [decision] = readDecisions(DecisionCardsViewReaderSchema.parse(value));
+      expect(decision?.card.id, kind).toBe(value.cards[0]!["id"]);
+      expect(decision?.card.friction.expandEvidenceFirst, kind).toBe((value.cards[0]!["friction"] as Record<string, unknown>)["expandEvidenceFirst"]);
+      // The strict schema (what Code builds with today) has no such flag: only the reader forgives it.
+      expect(DecisionCardsViewSchema.safeParse(value).success, kind).toBe(false);
+    }
+    const fixtureCard = view("merge").cards[0]!;
+    expect(fixtureCard["friction"]).not.toHaveProperty("freshSignIn");
+  });
   it("ignores an unknown field on the view, on a card and on an answer, and reads an unknown card kind as unknown", () => {
     const value = view("approve_plan_with_choices");
     value["newerField"] = { a: 1 };

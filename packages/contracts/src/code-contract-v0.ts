@@ -340,7 +340,7 @@ export interface DecisionCard {
   evidence: DecisionEvidenceChip[];
   risk: DecisionRisk;
   riskReasons: string[];
-  friction: { expandEvidenceFirst: boolean; freshSignIn: boolean; secondPerson: boolean };
+  friction: { expandEvidenceFirst: boolean; secondPerson: boolean; /** Sent only by an older Code (removed, owner DEC 254zzz540): read and ignored. */ freshSignIn?: boolean };
   /** A high-risk card has no approve action; an answered card has none. */
   actions: DecisionCardAction[];
   rejectReasons: string[];

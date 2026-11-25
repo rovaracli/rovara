@@ -1,5 +1,5 @@
 {
- "_about": "Decision card views as Code's own projector builds them (packages/broker/src/core/decisions/project.ts, the route's view assembly in routes.ts) for every card kind, plus plan cards with choices and a run limit, a requirements and design pair with tabs, and a mixed list. Generated from Code origin/code/next 5b8f7f5046b269af433cf3758d9e9cf48951b4c7 (L4-DCS, 2026-11-17). Regenerate when Code's decision-card contract changes.",
+ "_about": "Decision card views as Code's own projector builds them (packages/broker/src/core/decisions/project.ts, the route's view assembly in routes.ts) for every card kind, plus plan cards with choices and a run limit, a requirements and design pair with tabs, and a mixed list. Generated from Code origin/code/next 5b8f7f5046b269af433cf3758d9e9cf48951b4c7 (L4-DCS, 2026-11-17). Regenerate when Code's decision-card contract changes. 2026-11-25: the `friction.freshSignIn` flag was removed from these cards (owner DEC 254zzz540: no merge or card claims a sign-in step it does not enforce), as Code's projector now builds them; `codeSha` still names the earlier Code commit they were generated from.",
  "codeSha": "5b8f7f5046b269af433cf3758d9e9cf48951b4c7",
  "views": {
   "approve_plan": {
@@ -38,7 +38,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -118,7 +117,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -192,7 +190,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -292,7 +289,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -373,7 +369,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -435,7 +430,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -503,7 +497,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -590,7 +583,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -671,7 +663,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -758,7 +749,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -841,7 +831,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": true,
       "secondPerson": true
      },
      "actions": [
@@ -906,7 +895,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -995,7 +983,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -1076,7 +1063,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -1150,7 +1136,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -1224,7 +1209,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -1313,7 +1297,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -1387,7 +1370,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -1463,7 +1445,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -1537,7 +1518,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": true,
       "secondPerson": false
      },
      "actions": [
@@ -1622,7 +1602,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -1778,7 +1757,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -1913,7 +1891,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2016,7 +1993,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2129,7 +2105,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": true,
       "secondPerson": false
      },
      "actions": [
@@ -2185,7 +2160,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": true,
       "secondPerson": true
      },
      "actions": [
@@ -2232,7 +2206,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2298,7 +2271,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2372,7 +2344,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2440,7 +2411,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2506,7 +2476,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2566,7 +2535,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2638,7 +2606,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2706,7 +2673,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": true,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2766,7 +2732,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2807,7 +2772,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2868,7 +2832,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2921,7 +2884,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -2975,7 +2937,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -3035,7 +2996,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -3096,7 +3056,6 @@
      ],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -3156,7 +3115,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -3209,7 +3167,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
@@ -3243,7 +3200,6 @@
      "riskReasons": [],
      "friction": {
       "expandEvidenceFirst": false,
-      "freshSignIn": false,
       "secondPerson": false
      },
      "actions": [
