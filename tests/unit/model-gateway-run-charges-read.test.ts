@@ -14,7 +14,7 @@ import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { StaticInstallRegistry } from "../../packages/model-gateway/src/installs.js";
-import { InMemoryMeter, RUN_CALLS_MAX, type MeterScope } from "../../packages/model-gateway/src/meter.js";
+import { InMemoryMeter, RUN_CALLS_MAX, RUN_INDEX_GRACE_MS, type MeterScope } from "../../packages/model-gateway/src/meter.js";
 import { readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import {
   answerRunCharges, createRunChargesHandler, projectRunReceipt, RUN_CHARGES_AUDIENCE, RUN_CHARGES_PER_MINUTE, RUN_CHARGES_TOKEN_KIND, type RunChargesHandlerOptions,
@@ -40,14 +40,19 @@ function mintRead(changes: Record<string, unknown> = {}, header: Record<string, 
 const verify = () => createSignedTokenVerifier({ registry: new StaticInstallRegistry([{ issuer: ISS, jwksUrl: `${ISS}/.well-known/jwks.json`, taskKids: [kid] }]), readJwks: async () => [jwk], now: () => now }, RUN_CHARGES_TOKEN_KIND);
 
 type Kind = "dynamo" | "memory";
-function world(kind: Kind) {
+const DAY = 86_400_000;
+/** `since`: when indexing of runs began in this environment (the marker). Default: ten days before `now`, so a call made at `now` is long after it. */
+function world(kind: Kind, since = now - 10 * DAY) {
+  let clock = now;
   const wire = new WireDynamo(Object.values(TABLES));
   const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
-  const meter = kind === "dynamo" ? new DynamoMeter({ db, tables: TABLES, now: () => now }) : new InMemoryMeter(() => now);
+  const meter = kind === "dynamo" ? new DynamoMeter({ db, tables: TABLES, now: () => clock }) : new InMemoryMeter(() => clock, () => false, () => undefined, { runIndexSince: since });
+  const ready = kind === "dynamo" ? db.put(TABLES.meter, { pk: "CO#META#run-index", sk: "SINCE", since }) : Promise.resolve(true);
   const reads: string[] = [];
-  const opts: RunChargesHandlerOptions = { verify: verify(), meter: { runCharges: async (scope, op) => { reads.push(`${scope.cid}/${scope.tid}/${op}`); return meter.runCharges(scope, op); } }, now: () => now };
+  const opts: RunChargesHandlerOptions = { verify: verify(), meter: { runCharges: async (scope, op) => { await ready; reads.push(`${scope.cid}/${scope.tid}/${op}`); return meter.runCharges(scope, op); } }, now: () => now };
   /** One call of a run: held with its receipt (as the agent route holds it), then optionally settled. */
-  const call = async (o: { company?: string; task?: string; op: string; reservation?: number; settle?: "final" | "estimated" | "none" | "unreceipted"; reported?: number }) => {
+  const call = async (o: { company?: string; task?: string; op: string; reservation?: number; settle?: "final" | "estimated" | "none" | "unreceipted"; reported?: number; at?: number }) => {
+    await ready; clock = o.at ?? now;
     const company = o.company ?? A, task = o.task ?? "task_1", reservation = o.reservation ?? 500;
     const scope: MeterScope = { iss: ISS, cid: company, pid: "web", tid: task };
     const initial = initialCharge({ ...claims, cid: company, tid: task, op: o.op } as never, { provider: "anthropic", modelId: "claude-sonnet-4-5" }, SOURCE, reservation, now, PRICE);
@@ -80,7 +85,8 @@ describe.each(["dynamo", "memory"] as const)("the answer (%s meter)", (kind) => 
     const got = await get(w.opts, pathOf(A, op));
     expect(got.status).toBe(200);
     const body = got.body as Body;
-    expect(Object.keys(body)).toEqual(["version", "operationId", "seen", "complete", "receipts"]);
+    expect(Object.keys(body)).toEqual(["version", "operationId", "seen", "complete", "indexedSince", "receipts"]);
+    expect(body).toMatchObject({ indexedSince: new Date(now - 10 * DAY).toISOString() });
     expect(body).toMatchObject({ version: 1, operationId: op, seen: true, complete: true });
     expect(body.receipts.map(amountOf).sort((a, b) => a - b)).toEqual([100, 250]);
     // The receipts are what Code's reader requires: this company, this task, this run, USD, an available amount, and each reads by the strict contract reader.
@@ -166,6 +172,55 @@ describe.each(["dynamo", "memory"] as const)("not found is one answer (%s meter)
   });
 });
 
+describe.each(["dynamo", "memory"] as const)("a run that may start before the index did is never complete (%s meter)", (kind) => {
+  const since = now - 2 * DAY;
+  const after = since + RUN_INDEX_GRACE_MS + 60_000;
+  it("calls before and after the marker: never complete, with the reason and the marker's time, even once every call has settled", async () => {
+    const w = world(kind, since); const op = randomUUID();
+    await w.call({ op, reported: 100, at: since - 3_600_000 }); await w.call({ op, reported: 250, at: after + 3_600_000 });
+    const body = (await get(w.opts, pathOf(A, op))).body as Body & { reason?: string; indexedSince: string };
+    expect(body).toMatchObject({ seen: true, complete: false, reason: "started_before_index", indexedSince: new Date(since).toISOString() });
+    expect(body.receipts.map(amountOf).sort((a, b) => a - b)).toEqual([100, 250]);
+  });
+  it("a run fully after the marker (past the grace): complete, no reason", async () => {
+    const w = world(kind, since); const op = randomUUID();
+    await w.call({ op, reported: 100, at: after }); await w.call({ op, reported: 250, at: after + 3_600_000 });
+    const body = (await get(w.opts, pathOf(A, op))).body as Body & { reason?: string; indexedSince: string };
+    expect(body).toMatchObject({ seen: true, complete: true, indexedSince: new Date(since).toISOString() });
+    expect(Object.hasOwn(body, "reason")).toBe(false);
+  });
+  it("the grace is exact: a first call at the marker plus the grace is not complete, one millisecond later is", async () => {
+    const w = world(kind, since);
+    const edge = randomUUID(), past = randomUUID();
+    await w.call({ op: edge, at: since + RUN_INDEX_GRACE_MS }); await w.call({ op: past, at: since + RUN_INDEX_GRACE_MS + 1 });
+    expect(((await get(w.opts, pathOf(A, edge))).body as Body).complete).toBe(false);
+    expect(((await get(w.opts, pathOf(A, past))).body as Body).complete).toBe(true);
+  });
+  it("a run whose first call came at the marker (the very first run after the release) is not complete either", async () => {
+    const w = world(kind, since); const op = randomUUID();
+    await w.call({ op, at: since });
+    expect(((await get(w.opts, pathOf(A, op))).body as Body & { reason?: string }).reason).toBe("started_before_index");
+  });
+});
+
+describe("the index marker (the Dynamo meter)", () => {
+  it("is written once and never moved: a later process reads the first one's time", async () => {
+    const wire = new WireDynamo(Object.values(TABLES));
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    const first = new DynamoMeter({ db, tables: TABLES, now: () => now });
+    const later = new DynamoMeter({ db, tables: TABLES, now: () => now + 5 * DAY });
+    expect(await first.markRunIndex()).toBe(now);
+    expect(await later.markRunIndex()).toBe(now);
+  });
+  it("an environment with no marker gets one the first time a run is read, at that time", async () => {
+    const wire = new WireDynamo(Object.values(TABLES));
+    const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
+    const meter = new DynamoMeter({ db, tables: TABLES, now: () => now });
+    expect(await meter.runCharges({ iss: ISS, cid: A, tid: "task_1" }, randomUUID())).toEqual({ found: false });
+    expect(await meter.markRunIndex()).toBe(now);
+  });
+});
+
 describe("a run that cannot be read whole is a 503, never a smaller figure", () => {
   it.each(["dynamo", "memory"] as const)("a call held with no receipt (%s meter)", async (kind) => {
     const w = world(kind); const op = randomUUID();
@@ -175,12 +230,12 @@ describe("a run that cannot be read whole is a 503, never a smaller figure", () 
   it("a meter that throws, and one that answers a run with no receipts", async () => {
     const w = world("memory"); const op = randomUUID();
     expect(await get({ ...w.opts, meter: { runCharges: async () => { throw new Error("store down"); } } }, pathOf(A, op))).toEqual(UNAVAILABLE);
-    expect(await get({ ...w.opts, meter: { runCharges: async () => ({ found: true, complete: true, receipts: [] }) } }, pathOf(A, op))).toEqual(UNAVAILABLE);
+    expect(await get({ ...w.opts, meter: { runCharges: async () => ({ found: true, complete: true, receipts: [], indexedSince: now, startedBeforeIndex: false }) } }, pathOf(A, op))).toEqual(UNAVAILABLE);
   });
   it("a receipt that does not read as a receipt", async () => {
     const w = world("memory"); const op = randomUUID(); const { final } = await w.call({ op });
     const broken = { ...final!, amountMicros: { state: "unavailable", reason: "unreadable" } } as ChargeReceiptV1;
-    expect(await get({ ...w.opts, meter: { runCharges: async () => ({ found: true, complete: true, receipts: [broken] }) } }, pathOf(A, op))).toEqual(UNAVAILABLE);
+    expect(await get({ ...w.opts, meter: { runCharges: async () => ({ found: true, complete: true, receipts: [broken], indexedSince: now, startedBeforeIndex: false }) } }, pathOf(A, op))).toEqual(UNAVAILABLE);
   });
   it("more calls than the read serves (the Dynamo meter reads 501 index items, then refuses)", async () => {
     const w = world("dynamo"); const op = randomUUID();

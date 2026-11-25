@@ -5,7 +5,7 @@
 //     authorization: Bearer <service token>   typ rovara-service+jwt, aud RUN_CHARGES_AUDIENCE, cid = the company asked about,
 //                                             signed by the install's TASK key (verified exactly as the offered-models and upkeep-cap tokens are: pinned issuer and
 //                                             key ids, RS256, the claims exactly iss/aud/jti/iat/nbf/exp/cid, at most SERVICE_TOKEN_SECONDS of life)
-//   200 exactly {"version":1,"operationId","seen":true,"complete":boolean,"receipts":[ChargeReceiptV1, ...]}      amounts in USD micros (one millionth of a dollar), as every receipt's own `amountMicros`
+//   200 exactly {"version":1,"operationId","seen":true,"complete":boolean,"indexedSince":"<ISO UTC>","reason"?:"started_before_index","receipts":[ChargeReceiptV1, ...]}      amounts in USD micros (one millionth of a dollar), as every receipt's own `amountMicros`
 //       `seen: true` is the gateway's word that it HAS recorded calls for this run (it is on every 200 and only there: "never seen" is the 404). So a reader that takes "complete, no receipts" as a
 //       final $0 can require `seen: true`; this route never answers a 200 with no receipts at all (see below), so that case cannot arise from it.
 //   404 {"error":{"type":"not_found","message":"not found"}}    no record, another company's run, another task's run, an operation id that is not one: ONE answer, so none of them can be told apart
@@ -15,6 +15,9 @@
 // (meter.ts `ReserveInput.run`, dynamo-meter.ts `RUN#`), so a call that holds money is never missing from the run. What `complete` means: NO call of the run holds an open reservation (every call is settled, or is the
 // gateway's own estimate, which is then the receipt's `status`). A run with a call still open (a stream still running, a settle not landed) answers `complete: false`: the receipts are what the gateway holds so far, with an
 // open call's receipt as its hold wrote it (`awaiting_usage`, amount = its reservation), so a reader cannot take the number as final. A receipt that is not `final` is an estimate; Code reads that off each receipt's status.
+// `indexedSince`: when the gateway began recording calls under their run (one marker per environment). Calls held before it are not in any run's record, so a run whose first recorded call is at or before
+// `indexedSince` + RUN_INDEX_GRACE_MS (75 minutes: one call's longest life and the sweep's quarter hour) is answered `complete: false` with `reason: "started_before_index"`: never a final sum. A run that
+// began before `indexedSince` but made its first recorded call later is only the reader's to catch: it must treat an operation that started before `indexedSince` as unknown.
 // There is NEVER a 200 with no receipts: a run with no record is a 404 (a reader that took an empty list as "$0" would book nothing for a run that cost money).
 //
 // Company isolation: the company is the token's `cid`; a path naming another company is refused as an unsigned call (nothing about either company's runs is looked at), and the run is looked up only under the token's
@@ -56,7 +59,7 @@ export interface RunChargesHandlerOptions {
   meter: { runCharges(scope: RunScope, operationId: string): Promise<RunChargesRead> };
   now?: () => number;
 }
-export interface RunChargesAnswer { version: 1; operationId: string; seen: true; complete: boolean; receipts: ChargeReceiptV1[] }
+export interface RunChargesAnswer { version: 1; operationId: string; seen: true; complete: boolean; indexedSince: string; reason?: "started_before_index"; receipts: ChargeReceiptV1[] }
 
 const ANSWERS = {
   busy: { status: 429, body: { error: { type: "busy", message: "too many service calls; try again later" } } },
@@ -110,7 +113,8 @@ export async function answerRunCharges(options: RunChargesHandlerOptions, reques
     const receipts = read.receipts.map(projectRunReceipt);
     for (const receipt of receipts) if (parseChargeReceiptV1(receipt) === undefined || chargeValue(receipt.amountMicros) === undefined) return ANSWERS.unavailable;
     receipts.sort((a, b) => (a.occurredAt < b.occurredAt ? -1 : a.occurredAt > b.occurredAt ? 1 : a.callId < b.callId ? -1 : a.callId > b.callId ? 1 : 0));
-    const answer: RunChargesAnswer = { version: 1, operationId, seen: true, complete: read.complete, receipts };
+    // A run whose record may start before the index did is never complete (a reader would take the sum as final): `reason` says why.
+    const answer: RunChargesAnswer = { version: 1, operationId, seen: true, complete: read.complete && !read.startedBeforeIndex, indexedSince: new Date(read.indexedSince).toISOString(), ...(read.startedBeforeIndex ? { reason: "started_before_index" as const } : {}), receipts };
     return { status: 200, body: answer };
   } catch { return ANSWERS.unavailable; }
 }

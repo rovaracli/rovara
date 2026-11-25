@@ -9,7 +9,7 @@ import { GATEWAY_COMPANY_KEY_PREFIX, GATEWAY_LEDGER_INDEXES, GATEWAY_METER_INDEX
 import { CALL_HARD_CEILING_MS } from "./provider.js";
 import { TransactionRefused, type Dynamo, type Expr, type Item, type Plain, type TransactAction } from "./dynamo.js";
 import type { EndedTasks } from "./ended.js";
-import { checkRunReceipt, RUN_CALLS_MAX, runKeyPrefix, SWEEP_AFTER_MAX_MS, validLine, validRunScope } from "./meter.js";
+import { checkRunReceipt, RUN_CALLS_MAX, runKeyPrefix, startedBeforeIndex, SWEEP_AFTER_MAX_MS, validLine, validRunScope } from "./meter.js";
 import type { BillLine, CorrectionInput, CorrectionResult, EstimatedCall, EstimatedSettlement, ExpiryInput, Meter, MeterItem, MeterRow, MeterScope, Reservation, ReserveInput, ReserveResult, RunChargesRead, RunScope } from "./meter.js";
 import { COMPANY, PERSON, PROJECT, TASK, TASK_TOKEN_SECONDS, record, whole } from "./model-gateway-token.js";
 import type { PendingPage } from "./pending-page.js";
@@ -25,6 +25,7 @@ import { MEDIA_USAGE_KEYS, type TokenUsage } from "./usage.js";
  *                 CO#[iss,cid] / HOLD#<id>       one per reservation: open, then settled (kept, never deleted)
  *                 CO#[iss,cid] / RUN#[task,run]#<id>  one per reservation made for a run (ReserveInput.run), written in the SAME transaction as its hold:
  *                                                the run's calls are the items under one prefix (runCharges). Calls held before this item existed have none.
+ *                 CO#META#run-index / SINCE      one per environment, written once (markRunIndex): when those items began. Its key starts with the company prefix, so the serving role's grant covers it.
  *   ledger table  CO#[iss,cid] / CALL#<id>       one per settled call; an estimated call is "pending" (in both pending
  *                                                indexes) until corrected or expired
  *   markers table CO#[iss,cid] / INFLIGHT        the company's one estimated-price call in flight (expires)
@@ -162,6 +163,8 @@ export class DynamoMeter implements Meter {
   readonly #holds = new WeakMap<object, { pk: string; id: string }>();
   /** Where the next hold sweep resumes (an open-holds index position); undefined: from the oldest. */
   #sweepAfter: string | undefined;
+  /** This process has seen the run-index marker (markRunIndex). */
+  #runIndexMarked = false;
   readonly #combined: { meter: string; markers: string } | undefined;
   constructor(options: DynamoMeterOptions) {
     this.#db = options.db; this.#t = options.tables; this.#now = options.now ?? Date.now; this.#beforeWrite = options.beforeWrite ?? (() => undefined);
@@ -230,6 +233,8 @@ export class DynamoMeter implements Meter {
     if (input.run !== undefined && (!validRunScope(input.scope, input.run.operationId) || (input.charge !== undefined && input.charge.receipt.operationId !== input.run.operationId))) return { ok: false, reason: "busy" };
     // Fail closed: a combined meter without the combined company cap holds nothing.
     if (this.#combined !== undefined && caps.combinedCompanyMonth === undefined) return { ok: false, reason: "busy" };
+    // The environment's "runs are indexed since" marker exists before the first run item does (a failure here never refuses the call: the next reserve, or the first read of a run, writes it).
+    if (input.run !== undefined && !this.#runIndexMarked) { try { await this.markRunIndex(); this.#runIndexMarked = true; } catch { /* retried */ } }
     const now = this.#now();
     if (input.sweepAfter !== undefined && (!whole(input.sweepAfter) || input.sweepAfter > now + SWEEP_AFTER_MAX_MS)) return { ok: false, reason: "busy" };
     // The sweep reads a hold's age from openFrom: a long hold (an eval stage) is not swept before its own end.
@@ -339,10 +344,14 @@ export class DynamoMeter implements Meter {
   async runCharges(scope: RunScope, operationId: string): Promise<RunChargesRead> {
     if (!validRunScope(scope, operationId)) throw new Error("run charges unavailable");
     const pk = companyPartition(scope.iss, scope.cid), low = runKeyPrefix(scope.tid, operationId);
+    const since = await this.markRunIndex();
     const rows = await this.#db.query(this.#t.meter, { limit: RUN_CALLS_MAX + 1, key: (e) => `${e.name("pk")} = ${e.value(pk)} AND ${e.name("sk")} BETWEEN ${e.value(low)} AND ${e.value(`${low.slice(0, -1)}$`)}` });
     if (rows.length === 0) return { found: false };
     if (rows.length > RUN_CALLS_MAX) throw new Error("run charges unavailable");
     const ids = rows.map((row) => { const id = row.callId; if (typeof id !== "string" || !/^[0-9a-f-]{36}$/u.test(id) || row.sk !== `${low}${id}`) throw new Error("run charges unavailable"); return id; });
+    const created = rows.map((row) => row.createdAt);
+    if (!created.every(whole)) throw new Error("run charges unavailable");
+    const first = Math.min(...created);
     let complete = true;
     const receipts: ChargeReceiptV1[] = [];
     for (let at = 0; at < ids.length; at += 8) {
@@ -360,7 +369,19 @@ export class DynamoMeter implements Meter {
         return checkRunReceipt(readSettlementReceipt(call.receipt), scope, operationId, id);
       })));
     }
-    return { found: true, complete, receipts };
+    return { found: true, complete, receipts, indexedSince: since, startedBeforeIndex: startedBeforeIndex(first, since) };
+  }
+
+  /**
+   * When `RUN#` indexing began in this environment: the marker item, written once, by the first reserve for a run (and, failing that, by the first read of a run), never overwritten. A marker that does not
+   * read is unreadable (a throw): a run is never read without knowing from when its record can be trusted.
+   */
+  async markRunIndex(): Promise<number> {
+    const key = { pk: `${GATEWAY_COMPANY_KEY_PREFIX}META#run-index`, sk: "SINCE" };
+    let marker = await this.#db.get(this.#t.meter, key);
+    if (marker === undefined) { await this.#db.put(this.#t.meter, { ...key, since: this.#now() }, (e) => `attribute_not_exists(${e.name("pk")})`); marker = await this.#db.get(this.#t.meter, key); }
+    if (marker === undefined || !whole(marker.since)) throw new Error("run charges unavailable");
+    return marker.since;
   }
 
   /**

@@ -4,6 +4,7 @@ import { chargeValue, chargeReceiptContent, type ApplyChargeResult, type ChargeR
 import { checkReceiptScope, estimatedReceipt, readSettlementReceipt, receiptIdentity, receiptRevision } from "./charge-settlement.js";
 import { comparePosition, pendingPage, type PendingPage, type PendingPosition } from "./pending-page.js";
 import { PENDING_RETENTION_DAYS, DAY_MS, CORRECTION_RUN_MS } from "./price-constants.js";
+import { CALL_HARD_CEILING_MS } from "./provider.js";
 import { hasUsage, validUsage } from "./reported-cost.js";
 import type { TokenUsage } from "./usage.js";
 import type { PriceKind, PriceOrigin } from "./price.js";
@@ -95,7 +96,14 @@ export interface Meter {
 }
 export interface RunScope { iss: string; cid: string; tid: string }
 /** `complete`: no call of the run holds an open reservation. `receipts` has one (the latest revision) per call, an open call's as the hold wrote it (`awaiting_usage`). */
-export type RunChargesRead = { found: false } | { found: true; complete: boolean; receipts: ChargeReceiptV1[] };
+export type RunChargesRead = { found: false } | { found: true; complete: boolean; receipts: ChargeReceiptV1[]; indexedSince: number; startedBeforeIndex: boolean };
+/**
+ * Indexing of a run's holds began at `indexedSince` (epoch ms; a per-environment marker, dynamo-meter.ts `markRunIndex`). A run whose calls from before then are not in the index, so a run whose EARLIEST indexed call is
+ * at or before `indexedSince` plus this much (one call's longest life, CALL_HARD_CEILING_MS, and the sweep's quarter hour; it also covers serving tasks of the older version still draining) may have spent more than it shows:
+ * it is read as `startedBeforeIndex`, never as complete. A run that began earlier and made its first indexed call later is the reader's to catch: it compares the operation's own start with `indexedSince`.
+ */
+export const RUN_INDEX_GRACE_MS = CALL_HARD_CEILING_MS + 15 * 60_000;
+export const startedBeforeIndex = (earliestCallAt: number, indexedSince: number): boolean => earliestCallAt <= indexedSince + RUN_INDEX_GRACE_MS;
 /** The most calls one run's read serves; a run with more is unreadable (a 503), never a partial figure. */
 export const RUN_CALLS_MAX = 500;
 const RUN_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
@@ -143,6 +151,8 @@ function targets(scope: MeterScope, caps: Caps, month: string, combined = false)
   ];
 }
 export interface InMemoryMeterOptions {
+  /** When indexing of runs began (RunChargesRead.indexedSince). Default: when this meter was made. */
+  runIndexSince?: number;
   /** DEC 228c: the agent meter whose company row and overrun marker this (product) meter's holds also take. */
   combineCompanyWith?: InMemoryMeter;
 }
@@ -172,10 +182,12 @@ export class InMemoryMeter implements Meter {
   readonly #adjustments = new Map<string, { receipt: ChargeReceiptV1; deltaMicros: number }>();
   readonly #billed = new Map<string, BilledCall>();
   /** GATEWAY-RUN-CHARGES-ROUTE: the calls held for each run, by JSON [iss, cid, task, run] (the Dynamo meter's `RUN#` items). */
-  readonly #runs = new Map<string, string[]>();
+  readonly #runs = new Map<string, { ids: string[]; first: number }>();
+  readonly #runIndexSince: number;
   constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void> = () => undefined, options: InMemoryMeterOptions = {}) {
     if (options.combineCompanyWith !== undefined && (options.combineCompanyWith === this || options.combineCompanyWith.#partner !== undefined)) throw new Error("meter unavailable");
     this.#partner = options.combineCompanyWith;
+    this.#runIndexSince = options.runIndexSince ?? this.now();
   }
   get combinedCompany(): boolean { return this.#partner !== undefined; }
   /** One overrun-capable call in flight per company across BOTH meters when combined. */
@@ -242,7 +254,7 @@ export class InMemoryMeter implements Meter {
       const reservation = Object.freeze({ id: input.charge?.receipt.callId ?? randomUUID(), ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }) });
       for (const target of items) { const row = this.#row(target, scope); this.#store(target).set(target.key, { ...row, reservedMicros: row.reservedMicros + estimateMicros, committed: row.committed + estimateMicros }); }
       if (expiresSeconds !== undefined) this.#inFlight.set(companyKey, { owner: reservation.id, expiresSeconds });
-      if (input.run !== undefined) { const runKey = JSON.stringify([scope.iss, scope.cid, scope.tid, input.run.operationId]); this.#runs.set(runKey, [...(this.#runs.get(runKey) ?? []), reservation.id]); }
+      if (input.run !== undefined) { const runKey = JSON.stringify([scope.iss, scope.cid, scope.tid, input.run.operationId]); const at = this.#runs.get(runKey); this.#runs.set(runKey, { ids: [...(at?.ids ?? []), reservation.id], first: at?.first ?? this.now() }); }
       if (customerSource !== undefined && sourceKey !== undefined) this.#stops.set(sourceKey, { source: customerSource, stopped: false, ...sourceStop, inFlight: reservation.id });
       this.#open.set(reservation.id, { ...(input.routeClass === undefined ? {} : { routeClass: input.routeClass }), ...(customerSource === undefined ? {} : { customerSource }), ...(input.provisional === undefined ? {} : { provisional: structuredClone(input.provisional) }), ...(input.charge === undefined ? {} : { charge: structuredClone(input.charge) }), month, ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }), scope: { ...scope }, estimate: estimateMicros, targets: items, ...(input.line === undefined ? {} : { line: { ...input.line } }) });
       return { ok: true, reservation };
@@ -294,8 +306,9 @@ export class InMemoryMeter implements Meter {
   }
   async runCharges(scope: RunScope, operationId: string): Promise<RunChargesRead> {
     if (!validRunScope(scope, operationId)) throw new Error("run charges unavailable");
-    const ids = this.#runs.get(JSON.stringify([scope.iss, scope.cid, scope.tid, operationId]));
-    if (ids === undefined || ids.length === 0) return { found: false };
+    const run = this.#runs.get(JSON.stringify([scope.iss, scope.cid, scope.tid, operationId]));
+    if (run === undefined || run.ids.length === 0) return { found: false };
+    const ids = run.ids;
     if (ids.length > RUN_CALLS_MAX) throw new Error("run charges unavailable");
     let complete = true;
     const receipts = ids.map((id) => {
@@ -305,7 +318,7 @@ export class InMemoryMeter implements Meter {
       if (stored === undefined) throw new Error("run charges unavailable");
       return checkRunReceipt(structuredClone(stored.receipt), scope, operationId, id);
     });
-    return { found: true, complete, receipts };
+    return { found: true, complete, receipts, indexedSince: this.#runIndexSince, startedBeforeIndex: startedBeforeIndex(run.first, this.#runIndexSince) };
   }
   async settleV2(input: SettleV2): Promise<void> {
     const r = readSettlementReceipt(input.receipt);
