@@ -205,9 +205,16 @@ function globOverlap(a: string, b: string): boolean {
 
 const list = (value: unknown): unknown[] => (value === undefined ? [] : Array.isArray(value) ? value : [value]);
 
-function statementsOf(doc: unknown, where: string): Statement[] {
+/**
+ * A policy's statements. NotAction and NotResource are not understood by this check and refuse, with one exception: a role's own Deny may use NotResource (the release actions'
+ * "nothing but my own artifact prefix" Deny). Only a role's Allow statements are enumerated as cases and a role's own Deny is never counted, so reading such a Deny cannot hide
+ * a grant; a boundary's statements (`boundary: true`) are all evaluated, so any NotAction/NotResource there still refuses.
+ */
+function statementsOf(doc: unknown, where: string, boundary = false): Statement[] {
   const statements = list((doc as { Statement?: unknown } | undefined)?.Statement) as Statement[];
-  for (const s of statements) if (s.NotAction !== undefined || s.NotResource !== undefined) throw new Error(`${where}: NotAction/NotResource is not supported`);
+  for (const s of statements) {
+    if (s.NotAction !== undefined || (s.NotResource !== undefined && (boundary || s.Effect !== "Deny"))) throw new Error(`${where}: NotAction/NotResource is not supported`);
+  }
   return statements;
 }
 
@@ -268,7 +275,7 @@ function rolesOf(stack: StackTemplate, resolver: Resolver): RoleView[] {
   const resources = stack.template.Resources;
   const boundaries = new Map<string, Statement[]>();
   for (const [id, r] of Object.entries(resources)) {
-    if (id === BOUNDARY_LOGICAL_ID && r.Type === "AWS::IAM::ManagedPolicy" && r.Properties?.Roles === undefined) boundaries.set(id, statementsOf(r.Properties?.PolicyDocument, `${stack.stackName}/${id}`));
+    if (id === BOUNDARY_LOGICAL_ID && r.Type === "AWS::IAM::ManagedPolicy" && r.Properties?.Roles === undefined) boundaries.set(id, statementsOf(r.Properties?.PolicyDocument, `${stack.stackName}/${id}`, true));
   }
   const roles: RoleView[] = [];
   for (const [id, r] of Object.entries(resources)) {
@@ -364,7 +371,7 @@ export function resolvedBoundaries(stacks: readonly StackTemplate[], scope: Chec
       // The boundary: a managed policy attached to nothing (CDK's overflow policies for a large role are attached to their role).
       if (id !== BOUNDARY_LOGICAL_ID || r.Type !== "AWS::IAM::ManagedPolicy" || r.Properties?.Roles !== undefined) continue;
       if (out[stack.stackName] !== undefined) throw new Error(`${stack.stackName} has two boundary policies`);
-      const statements = statementsOf(r.Properties?.PolicyDocument, `${stack.stackName}/${id}`);
+      const statements = statementsOf(r.Properties?.PolicyDocument, `${stack.stackName}/${id}`, true);
       out[stack.stackName] = { Version: "2012-10-17", Statement: statements.map((s) => ({ ...s, Resource: list(s.Resource).map((x) => resolver.resolve(stack, x)), ...(s.Condition === undefined ? {} : { Condition: keepShape(s.Condition, resolveCondition(stack, resolver, s.Condition)!) }) })) };
     }
   }
