@@ -11,6 +11,8 @@ export interface ResolvedRef { tag: string; sha: string; ref: "latest-tag" | "CL
 
 /** The pipeline's default CLOUD_REF (Code's release pipeline passes it with CLOUD_SOURCE_COMMIT = the Cloud source commit of the run). */
 export const FROM_TRIGGER = "from-trigger";
+/** Code's release pipeline documents CLOUD_REF_LATEST = "latest" = the newest release tag on the Cloud trunk: the same as no CLOUD_REF (the newest-tag path below). Never a ref of its own. */
+export const LATEST = "latest";
 const SHA40 = /^[0-9a-f]{40}$/u;
 /** What `from-trigger` reads: the Cloud source commit of the run (CLOUD_SOURCE_COMMIT) and the environment whose last-good record a tagless commit falls back to (Beta). */
 export interface TriggerFacts { sourceCommit: string | null; env: PipelineEnv }
@@ -25,8 +27,10 @@ export function compareTags(a: string, b: string): number {
   return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
 }
 
-export async function resolveCloudRef(ports: Ports, config: PipelineConfig, requested: string | null, trigger: TriggerFacts | null = null): Promise<ResolvedRef> {
+export async function resolveCloudRef(ports: Ports, config: PipelineConfig, requestedRaw: string | null, trigger: TriggerFacts | null = null): Promise<ResolvedRef> {
   const pattern = releaseTagRegex(config);
+  // "latest" and an empty CLOUD_REF mean the newest release tag on the trunk (null), exactly like an unset one. Everything else is as before.
+  const requested = requestedRaw === LATEST || requestedRaw === "" ? null : requestedRaw;
   // CLOUD_REF=from-trigger: decided from the source commit before anything is fetched. A missing or malformed commit is never guessed around.
   if (requested === FROM_TRIGGER) {
     if (trigger === null || trigger.sourceCommit === null || !SHA40.test(trigger.sourceCommit)) throw new StageError("REF_FAILED", `CLOUD_REF=${FROM_TRIGGER} needs CLOUD_SOURCE_COMMIT, the full 40-character commit of the Cloud source: it is missing or malformed, so no release is chosen (name a release tag in CLOUD_REF to start by hand)`);
