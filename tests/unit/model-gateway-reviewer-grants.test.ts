@@ -740,7 +740,7 @@ describe("the deployed process wires the durable store", () => {
     [GATEWAY_ENV.mode]: "serve", AWS_REGION: "us-west-2", [GATEWAY_ENV.port]: "8080",
     [GATEWAY_ENV.installIssuer]: claims.iss, [GATEWAY_ENV.installJwksUrl]: `${claims.iss}/.well-known/jwks.json`, [GATEWAY_ENV.installTaskKids]: kid,
     [GATEWAY_ENV.meterTable]: T.meter, [GATEWAY_ENV.ledgerTable]: T.ledger, [GATEWAY_ENV.markersTable]: T.markers, [GATEWAY_ENV.pricesTable]: T.prices, [GATEWAY_ENV.companyTable]: T.companies,
-    [GATEWAY_ENV.anthropicKeySecret]: "arn:aws:secretsmanager:us-west-2:944937319445:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf",
+    [GATEWAY_ENV.anthropicKeySecret]: "arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf",
   };
   async function serve(wire: WireDynamo, mode: "company" | "install", sent: ProviderRequest[]) {
     const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });

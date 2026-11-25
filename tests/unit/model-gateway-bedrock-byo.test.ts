@@ -20,7 +20,7 @@ const ROLE_A = `arn:aws:iam::111111111111:role/RovaraBedrockInvoke-${A}`;
 const ROLE_B = `arn:aws:iam::222222222222:role/RovaraBedrockInvoke-${B}`;
 const SONNET = "us.anthropic.claude-sonnet-5-5";
 const conn = (over: Record<string, unknown> = {}) => JSON.stringify({ scheme: "assume_role", roleArn: ROLE_A, region: "us-west-2", models: { "claude-sonnet-5-5": SONNET }, allowGlobal: false, ...over });
-const BROKER = "arn:aws:iam::944937319445:role/RovaraBedrockBroker-staging";
+const BROKER = "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging";
 const EXT = `rvb-${"a1".repeat(20)}`;
 
 describe("the connection a company admin sends", () => {

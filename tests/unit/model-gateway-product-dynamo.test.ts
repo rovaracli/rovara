@@ -254,7 +254,7 @@ describe("KMS client (aws-kms.ts): the two calls, bound to the row's encryption 
     const plaintext = randomBytes(32); const wrapped = randomBytes(64);
     let answer: { status: number; body: unknown } = { status: 200, body: { Plaintext: plaintext.toString("base64"), CiphertextBlob: wrapped.toString("base64"), KeyId: "k" } };
     const kms = awsKms({ region: "us-west-2", credentials: creds, transport: async (request) => { requests.push(request); return { status: answer.status, body: Buffer.from(JSON.stringify(answer.body)) }; } });
-    const keyArn = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-000000000000";
+    const keyArn = "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-000000000000";
     const service = kmsProductKeyService(kms, keyArn);
     const context = { purpose: "rovara-product-ai-key", install: ISS, company: A, owner: PROJECT, source: "src_gem", version: "v" };
     const made = await service.generateDataKey(context);

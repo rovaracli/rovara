@@ -88,7 +88,7 @@ describe("the Vertex guide panel", () => {
   expect(screen.getByTestId("vertex-step-1").textContent).toContain(`--account-id="${ACCOUNT_PLACEHOLDER}"`);
  });
  it("the subject Google sees (the whole session ARN) stays within google.subject's 127 characters for the staging role name", () => {
-  const long = { awsAccountId: "944937319445", roleName: "rovara-cloud-staging-gateway-VertexFederationRole-ABCDEFGHIJKL", companyId: company };
+  const long = { awsAccountId: "111122223333", roleName: "rovara-cloud-staging-gateway-VertexFederationRole-ABCDEFGHIJKL", companyId: company };
   expect(vertexGuide({ projectId: "acme-evals", setup: long }).sessionArn.length).toBeLessThanOrEqual(127);
  });
  it("puts only a valid project id into a command: anything else stays a placeholder", () => {

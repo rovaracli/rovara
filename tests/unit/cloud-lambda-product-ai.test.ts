@@ -4,7 +4,7 @@ import { denyNetwork } from "./model-gateway-no-network.js";
 import { beforeAll, describe, expect, it } from "vitest";
 import { productAiStore } from "../../scripts/cloud-lambda.js";
 
-const ENV = { AWS_REGION: "us-west-2", AWS_ACCESS_KEY_ID: "AKIDEXAMPLE", AWS_SECRET_ACCESS_KEY: "test-secret-not-real", CLOUD_PRODUCT_KEYS_TABLE: "gw-product-keys", CLOUD_PRODUCT_KEYS_KEY: "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-000000000000", CLOUD_PRODUCT_KEYS_MAC_KEY: "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-000000000001" };
+const ENV = { AWS_REGION: "us-west-2", AWS_ACCESS_KEY_ID: "AKIDEXAMPLE", AWS_SECRET_ACCESS_KEY: "test-secret-not-real", CLOUD_PRODUCT_KEYS_TABLE: "gw-product-keys", CLOUD_PRODUCT_KEYS_KEY: "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-000000000000", CLOUD_PRODUCT_KEYS_MAC_KEY: "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-000000000001" };
 beforeAll(denyNetwork);
 describe("Cloud's product AI store", () => {
   it("is off unless all three settings are present, and refuses a partial set", () => {

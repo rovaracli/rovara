@@ -101,7 +101,7 @@ describe("AWS wire client", () => {
 });
 
 describe("Secrets Manager provider keys", () => {
-  const ARN = "arn:aws:secretsmanager:us-west-2:944937319445:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf";
+  const ARN = "arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf";
   const claims = {} as never;
   it("reads the key by ARN at run time, caches it briefly, coalesces reads, and never echoes it in an error", async () => {
     let clock = 0; const bodies: Array<{ target: string; body: unknown }> = [];

@@ -16,9 +16,9 @@ import {
 } from "../../packages/model-gateway/src/service-call.js";
 import { A, B, ISS, START, world, write } from "./product-ai-world.js";
 
-const MAC_KEY = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-0000000000aa";
+const MAC_KEY = "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-0000000000aa";
 const GATEWAY = "https://gateway.example.test";
-const BROKER = "arn:aws:iam::944937319445:role/RovaraBedrockBroker-staging";
+const BROKER = "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging";
 const TEMPLATE = "https://docs.rovara.example/bedrock/rovara-bedrock-role.json";
 const ROLE = (cid: string) => `arn:aws:iam::${cid === A ? "111111111111" : "222222222222"}:role/RovaraBedrockInvoke-${cid}`;
 const SONNET = "us.anthropic.claude-sonnet-5-5";
