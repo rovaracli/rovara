@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { discoverGates, mergeGateRecords, runPhase } from "../../ops/pipeline/lib/gates.ts";
 import { gate as integrity } from "../../ops/pipeline/gates/change-set-integrity.gate.ts";
 import { gate as backfill } from "../../ops/pipeline/gates/own-key-backfill.gate.ts";
-import { gate as gitleaks } from "../../ops/pipeline/gates/gitleaks.gate.ts";
+import { gate as gitleaks, configExtras } from "../../ops/pipeline/gates/gitleaks.gate.ts";
+import { readFileSync } from "node:fs";
 import { countRows } from "../../ops/pipeline/lib/changesets.ts";
 import type { ChangeRow, ChangeSetRecord, Gate, GateInput, Manifest, PipelineEnv } from "../../ops/pipeline/types.ts";
 import { CDK_METADATA, EXEC8, EXEC_ID, FAKE_ACCOUNT, MODIFY_FUNCTION, config, makePorts, newState, row, sha } from "./pipeline-stage-fakes.ts";
@@ -131,22 +132,48 @@ describe("pipeline stage CLI: gate own-key-backfill", () => {
   });
 });
 
+const GITLEAKS_CONFIG = '# comment\ntitle = "Rovara Cloud secret scan"\n\n[extend]\nuseDefault = true\n';
+const gitleaksState = (config: string | null = GITLEAKS_CONFIG) => {
+  const state = newState();
+  if (config !== null) state.files["/p/.gitleaks.toml"] = config;
+  return state;
+};
+
 describe("pipeline stage CLI: gate gitleaks", () => {
-  it("scans a clean export of the tracked files, and passes on exit 0", async () => {
-    const state = newState();
+  it("scans a clean export of the tracked files with the pipeline tree's config (--config), and passes on exit 0", async () => {
+    const state = gitleaksState();
     expect((await gitleaks.run(input({ phase: "preflight", state }))).result).toBe("pass");
     expect(state.calls.some((c) => c.startsWith("exec bash -c") && c.includes("git -C") && c.includes("archive"))).toBe(true);
-    expect(state.calls).toContain("exec gitleaks dir --no-banner --redact --exit-code 1 /w/gitleaks-tree");
+    expect(state.calls).toContain("exec gitleaks dir --no-banner --redact --exit-code 1 --config /p/.gitleaks.toml /w/gitleaks-tree");
   });
 
   it("fails when gitleaks finds something, is missing, or the export fails", async () => {
-    const state = newState();
+    const state = gitleaksState();
     state.exec = (cmd) => (cmd === "gitleaks" ? { code: 1, stdout: "", stderr: "1 leaks found" } : { code: 0, stdout: "", stderr: "" });
     expect((await gitleaks.run(input({ phase: "preflight", state }))).failures?.[0]).toMatch(/leaks found/);
     state.exec = (cmd) => (cmd === "gitleaks" ? { code: 127, stdout: "", stderr: "" } : { code: 0, stdout: "", stderr: "" });
     expect((await gitleaks.run(input({ phase: "preflight", state }))).failures?.[0]).toMatch(/not installed/);
     state.exec = (cmd) => (cmd === "bash" ? { code: 1, stdout: "", stderr: "tar failed" } : { code: 0, stdout: "", stderr: "" });
     expect((await gitleaks.run(input({ phase: "preflight", state }))).failures?.[0]).toMatch(/could not export/);
+  });
+
+  it("never scans without its config, and refuses a config with any allow entry (nothing runs)", async () => {
+    const missing = gitleaksState(null);
+    expect((await gitleaks.run(input({ phase: "preflight", state: missing }))).failures?.[0]).toMatch(/config .*\.gitleaks\.toml is missing/);
+    expect(missing.calls.some((c) => c.startsWith("exec gitleaks"))).toBe(false);
+    for (const extra of ['[allowlist]\npaths = ["tests/"]', '[[allowlists]]\nregexes = ["x"]', '[[rules]]\nid = "x"', 'stopwords = ["x"]', "useDefault = false", '[extend]\npath = "other.toml"']) {
+      const state = gitleaksState(`${GITLEAKS_CONFIG}${extra}\n`);
+      const result = await gitleaks.run(input({ phase: "preflight", state }));
+      expect(result.result, extra).toBe("fail");
+      expect(result.failures?.[0], extra).toMatch(/no allowlist or rule change is allowed/);
+      expect(state.calls.some((c) => c.startsWith("exec gitleaks")), extra).toBe(false);
+    }
+  });
+
+  it("the committed .gitleaks.toml of this repository has no allow entry", () => {
+    const text = readFileSync(new URL("../../.gitleaks.toml", import.meta.url), "utf8");
+    expect(configExtras(text)).toEqual([]);
+    expect(text).toMatch(/useDefault = true/);
   });
 });
 

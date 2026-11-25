@@ -115,6 +115,39 @@ describe("gate deployed-drift", () => {
     }
   });
 
+  it("installs the Code workspace packages the contracts import into each tree before its check, with the pipeline tree's helper, the pinned Code sha and no AWS credentials", async () => {
+    const { state } = driftWorld();
+    const seen: Array<{ args: readonly string[]; env: Record<string, string | undefined> | undefined }> = [];
+    const order: string[] = [];
+    const ports = makePorts(state);
+    const inner = makePorts(state);
+    ports.exec = (cmd, args, opts) => {
+      if (cmd === "node") seen.push({ args, env: opts?.env });
+      if (cmd === "node" || (cmd === "npm" && args[0] === "run")) order.push(cmd === "node" ? `link ${args[1]}` : "check");
+      return inner.exec(cmd, args, opts);
+    };
+    expect((await drift.run({ ...input(state, manifest()), ports })).result).toBe("pass");
+    expect(seen.map((s) => s.args)).toEqual([
+      ["/p/scripts/contract-drift/link-code-workspaces.ts", `/w/cloud-deployed-${sha("3").slice(0, 12)}`, "/code", CODE],
+      ["/p/scripts/contract-drift/link-code-workspaces.ts", "/c", "/code", CODE],
+    ]);
+    expect(order).toEqual([`link /w/cloud-deployed-${sha("3").slice(0, 12)}`, "check", "link /c", "check"]);
+    for (const call of seen) for (const name of Object.keys(NO_AWS_ENV)) expect(Object.hasOwn(call.env ?? {}, name) && call.env![name] === undefined, name).toBe(true);
+  });
+
+  it("fails closed when the Code workspace packages cannot be installed: the check does not run and the tree is reported", async () => {
+    const { state, runs } = driftWorld();
+    const real = state.exec;
+    state.exec = (cmd, args) => (cmd === "node" ? fail(1, "", "link-code-workspaces: Code workspace @preplabsai/rovara-code-api (packages/code-api) has no src directory\n") : real(cmd, args));
+    state.dirs.add(`/w/cloud-deployed-${sha("3").slice(0, 12)}`);
+    withDeployedTree(state, sha("3"));
+    const result = await drift.run(input(state, manifest()));
+    expect(result.result).toBe("fail");
+    expect((result.failures ?? []).join("\n")).toMatch(/deployed 333333333: the Code workspace packages that Code's contracts import could not be installed \(exit 1\): link-code-workspaces: Code workspace @preplabsai\/rovara-code-api/);
+    expect((result.failures ?? []).join("\n")).toMatch(/candidate 444444444: the Code workspace packages/);
+    expect(runs).toHaveLength(0);
+  });
+
   it("a deployed commit that cannot be checked out or installed fails closed", async () => {
     const { state } = driftWorld();
     const ports = makePorts(state);

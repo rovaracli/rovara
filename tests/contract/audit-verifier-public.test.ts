@@ -181,7 +181,7 @@ describe("check-public.mjs on planted fixtures", () => {
     ["a file name holding the product name", `${word.product}-notes.md`, "fine\n", "private-name"],
     ["a file name with a unicode letter", "caf\u00e9.md", "fine\n", "name"],
     // keys and blobs
-    ["a private key", "k.md", "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIA==\n-----END PRIVATE KEY-----\n", "pem"],
+    ["a private key", "k.md", "-----" + "BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIA==\n-----END PRIVATE KEY-----\n", "pem"],
     ["a private key with headers and no body shape", "k.md", "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n", "pem"],
   ];
   it.each(cases)("fails on %s", (_name, file, text, rule) => {

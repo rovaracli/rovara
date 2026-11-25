@@ -194,6 +194,21 @@ describe("error codes", () => {
   });
 });
 
+describe("task action refusal codes", () => {
+  it("accepts the four task action codes Code f484578d8 sends, with Code's statuses (a refusal that reaches Cloud must parse)", () => {
+    const expected: Record<string, number> = {
+      TASK_ACTION_NOT_OFFERED: 409,
+      TASK_ACTION_STALE: 409,
+      TASK_ACTION_NEEDS_INPUT: 400,
+      TASK_ACTION_NEEDS_WEB: 403,
+    };
+    for (const [code, status] of Object.entries(expected)) {
+      expect(AgentXErrorCodeSchema.safeParse(code).success, code).toBe(true);
+      expect(errorStatus(AgentXErrorCodeSchema.parse(code)), code).toBe(status);
+    }
+  });
+});
+
 describe("spend placeholder constants", () => {
   it("has the exact names and values", () => {
     expect(spend.RUN_LIMIT_MULTIPLIER).toBe(2);
