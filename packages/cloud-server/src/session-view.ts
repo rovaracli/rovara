@@ -34,7 +34,11 @@ export interface CodeTask {
   [field: string]: unknown;
 }
 
-type SessionStatus = "starting" | "running" | "needs_person" | "stopped" | "succeeded" | "failed" | "cancelled";
+/**
+ * T2 (DECOUPLE plan 9.10): "unknown" is the status of a task whose Code status this Cloud does not know (a newer Code adds one). The session still reads, with its data and no new action:
+ * it is not running (no Stop), not waiting (no card), not ended (no end time); the page shows "Status unavailable". It is never read as failed, so nothing is retried or alarmed on a guess.
+ */
+type SessionStatus = "starting" | "running" | "needs_person" | "stopped" | "succeeded" | "failed" | "cancelled" | "unknown";
 
 /**
  * Whether the task's workflow is still going. Code's task `status` is its worker's LAST RUN (deriveTaskStatus), so between steps (a plan
@@ -63,7 +67,8 @@ export function sessionStatus(task: CodeTask): SessionStatus {
   const statuses: Record<CodeTask["status"], SessionStatus> = {
     STARTING: "starting", RUNNING: "running", SUCCEEDED: "succeeded", FAILED: "failed", INTERRUPTED: "failed", CANCELLED: "cancelled", CLOSED: "stopped",
   };
-  return statuses[task.status];
+  // Object.hasOwn: a status word such as "constructor" must not find a function on the table.
+  return Object.hasOwn(statuses, task.status) ? statuses[task.status] : "unknown";
 }
 
 /** The plan waiting for review on this task: the workflow's revision and the newest plan's digest. Undefined when no plan waits. */
@@ -168,7 +173,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
 }
 
 const STATUS_WORDS: Record<SessionStatus, string> = {
-  starting: "Starting", running: "Running", needs_person: "Waiting for you", stopped: "Stopped", succeeded: "Done", failed: "Failed", cancelled: "Cancelled",
+  starting: "Starting", running: "Running", needs_person: "Waiting for you", stopped: "Stopped", succeeded: "Done", failed: "Failed", cancelled: "Cancelled", unknown: "Status unavailable",
 };
 const STEP_WORDS: Record<string, string> = {
   PLAN: "Planning", PLAN_REVIEW: "Plan review", IMPLEMENT: "Coding", VERIFY: "Checking", REVIEW: "Reviewing", PULL_REQUEST: "Pull request",

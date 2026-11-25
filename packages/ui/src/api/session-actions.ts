@@ -1,5 +1,5 @@
 import { postWithTimeout } from "../safe-action.js";
-import { TaskCloseActionSchema, TaskClosePreviewResponseSchema, SessionBoundCloseBodySchema, type TaskCloseAction, type SessionBoundCloseBody, SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema, PendingConfirmationReaderSchema, PendingAdminApprovalReaderSchema } from "@agentx/contracts/web";
+import { forwardReader, TaskCloseActionSchema, TaskClosePreviewResponseSchema, SessionBoundCloseBodySchema, type TaskCloseAction, type SessionBoundCloseBody, SessionIdSchema, SessionResponseReaderSchema, SessionCloseResponseReaderSchema, SessionFollowResponseReaderSchema, MergeDoneReaderSchema, PendingConfirmationReaderSchema, PendingAdminApprovalReaderSchema } from "@agentx/contracts/web";
 import { z } from "zod";
 import type { AppHost } from "../host.js";
 import { sessionWriteHost } from "./session-safety.js";
@@ -8,11 +8,13 @@ import { createApiClient } from "./client.js";
 
 /** Code's answer to "may I merge this task, and would it merge now?" (DEC 254zzz94), as Cloud's server rebuilt it. */
 const MergeHead = z.object({ repositoryId: z.string().min(1).max(200), number: z.number().int().positive(), headSha: z.string().regex(/^[a-f0-9]{40}$/u) }).strict();
-export const MergeReadinessReader = z.object({
+const MergeReadinessStrict = z.object({
  mayMerge: z.boolean(), ready: z.boolean(), message: z.string().max(400).optional(), risk: z.enum(["low", "medium", "high"]).optional(), heads: z.array(MergeHead).max(32).optional(),
  pullRequests: z.array(z.object({ repositoryId: z.string().min(1).max(200), number: z.number().int().positive(), url: z.string().url().max(2048).optional() }).strict()).max(32),
 }).strict();
-export type MergeReadiness = z.infer<typeof MergeReadinessReader>;
+/** T2: a forward reader. A field a newer Cloud server adds is kept and ignored, and a risk word this page does not know reads as "unknown", which offers no Merge (`pressBound`; the page falls back to GitHub). */
+export const MergeReadinessReader = forwardReader(MergeReadinessStrict);
+export type MergeReadiness = z.output<typeof MergeReadinessReader>;
 export function createSessionActions(host: AppHost) {
  const api = createApiClient(sessionWriteHost(host)), path = (id: string) => "/v1/app/sessions/" + encodeURIComponent(SessionIdSchema.parse(id));
  // Only a structured confirmation may pass through a 202; an outcome-shaped
@@ -25,10 +27,11 @@ export function createSessionActions(host: AppHost) {
  const control = (id: string, action: "stop" | "retry", requestId: string = crypto.randomUUID()) => api.send("POST", path(id) + "/" + action, { requestId }, SessionResponseReaderSchema, { retry: "never" });
  return {
   // DEC 254zzz94: whether this person may merge the task and whether it would merge now (Code re-reads GitHub), and the press itself (one request id is one merge; the website's own client only).
-  mergeReadiness: (id: string) => api.get(path(id) + "/merge", MergeReadinessReader, undefined, { retry: "never" }),
+  // The reader keeps unknown fields; the heads the page holds (and sends back with the press, which the engine reads strictly) are rebuilt with exactly the three fields, so a field a newer server adds never travels back.
+  mergeReadiness: async (id: string): Promise<MergeReadiness> => { const read = await api.get(path(id) + "/merge", MergeReadinessReader, undefined, { retry: "never" }); return read.heads === undefined ? read : { ...read, heads: read.heads.map(({ repositoryId, number, headSha }) => ({ repositoryId, number, headSha })) }; },
   // The strict body Code reads names the heads and the risk the person saw; neither is ever dropped. With either missing nothing is sent.
   merge: (id: string, requestId: string, shown: { expectedHeads: NonNullable<MergeReadiness["heads"]>; risk: NonNullable<MergeReadiness["risk"]> }) => {
-   if (shown.expectedHeads.length === 0 || shown.risk === undefined) throw new Error("A merge is never sent without the heads and the risk the person saw.");
+   if (shown.expectedHeads.length === 0 || shown.risk === undefined || shown.risk === "unknown") throw new Error("A merge is never sent without the heads and the risk the person saw.");
    return postWithTimeout(() => api.send("POST", path(id) + "/merge", { requestId, expectedHeads: shown.expectedHeads, risk: shown.risk }, MergeDoneReaderSchema, { retry: "never" }), 120_000);
   },
   // Understand's questions: `round` and `revision` are the ones the page read, so a stale form is refused by the server (INTENT_NOT_WAITING) rather than answered late.

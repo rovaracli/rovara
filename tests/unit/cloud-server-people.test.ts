@@ -399,14 +399,14 @@ describe("People on a session: people shared with through Code's readers (D8)", 
     }
   });
 
-  it("lists only readers it can read: a reader with a role or id Cloud does not know is left out, with nothing echoed", async () => {
+  it("lists only readers it can read: a reader with an id Cloud does not know is left out, and one with a role it does not know stays as \"unknown\" (T2), with nothing echoed", async () => {
     const { call, ada, code } = await base();
     code.setReaders(TASK_A, [
       { developerId: DAN, name: "Dan", role: "viewer" }, { developerId: CAL, name: "Odd", role: "superuser" }, { developerId: "zz", name: "Short", role: "viewer" },
       { developerId: BEA, name: "", role: "viewer" }, "nope",
     ]);
     const answer = await call("GET", path(""), ada);
-    expect(SessionPeopleResponseSchema.parse(json(answer)).sharedWith).toEqual([{ developerId: DAN, name: "Dan", role: "viewer" }]);
+    expect(json(answer)["sharedWith"]).toEqual([{ developerId: DAN, name: "Dan", role: "viewer" }, { developerId: CAL, name: "Odd", role: "unknown" }]);
     expect(answer.body).not.toContain("superuser");
   });
 
