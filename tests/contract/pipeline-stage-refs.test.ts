@@ -4,7 +4,7 @@ import { cloudAppStackName } from "../../infra/lib/cloud-app.js";
 import { cloudWebStackName } from "../../infra/lib/cloud-web.js";
 import { modelGatewayImagesStackName, modelGatewayStackName } from "../../infra/lib/model-gateway.js";
 import { changeSetNameFor, lastGoodParameter, parseConfig, parseGatePolicy, releaseTagRegex, ssmChecksPrefixFor, ssmPrefixFor, stackName } from "../../ops/pipeline/config.ts";
-import { FROM_TRIGGER, compareTags, decideMode, readLiveCloudSha, resolveCloudRef, tagOfSha } from "../../ops/pipeline/lib/refs.ts";
+import { FROM_TRIGGER, LATEST, compareTags, decideMode, readLiveCloudSha, resolveCloudRef, tagOfSha } from "../../ops/pipeline/lib/refs.ts";
 import { config, liveStack, makePorts, newState, seedLastGood, sha, stackFor } from "./pipeline-stage-fakes.ts";
 import { readFileSync, readdirSync } from "node:fs";
 
@@ -70,6 +70,26 @@ describe("pipeline stage CLI: ref resolution", () => {
     const resolved = await resolveCloudRef(makePorts(state), config, null);
     expect(resolved).toEqual({ tag: "v0.13.10", sha: sha("4"), ref: "latest-tag", trunk: "cloud/next" });
     expect(state.calls).toContain("git fetchTags");
+  });
+
+  it("CLOUD_REF=latest, empty and unset all mean the newest tag on the trunk", async () => {
+    const newest = { tag: "v0.13.10", sha: sha("4"), ref: "latest-tag", trunk: "cloud/next" };
+    expect(LATEST).toBe("latest");
+    for (const requested of ["latest", "", null]) expect(await resolveCloudRef(makePorts(newState()), config, requested)).toEqual(newest);
+    const state = newState();
+    state.tags["v0.13.11"] = sha("8"); // off the trunk: skipped for latest too
+    expect((await resolveCloudRef(makePorts(state), config, "latest")).tag).toBe("v0.13.10");
+  });
+
+  it("only the exact word latest is mapped: other words and spellings are still refused as not a release tag", async () => {
+    for (const bad of ["Latest", "LATEST", "latest ", "newest", "main", "v0.13", "latest-tag"]) {
+      await expect(resolveCloudRef(makePorts(newState()), config, bad), bad).rejects.toThrow(/not a release tag/u);
+    }
+  });
+
+  it("an explicit vX.Y.Z is still checked: it must exist and be on the trunk", async () => {
+    expect(await resolveCloudRef(makePorts(newState()), config, "v0.13.9")).toMatchObject({ tag: "v0.13.9", ref: "CLOUD_REF" });
+    await expect(resolveCloudRef(makePorts(newState()), config, "v9.9.9")).rejects.toThrow(/does not exist/u);
   });
 
   it("skips a newest tag that is not on the trunk", async () => {
@@ -198,8 +218,15 @@ describe("pipeline stage CLI: CLOUD_REF=from-trigger", () => {
     await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("2")))).rejects.toThrow(/v0\.30\.0 is older than v0\.13\.9/u);
   });
 
-  it("the literal `latest` is refused as it is today (only an unset CLOUD_REF means the newest tag)", async () => {
-    await expect(resolveCloudRef(makePorts(world()), config, "latest", trigger(sha("3")))).rejects.toThrow(/not a release tag/u);
+  it("the literal `latest` is not from-trigger: a source commit next to it is ignored, the newest tag on the trunk wins", async () => {
+    expect(await resolveCloudRef(makePorts(world()), config, "latest", trigger(sha("3")))).toEqual({ tag: "v0.13.10", sha: sha("4"), ref: "latest-tag", trunk: "cloud/next" });
+  });
+
+  it("from-trigger still refuses a pushed tag older than the last recorded good one, and the latest rule does not widen it", async () => {
+    const state = world();
+    state.ssm["/rovara-cloud/beta/release/last-good"] = JSON.stringify({ schema: 1, env: "beta", recordedAt: "2026-11-20T00:00:00.000Z", executionId: "e", mode: "release", cloud: { tag: "v0.13.9", sha: sha("3") }, gateway: { digest: "sha256:" + "b".repeat(64) } });
+    await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("2")))).rejects.toThrow(/v0\.13\.2 is older than v0\.13\.9/u);
+    expect((await resolveCloudRef(makePorts(state), config, "latest", trigger(sha("2")))).tag).toBe("v0.13.10");
   });
 });
 

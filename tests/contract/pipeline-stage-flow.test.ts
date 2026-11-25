@@ -746,6 +746,19 @@ describe("pipeline stage CLI: command line and exit codes", () => {
     expect((await run(["beta", "preflight"], { ...env, CLOUD_PROD: "off", CLOUD_REF: "from-trigger" })).code).toBe(0);
   });
 
+  it("CLOUD_REF=latest (and an empty one) on a CLOUD_PROD=off run resolves the newest trunk tag at Beta; with CLOUD_PROD=on it is still refused (the live pipeline's old defaults need CLOUD_PROD=off)", async () => {
+    const env = { ...ctxEnv, CLOUD_SOURCE_COMMIT: sha("3") };
+    for (const ref of ["latest", ""]) {
+      const off = await run(["beta", "preflight"], { ...env, CLOUD_PROD: "off", CLOUD_REF: ref });
+      expect(off.code).toBe(0);
+      expect(off.lines.join("\n")).toMatch(/Cloud ref: v0\.13\.10 .*\(latest-tag, on cloud\/next\)/u);
+    }
+    const on = await run(["beta", "preflight"], { ...env, CLOUD_PROD: "on", CLOUD_REF: "latest" });
+    expect(on.code).toBe(3);
+    expect(on.lines.join("\n")).toMatch(/CLOUD_PROD=on needs CLOUD_REF set to a release tag/u);
+    expect(on.state.calls).toEqual([]);
+  });
+
   it("parses flags, rejects unknown ones and bad values, and prints usage for help", () => {
     expect(parseArgs(["beta", "preflight", "--adopt", "--cloud-ref", "v1.2.3"])).toEqual({ env: "beta", step: "preflight", flags: { adopt: true, "cloud-ref": "v1.2.3" } });
     expect(() => parseArgs(["beta", "preflight", "--nope"])).toThrow(/unknown flag/);
