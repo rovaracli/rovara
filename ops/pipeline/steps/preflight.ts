@@ -8,6 +8,7 @@ import type { StepContext } from "../lib/context.ts";
 import { discardChangeSets, previewChangeSets } from "../lib/changesets.ts";
 import { newStageRecord, stageOf } from "../lib/manifest.ts";
 import { FROM_TRIGGER, decideMode, readLiveCloudSha, resolveCloudRef } from "../lib/refs.ts";
+import { CODE_RELEASE_FROM_TRIGGER, decideCodeRelease } from "../lib/coderelease.ts";
 import { captureRollbackRecord } from "../lib/rollback.ts";
 import { readLastGood } from "../lib/lastgood.ts";
 import { gatePhase, requireManifest } from "../lib/run.ts";
@@ -58,14 +59,17 @@ async function createManifest(ctx: StepContext, state: State): Promise<Manifest>
   const resolved = await resolveCloudRef(ports, config, inputs.cloudRef, { sourceCommit: inputs.cloudSourceCommit, env: ctx.env });
   ctx.log(`Cloud ref: ${resolved.tag} at ${resolved.sha.slice(0, 12)} (${resolved.ref}, on ${resolved.trunk})`);
   const live = await readLiveCloudSha(ports, stackName(config, ctx.env, "web"), stackName(config, ctx.env, "gateway"));
-  const decision = await decideMode(ports, { requested: inputs.codeRelease, resolved, liveSha: live.sha, adopt: inputs.adopt, env: ctx.env, declared: inputs.declaredRollback, codeTarget: inputs.codeTarget });
+  // CODE_RELEASE: typed on a run started by hand, or decided from which source started the run (lib/coderelease.ts); decided before anything is written, and refused when it cannot be.
+  const codeRelease = decideCodeRelease(inputs, resolved);
+  ctx.log(`Code release requested: ${codeRelease.request} (${codeRelease.why})`);
+  const decision = await decideMode(ports, { requested: codeRelease.request, resolved, liveSha: live.sha, adopt: inputs.adopt, env: ctx.env, declared: inputs.declaredRollback, codeTarget: inputs.codeTarget });
   await requireLastGoodUnlessAdoption(ctx, decision.mode);
   const exec8 = inputs.execId.slice(0, 8);
   if (decision.mode === "rollback" && inputs.codeLiveSha === null) throw new StageError("ROLLBACK_REFUSED", `this is a rollback to ${resolved.tag} (the live Cloud is ${live.sha?.slice(0, 9) ?? "unknown"}): a rollback run needs the live Code commit (CODE_CTX live; CODE_LIVE_SHA in a hand-started run) to pin Code`);
   const manifest: Manifest = {
     schema: 1, executionId: inputs.execId, exec8, createdAt: ports.clock.now().toISOString(), mode: decision.mode,
     cloud: { tag: resolved.tag, sha: resolved.sha, ref: resolved.ref, trunk: resolved.trunk, liveSha: { beta: null, production: null } },
-    code: { sha: inputs.codeSha, release: decision.codeRelease, requestedRelease: inputs.codeRelease, pinnedSha: { beta: null, production: null }, supersedes: inputs.supersedes, liveSha: { beta: null, production: null }, rollbackTarget: inputs.codeTarget },
+    code: { sha: inputs.codeSha, release: decision.codeRelease, requestedRelease: codeRelease.request, pinnedSha: { beta: null, production: null }, supersedes: inputs.supersedes, liveSha: { beta: null, production: null }, rollbackTarget: inputs.codeTarget },
     gateway: { digest: null, source: null, imageTag: null, repository: null },
     stages: {},
   };
@@ -74,6 +78,7 @@ async function createManifest(ctx: StepContext, state: State): Promise<Manifest>
   if (decision.mode === "rollback") manifest.code.pinnedSha[ctx.env] = pinFor(inputs);
   const stage = newStageRecord(ctx.env, ports.clock.now(), inputs.dryRun);
   stage.warnings.push(...live.warnings, ...decision.warnings);
+  if (inputs.codeRelease === CODE_RELEASE_FROM_TRIGGER && codeRelease.request === "skip") stage.warnings.push(`Code is not released by this run: ${codeRelease.why}`);
   manifest.stages[ctx.env] = stage;
   state.manifest = manifest;
   return manifest;

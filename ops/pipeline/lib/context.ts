@@ -1,6 +1,7 @@
 // What every step gets: the environment, its settings row, the config, the inputs (flags and env), the ports and a logger.
 import type { PipelineConfig } from "../config.ts";
 import type { SwitchesRow } from "../switches.ts";
+import type { CodeTrigger } from "./codectx.ts";
 import type { Gate, Manifest, PipelineEnv, Ports, StackPart, StepName } from "../types.ts";
 
 export interface Inputs {
@@ -8,7 +9,10 @@ export interface Inputs {
   cloudRef: string | null;
   /** CLOUD_SOURCE_COMMIT: the Cloud source commit of the pipeline run (Beta's Cloud Preflight only); read when CLOUD_REF is `from-trigger`. */
   cloudSourceCommit: string | null;
-  codeRelease: "run" | "skip";
+  /** CODE_RELEASE as given: run or skip (typed on a run started by hand), or `from-trigger` (the pipeline's default, what every triggered run carries): lib/coderelease.ts turns it into run or skip. */
+  codeRelease: "run" | "skip" | "from-trigger";
+  /** CODE_CTX's trigger part (Beta's Preflight in a pipeline run): which source started the run. null = not given. */
+  codeTrigger: CodeTrigger | null;
   cloudProd: boolean;
   codeSha: string | null;
   /** The Code commit this stage runs now: CODE_CTX live in a pipeline run (CODE_LIVE_SHA only in a hand-started one). Read by the Preflight only; later steps read the manifest. */
