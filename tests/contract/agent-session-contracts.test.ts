@@ -459,7 +459,7 @@ describe("the view schemas", () => {
       "money", "owner", "peek", "project", "retryOf", "revision", "sessionId", "startedBy", "status", "step", "title", "updatedAt", "viewingNow", "where", "you",
     ]);
     expect(Object.keys(SessionTileSchema.shape).sort()).toEqual([
-      "agent", "contractVersion", "createdAt", "endedAt", "kind", "level", "money", "owner", "project", "revision", "sessionId", "summary", "title", "updatedAt", "where",
+      "agent", "contractVersion", "createdAt", "endedAt", "kind", "level", "money", "owner", "ownerLeft", "project", "revision", "sessionId", "summary", "title", "updatedAt", "where",
     ]);
     expect(Object.keys(SessionEventSchema.shape).sort()).toEqual(["actor", "at", "eventId", "messageId", "source", "text", "type"]);
   });
@@ -470,6 +470,24 @@ describe("the view schemas", () => {
     const page = { events: [event], next: `${NOW}#${event.eventId}` };
     for (const schema of [SessionEventPageSchema, SessionEventPageReaderSchema]) expect(schema.safeParse(page).success).toBe(true);
     expect(SessionEventPageSchema.safeParse({ events: Array.from({ length: 201 }, () => event) }).success).toBe(false);
+  });
+
+  it("accepts ownerLeft (plain words, 1 to 400 characters) on the view's you and on the tile, and refuses it empty or over 400", () => {
+    const words = "The person who owned this task has left the project.";
+    for (const schema of [SessionViewSchema, SessionViewReaderSchema]) {
+      expect(schema.safeParse({ ...view, you: { ...view.you, ownerLeft: words } }).success).toBe(true);
+      expect(schema.safeParse({ ...view, you: { ...view.you, ownerLeft: "x".repeat(400) } }).success).toBe(true);
+    }
+    for (const schema of [SessionTileSchema, SessionTileReaderSchema]) {
+      expect(schema.safeParse({ ...tile, ownerLeft: words }).success).toBe(true);
+      expect(schema.safeParse({ ...tile, ownerLeft: "x".repeat(400) }).success).toBe(true);
+    }
+    for (const bad of ["", "x".repeat(401)]) {
+      expect(SessionViewSchema.safeParse({ ...view, you: { ...view.you, ownerLeft: bad } }).success).toBe(false);
+      expect(SessionTileSchema.safeParse({ ...tile, ownerLeft: bad }).success).toBe(false);
+    }
+    // ownerLeft is on `you` only: the view's top level stays strict.
+    expect(SessionViewSchema.safeParse({ ...view, ownerLeft: words }).success).toBe(false);
   });
 
   it("reads a newer server's view: unknown values read as unknown, the extra field is kept, and the strict schemas refuse it", () => {

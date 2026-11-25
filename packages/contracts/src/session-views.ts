@@ -70,6 +70,8 @@ export const SessionViewSchema = z
     // `mayMerge`: set (true) only where the level alone would hide Merge from someone the server lets press it: a task's effective project maintainer or an org admin who reads it at `view`.
     // `coOwner`: set (true) only for someone who is not the session's owner but is an owner on the task's People list while review findings wait (they may send back or accept them).
     you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length), mayMerge: z.literal(true).optional(), coOwner: z.literal(true).optional(),
+      /** Set (the words table's `OWNER_LEFT_PROJECT_WORDS`) only where the task's owner no longer holds the task's project and the reader is not the owner. Plain words. */
+      ownerLeft: z.string().min(1).max(400).optional(),
       /** Live buttons: `ask` / `fix` are present (true) only when the install's switch is on AND the reader may use the feature on this session (the routes' own gate). Both absent: the key is left out. */
       live: z.object({ ask: z.literal(true).optional(), fix: z.literal(true).optional() }).strict().optional() }).strict(),
     link: LinkSchema,
@@ -205,6 +207,8 @@ export const SessionTileSchema = z
     createdAt: InstantSchema,
     updatedAt: InstantSchema,
     endedAt: InstantSchema.optional(),
+    /** The words table's `OWNER_LEFT_PROJECT_WORDS`, only where the task's owner no longer holds the task's project and the reader is not the owner. Plain words. */
+    ownerLeft: z.string().min(1).max(400).optional(),
   })
   .strict();
 
