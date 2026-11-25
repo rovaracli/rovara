@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { createApiClient } from "../../packages/ui/src/api/client.js";
 import { ApiError } from "../../packages/ui/src/api/errors.js";
+import { isAccessEnded, partNotShownWords, routeNotServedWords, servedReadState } from "../../packages/ui/src/api/served-read.js";
 import { ReadState } from "../../packages/ui/src/screens/admin/projects/read.js";
 import { ReadSection } from "../../packages/ui/src/screens/admin/models/read.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -121,5 +122,65 @@ describe("shared served-read refresh policy", () => {
    expect(client.getQueryData(key)).toEqual({ details: "Newly read company details" });
    for (const html of markup(observer.getCurrentResult())) { expect(html).toContain("Newly read company details");expect(html).not.toContain("Reconnecting"); }
   } finally { observer.destroy();client.clear(); }
+ });
+ // Code's read rule: a share may read the summary but not this part. The words are Code's own sentence from the response; none is written in Cloud.
+ const codesWords = "The owner shared this task's summary with you. The plan is not shown.";
+ describe("403 TASK_PART_NOT_SHOWN (a part a share is not shown) through the real client and query cache", () => {
+  it("keeps the cached task data and carries Code's own sentence for that tab", async () => {
+   const { client, key, observer } = setup({ status: 403, body: { error: { code: "TASK_PART_NOT_SHOWN", message: codesWords } } }, true);
+   try {
+    await observer.refetch();
+    const read = observer.getCurrentResult();
+    expect(read.error).toMatchObject({ status: 403, code: "TASK_PART_NOT_SHOWN" });
+    expect(client.getQueryData(key)).toEqual(privateData);
+    expect(servedReadState(read).data).toEqual(privateData);
+    expect(partNotShownWords(read.error)).toBe(codesWords);
+    expect(isAccessEnded(read.error)).toBe(false);
+   } finally { observer.destroy();client.clear(); }
+  });
+  it.each([
+   ["a real 403 with a refusal code", { status: 403, body: { error: { code: "FORBIDDEN", message: "No." } } }],
+   ["a 403 with a different Code refusal", { status: 403, body: { error: { code: "TASK_ACCESS_DENIED", message: "No." } } }],
+   ["a 403 with no body", { status: 403, body: undefined }],
+   ["a 403 with another part-shaped code", { status: 403, body: { error: { code: "TASK_PART_NOT_SHOWN_X", message: "No." } } }],
+   ["the part code on a 404 (not a 403)", { status: 404, body: { error: { code: "TASK_PART_NOT_SHOWN", message: "Gone." } } }],
+   ["the part code on a 401", { status: 401, body: { error: { code: "TASK_PART_NOT_SHOWN", message: "Sign in." } } }],
+   ["the part code with an access word beside it", { status: 403, body: { code: "ACCESS_ENDED", error: { code: "TASK_PART_NOT_SHOWN", message: "Ended." } } }],
+  ] as Array<[string, ApiResponse]>)("%s still wipes the cached task data", async (_name, failure) => {
+   const { client, key, observer } = setup(failure, true);
+   try {
+    await observer.refetch();
+    expect(client.getQueryData(key)).toBeUndefined();
+    expect(servedReadState(observer.getCurrentResult()).data).toBeUndefined();
+    expect(partNotShownWords(observer.getCurrentResult().error)).toBeUndefined();
+   } finally { observer.destroy();client.clear(); }
+  });
+ });
+ describe("404 ROUTE_NOT_SERVED (Code does not serve this read yet) through the real client and query cache", () => {
+  it("keeps the cached data and carries Code's own sentence", async () => {
+   const words = "This information is not available yet.";
+   const { client, key, observer } = setup({ status: 404, body: { error: { code: "ROUTE_NOT_SERVED", message: words } } }, true);
+   try {
+    await observer.refetch();
+    const read = observer.getCurrentResult();
+    expect(read.error).toMatchObject({ status: 404, code: "ROUTE_NOT_SERVED" });
+    expect(client.getQueryData(key)).toEqual(privateData);
+    expect(servedReadState(read).data).toEqual(privateData);
+    expect(routeNotServedWords(read.error)).toBe(words);
+   } finally { observer.destroy();client.clear(); }
+  });
+  it.each([
+   ["a task that is not found", { status: 404, body: { error: { code: "TASK_NOT_FOUND", message: "no such task" } } }],
+   ["a 404 with no body", { status: 404, body: undefined }],
+   ["the route code on a 403", { status: 403, body: { error: { code: "ROUTE_NOT_SERVED", message: "x" } } }],
+   ["the route code with an access word beside it", { status: 404, body: { code: "ACCESS_ENDED", error: { code: "ROUTE_NOT_SERVED", message: "x" } } }],
+  ] as Array<[string, ApiResponse]>)("%s still wipes the cached data", async (_name, failure) => {
+   const { client, key, observer } = setup(failure, true);
+   try {
+    await observer.refetch();
+    expect(client.getQueryData(key)).toBeUndefined();
+    expect(routeNotServedWords(observer.getCurrentResult().error)).toBeUndefined();
+   } finally { observer.destroy();client.clear(); }
+  });
  });
 });

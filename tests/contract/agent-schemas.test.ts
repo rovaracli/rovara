@@ -220,6 +220,16 @@ describe("task action refusal codes", () => {
   });
 });
 
+describe("read rule refusal code", () => {
+  it("accepts TASK_PART_NOT_SHOWN with Code's status 403 (Code packages/code-api errors.ts at the read rule, c0525a98a): a share may read the summary but not this part", () => {
+    expect(AgentXErrorCodeSchema.safeParse("TASK_PART_NOT_SHOWN").success).toBe(true);
+    expect(errorStatus(AgentXErrorCodeSchema.parse("TASK_PART_NOT_SHOWN"))).toBe(403);
+  });
+  it("does not accept a near miss", () => {
+    for (const code of ["TASK_PART_NOT_SHOWN ", "task_part_not_shown", "TASK_PART_HIDDEN", "TASK_PARTS_NOT_SHOWN"]) expect(AgentXErrorCodeSchema.safeParse(code).success, code).toBe(false);
+  });
+});
+
 describe("spend placeholder constants", () => {
   it("has the exact names and values", () => {
     expect(spend.RUN_LIMIT_MULTIPLIER).toBe(2);
