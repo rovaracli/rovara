@@ -93,25 +93,12 @@ The web stack takes `GatewayMeterTableName` (default empty: an install with no m
 pass the gateway stack's **Meter** resource's physical table name on the first update that enables People and limits. Compare the gateway's `Issuer` output with `CodeUrl` plus `/v1/auth` before that update; they must match
 exactly. The web role gets only conditioned item reads on that table. Subsequent release deploys keep the parameter, as for the product key settings.
 
-The web stack's product AI settings (staging, with the `ProductKeys*` parameters and `ModelGatewayUrl`) also take an optional
-**`BedrockTemplateUrl`** (default empty): the address of the role template a company's AWS admin deploys for "your own Bedrock"
-(`docs/model-gateway-bedrock-byo.md`). Empty, the Bedrock routes answer 501 and the server gets no
-`CLOUD_BEDROCK_TEMPLATE_URL`. Set, it must be an `https` address of a `.json` file that is not an S3 host (the stack refuses anything
-else), and `ModelGatewayUrl` must be set too. The value is the file as committed on the public repo, pinned to a merge commit:
-
-```
-https://raw.githubusercontent.com/PrepLabsAI/Rovara/<merge sha>/docs/bedrock/rovara-bedrock-role.json
-```
-
-(use the merge sha of public PR #778 or a later one that carries the file). Before setting it, check the file is the one the
-set-up command expects:
-
-```sh
-curl -fsS https://raw.githubusercontent.com/PrepLabsAI/Rovara/<merge sha>/docs/bedrock/rovara-bedrock-role.json | shasum -a 256
-# dad14bedc8d2a7e704f03d041f39809c06eeb20e8e41fa4b61c047cdb7a474ea
-```
-
-Like `ModelGatewayUrl`, it is a parameter of the web stack, set by hand on the first deploy and kept by later deploys.
+"Your own Bedrock" (`docs/model-gateway-bedrock-byo.md`) has no switch and no parameter to set (DEC 254zzz520). The gateway stack with product AI
+always carries the retained broker role and the external-id key, and the web stack gives the server the role template's address
+(`BEDROCK_ROLE_TEMPLATE_URL` in `infra/lib/cloud-web.ts`: the file on the public repo's mainline) whenever `ModelGatewayUrl` is set. The
+set-up command checks the downloaded file against the SHA-256 the gateway pins, so a file that differs from this release's template stops
+before any role is made. A company's saved, sealed role is what turns it on for that company; none saved: `404 not_set_up`. With
+`ModelGatewayUrl` empty the Bedrock routes answer 501.
 
 A named test environment's web stack (not `production`) also has **`AnswersEnabled`** (`1`, the default, or `0`): the server's
 `ROVARA_ANSWERS_ENABLED`, which turns on the smart Just answer's Ask boxes (lead 4 J3, DEC 254z-amend2; on unless set to `0`, also for the local server, DEC 254zzz448). On needs the model gateway's

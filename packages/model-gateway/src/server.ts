@@ -422,7 +422,7 @@ function companyKeyAgentRoute(deps: GatewayDependencies, keys: LearningKeySource
       if (choice !== undefined) {
         let resolved: ResolvedAgentSource;
         // DEC 254zzz263: saved choice/order wins; no choice defaults to company-billed Rovara AI.
-        try { resolved = await resolveAgentSource({ sources: choice.sources, ...(choice.rovara === undefined ? {} : { exempt: choice.rovara.exempt }), keys, ...(choice.byo === undefined ? {} : { byo: choice.byo }) }, claims.iss, claims.cid, signal); } catch { return AGENT_UNAVAILABLE; }
+        try { resolved = await resolveAgentSource({ sources: choice.sources, ...(choice.rovara === undefined ? {} : { exempt: choice.rovara.exempt }), keys }, claims.iss, claims.cid, signal); } catch { return AGENT_UNAVAILABLE; }
         via = resolved.via;
         if (resolved.source !== undefined) {
           // DEC 254zzz84(4): the company's saved order, first choice first. Without a saved fallback this is the first choice alone, exactly as before.

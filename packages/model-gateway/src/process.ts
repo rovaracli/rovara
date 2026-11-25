@@ -330,7 +330,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     models: config.rovaraAi.models, exempt: config.rovaraAi.exempt, ...(config.rovaraAi.sourceId === undefined ? {} : { sourceId: config.rovaraAi.sourceId }),
     transport: deps.bedrockTransport ?? createBedrockTransport({ region: config.region, credentials, now }), maxOutputTokens: (id: string) => prices.maxOutputTokens("bedrock", id),
   };
-  const rovaraDefault = companyKeys === undefined || rovaraBedrock === undefined ? {} : { rovaraDefault: { ai: rovaraBedrock, sources: agentAiSources, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined), switchedOn: config.aiSourceKinds ?? new Set<string>(), ...(config.bedrockByo === undefined || deps.byoBedrock === undefined ? {} : { byo: deps.byoBedrock }) } };
+  const rovaraDefault = companyKeys === undefined || rovaraBedrock === undefined ? {} : { rovaraDefault: { ai: rovaraBedrock, sources: agentAiSources, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined), switchedOn: config.aiSourceKinds ?? new Set<string>() } };
   const learning = deps.learning === undefined ? undefined : createLearningRoutes({
     ...rovaraDefault,
     keys: deps.learning.keys, meter: deps.learning.meter, companyCaps: caps, lessons: new CompanyLessonsSwitch(db, config.tables.companies), transport,

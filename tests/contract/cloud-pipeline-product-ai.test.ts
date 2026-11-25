@@ -28,8 +28,9 @@ describe("Cloud release pipeline: per-environment deploy switches", () => {
   });
 
   it("beta's deploy carries it too, now that beta's gateway is deployed (Rovara-cloud#273)", () => {
-    expect(CLOUD_PIPELINE_SWITCHES.beta).toEqual({ productAi: true, aiSourceKinds: "openai" });
-    expect(pipelineDeployContext("beta")).toEqual([SWITCH, `-c ${AI_SOURCE_KINDS_CONTEXT_KEY}=openai`]);
+    // DEC 254zzz524: beta also switches on a company's own Bedrock for its agents.
+    expect(CLOUD_PIPELINE_SWITCHES.beta).toEqual({ productAi: true, aiSourceKinds: "openai,bedrock" });
+    expect(pipelineDeployContext("beta")).toEqual([SWITCH, `-c ${AI_SOURCE_KINDS_CONTEXT_KEY}=openai,bedrock`]);
     expect(deployCommand("beta")).toContain(SWITCH);
   });
 

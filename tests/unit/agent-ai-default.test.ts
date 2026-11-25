@@ -1,4 +1,4 @@
-// DEC 263 / R-1: own connections precede the billed default; explicit choices win; exemption is billing only.
+// DEC 263 / R-1, narrowed by DEC 254zzz525: a connected own Anthropic key precedes the billed default; a connected Bedrock role never does (own Bedrock only when explicitly chosen); explicit choices win; exemption is billing only.
 import { randomBytes } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { agentAiConnected } from "../../packages/cloud-server/src/agent-ai-presence.js";
@@ -11,14 +11,10 @@ const fakeKey = () => ["sk", "ant", randomBytes(16).toString("hex")].join("-");
 
 describe("effectiveAgentSource (the pure rule)", () => {
   it("a saved choice is the source, never a default", () => {
-    for (const saved of ["rovara", "anthropic_key", "bedrock_byo", "openai_key"] as const) expect(effectiveAgentSource({ saved, exempt: true, keyConnected: true, bedrockConnected: true })).toEqual({ source: saved, isDefault: false });
+    for (const saved of ["rovara", "anthropic_key", "bedrock_byo", "openai_key"] as const) expect(effectiveAgentSource({ saved, exempt: true, keyConnected: true })).toEqual({ source: saved, isDefault: false });
   });
-  it.each([
-    [true, true, "anthropic_key"], [true, false, "anthropic_key"], [true, null, "anthropic_key"],
-    [false, true, "bedrock_byo"], [false, false, "rovara"], [false, null, null],
-    [null, true, null], [null, false, null], [null, null, null],
-  ] as const)("unsaved choice: key=%s Bedrock=%s reports %s without guessing on read faults", (keyConnected, bedrockConnected, source) => {
-    for (const exempt of [true, false]) expect(effectiveAgentSource({ saved: undefined, exempt, keyConnected, bedrockConnected })).toEqual({ source, isDefault: source !== null });
+  it.each([[true, "anthropic_key"], [false, "rovara"], [null, null]] as const)("unsaved choice: key=%s reports %s without guessing on read faults (a Bedrock role is not an input: it never makes a default)", (keyConnected, source) => {
+    for (const exempt of [true, false]) expect(effectiveAgentSource({ saved: undefined, exempt, keyConnected })).toEqual({ source, isDefault: source !== null });
   });
 });
 
@@ -51,20 +47,29 @@ describe("GET /org/agent-ai for the default", () => {
     expect(await w.companies.agentAi(A)).toBeUndefined();
   });
 
-  it("own Bedrock is reported until an Anthropic key is connected, for both billing classes", async () => {
+  it("DEC 254zzz525: a connected Bedrock role never becomes the default (Rovara's AI stays); only an explicit save chooses it, for both billing classes", async () => {
     for (const exempt of [true, false]) {
       const model = "us.anthropic.claude-sonnet-5-5";
       const w = world({ company: true, rovaraAiExempt: new Set(exempt ? [A] : []), bedrock: { setup: async () => undefined, command: () => { throw new Error("not used"); }, presets: () => ({}) }, bedrockCheck: async () => ({ result: "ok", models: { [model]: "ready" } }) });
       const ada = await w.signIn("ada");
       expect((await w.call(ada, "PUT", "/org/bedrock", write(0, { roleArn: "arn:aws:iam::111111111111:role/RovaraBedrockInvoke-test", region: "us-west-2", models: { "claude-sonnet-5-5": model }, allowGlobal: false }))).status).toBe(200);
-      expect((await w.call(ada, "GET", PATH)).body).toMatchObject({ source: null, version: 0, effectiveSource: "bedrock_byo", sourceIsDefault: true, bedrockConnected: true });
+      expect((await w.call(ada, "GET", PATH)).body).toMatchObject({ source: null, version: 0, effectiveSource: "rovara", sourceIsDefault: true, bedrockConnected: true });
+      expect(await w.companies.agentAi(A)).toBeUndefined();
+      // An own Anthropic key still precedes the billed default (unchanged); the role does not.
       expect((await w.call(ada, "PUT", "/org/learning-ai/key", write(0, { provider: "anthropic", key: fakeKey() }))).status).toBe(200);
       expect((await w.call(ada, "GET", PATH)).body).toMatchObject({ source: null, effectiveSource: "anthropic_key", sourceIsDefault: true });
       expect(await w.companies.agentAi(A)).toBeUndefined();
+      // Explicit choice: saved, reported as the saved source, never as a default.
+      const put = await w.call(ada, "PUT", PATH, { expectedVersion: 0, source: "bedrock_byo" });
+      expect(put.status).toBe(200);
+      expect(put.body).toMatchObject({ source: "bedrock_byo", version: 1 });
+      expect(Object.keys(put.body)).not.toContain("sourceIsDefault");
+      expect(await w.companies.agentAi(A)).toMatchObject({ source: "bedrock_byo" });
     }
   });
 
-  it.each(["_learning", "_company"])("an unreadable %s connection never claims billed Rovara AI", async (owner) => {
+  it("an unreadable _learning connection (the own-key read) never claims billed Rovara AI", async () => {
+    const owner = "_learning";
     const w = world({ company: true, bedrock: { setup: async () => undefined, command: () => { throw new Error("not used"); }, presets: () => ({}) } });
     const ada = await w.signIn("ada");
     const view = w.store.view.bind(w.store);
@@ -73,6 +78,16 @@ describe("GET /org/agent-ai for the default", () => {
     expect(got.status).toBe(503);
     expect(got.body).not.toHaveProperty("effectiveSource");
     expect(got.body).not.toHaveProperty("sourceIsDefault");
+  });
+
+  it("an unreadable Bedrock (_company) read is irrelevant to the default: Rovara's AI, with the role's state unknown", async () => {
+    const w = world({ company: true, bedrock: { setup: async () => undefined, command: () => { throw new Error("not used"); }, presets: () => ({}) } });
+    const ada = await w.signIn("ada");
+    const view = w.store.view.bind(w.store);
+    w.store.view = async (iss, cid, readOwner) => { if (readOwner === "_company") throw new Error("unreadable"); return view(iss, cid, readOwner); };
+    const got = await w.call(ada, "GET", PATH);
+    expect(got.status).toBe(200);
+    expect(got.body).toMatchObject({ source: null, effectiveSource: "rovara", sourceIsDefault: true });
   });
 
   it("switching back to Rovara's AI is an explicit save; afterwards it is a saved choice, not a default", async () => {
@@ -123,11 +138,12 @@ describe("GET /org/agent-ai for the default", () => {
 
 describe("agentAiConnected for an exempt company with no saved choice", () => {
   type Ctx = Pick<RouteContext, "company" | "productAi">;
-  const context = (exempt: string[], extra: { anthropic?: boolean; bedrock?: boolean | "throws"; noBedrockBackend?: boolean; saved?: string } = {}) => ({
+  const context = (exempt: string[], extra: { anthropic?: boolean | "throws"; bedrock?: boolean | "throws"; noBedrockBackend?: boolean; saved?: string } = {}) => ({
     company: { rovaraAiExempt: new Set(exempt), store: { agentAi: async () => extra.saved === undefined ? undefined : { source: extra.saved } } },
     productAi: {
       issuer: "iss", ...(extra.noBedrockBackend === true ? {} : { bedrock: {} }),
       store: { view: async (_i: string, _c: string, owner: string) => {
+        if (owner === "_learning" && extra.anthropic === "throws") throw new Error("down");
         if (owner === "_learning") return { sources: [{ provider: "anthropic", hasKey: true, available: extra.anthropic === true }] };
         if (extra.bedrock === "throws") throw new Error("down");
         return { sources: [{ provider: "bedrock", hasKey: true, available: extra.bedrock === true }] };
@@ -145,9 +161,10 @@ describe("agentAiConnected for an exempt company with no saved choice", () => {
     expect(await agentAiConnected(context([], { anthropic: true }), A)).toBe(true);
   });
   it("required connection faults stay unknown; irrelevant Bedrock faults and explicit choices keep readiness checks", async () => {
-    // R-1 / DEC 254zzz279: Bedrock is required when Anthropic is absent; a read fault cannot prove the billed Rovara default.
-    expect(await agentAiConnected(context([A], { bedrock: "throws" }), A)).toBeNull();
-    expect(await agentAiConnected(context([A], { noBedrockBackend: true, bedrock: "throws" }), A)).toBeNull();
+    // R-1 / DEC 254zzz279: the own-key read decides; a fault cannot prove the billed Rovara default. A Bedrock fault is irrelevant to the default (DEC 254zzz525).
+    expect(await agentAiConnected(context([A], { anthropic: "throws" }), A)).toBeNull();
+    expect(await agentAiConnected(context([A], { bedrock: "throws" }), A)).toBe(true);
+    expect(await agentAiConnected(context([A], { noBedrockBackend: true, bedrock: "throws" }), A)).toBe(true);
     expect(await agentAiConnected(context([A], { anthropic: true, bedrock: "throws" }), A)).toBe(true);
     expect(await agentAiConnected(context([A], { saved: "anthropic_key" }), A)).toBe(false);
   });

@@ -3,7 +3,7 @@
 // byte for byte what it was, for production and for staging, apart from the approved meter reads and answers switch below.
 import { createHash } from "node:crypto";
 import { withoutRoleBoundary } from "../support/without-role-boundary.js";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { App } from "aws-cdk-lib";
@@ -11,14 +11,16 @@ import { Code } from "aws-cdk-lib/aws-lambda";
 import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { BEDROCK_TEMPLATE_URL_PATTERN, CLOUD_ANSWERS_ENABLED_ENV, CLOUD_ANSWERS_ENABLED_PARAMETER, CLOUD_BEDROCK_TEMPLATE_URL_ENV, CLOUD_PRODUCT_AI_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
-import { validTemplateUrl } from "../../packages/model-gateway/src/bedrock-byo.js";
+import { BEDROCK_ROLE_TEMPLATE_URL, CLOUD_ANSWERS_ENABLED_ENV, CLOUD_ANSWERS_ENABLED_PARAMETER, CLOUD_BEDROCK_TEMPLATE_URL_ENV, CLOUD_PRODUCT_AI_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
+import { bedrockRoleTemplateSha256, bedrockRoleTemplateText, validTemplateUrl } from "../../packages/model-gateway/src/bedrock-byo.js";
 import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
 
 type Statement = { Sid?: string; Effect: string; Action: string | string[]; Resource: unknown; Condition?: unknown };
 const built = (() => { const dir = mkdtempSync(join(tmpdir(), "cloud-web-app-")); mkdirSync(join(dir, "assets")); writeFileSync(join(dir, "index.html"), "<!doctype html>"); writeFileSync(join(dir, "assets", "index-abc.js"), "export {};"); return dir; })();
 const synth = (environmentName: string, productAi?: boolean) => Template.fromStack(new CloudWebStack(new App(), "RovaraCloudWeb", {
   environmentName, env: { region: "us-east-1" }, appDirectory: built, code: Code.fromInline("export const handler = async () => ({});"), ...(productAi === undefined ? {} : { productAi }),
+  // DEC 254zzz520: production with product AI names its kinds (the release pipeline passes "openai").
+  ...(environmentName === "production" && productAi === true ? { aiSourceKinds: "openai" } : {}),
 })).toJSON() as { Resources: Record<string, { Type: string; Properties: Record<string, unknown> }>; Parameters: Record<string, unknown>; Outputs: Record<string, unknown> };
 /** The Cloud web templates at cloud/next d7d1edbb8, before this change (same stand-in app and code): SHA-256 of their JSON. */
 // 2026-11-17 (role boundary): the one other change is the BucketDeployment function's own log group (AppFilesLogs, cloud-web.ts):
@@ -201,35 +203,24 @@ describe("Cloud web: product AI settings grants (B7)", () => {
     expect(Object.keys(bySid).sort()).toEqual(expect.not.arrayContaining(["VerifyCloudCalls"]));
   });
 
-  // BYO Bedrock (DEC 238): the role template's docs-site address, optional, passed to the server only when set.
-  it("BedrockTemplateUrl: optional; the variable is set only when the parameter is non-empty; the pattern is validTemplateUrl's rule", () => {
-    const t = synth("staging", true) as ReturnType<typeof synth> & { Conditions: Record<string, unknown>; Rules: Record<string, unknown> };
-    const parameter = t.Parameters.BedrockTemplateUrl as { Default: string; AllowedPattern: string };
-    expect(parameter.Default).toBe("");
-    expect(parameter.AllowedPattern).toBe(BEDROCK_TEMPLATE_URL_PATTERN);
-    expect(t.Conditions.BedrockTemplateUrlSet).toEqual({ "Fn::Not": [{ "Fn::Equals": [{ Ref: "BedrockTemplateUrl" }, ""] }] });
+  // BYO Bedrock (DEC 238, DEC 254zzz520): no switch and no hand-set parameter; the template address is a constant the server gets with the gateway's address.
+  it("the Bedrock template address is derived: no parameter, a valid docs-site address, set exactly when the gateway address is", () => {
+    const t = synth("staging", true) as ReturnType<typeof synth> & { Conditions: Record<string, unknown>; Rules?: Record<string, unknown> };
+    expect(t.Parameters.BedrockTemplateUrl).toBeUndefined();
+    expect(JSON.stringify(t.Rules ?? {})).not.toContain("BedrockTemplateUrl");
+    expect(validTemplateUrl(BEDROCK_ROLE_TEMPLATE_URL)).toBe(true);
+    expect(BEDROCK_ROLE_TEMPLATE_URL.endsWith("/docs/bedrock/rovara-bedrock-role.json")).toBe(true);
+    expect(t.Conditions.ModelGatewayUrlSet).toEqual({ "Fn::Not": [{ "Fn::Equals": [{ Ref: "ModelGatewayUrl" }, ""] }] });
     const fn = Object.values(t.Resources).find((r) => r.Type === "AWS::Lambda::Function" && JSON.stringify(r.Properties).includes("CLOUD_TABLE"))!;
     const env = (fn.Properties.Environment as { Variables: Record<string, unknown> }).Variables;
-    // Set: the address; empty: AWS::NoValue, so CloudFormation leaves the variable out (the routes answer 501).
-    expect(env[CLOUD_BEDROCK_TEMPLATE_URL_ENV]).toEqual({ "Fn::If": ["BedrockTemplateUrlSet", { Ref: "BedrockTemplateUrl" }, { Ref: "AWS::NoValue" }] });
-    expect(JSON.stringify(t.Rules)).toContain("BedrockTemplateUrl needs ModelGatewayUrl");
-    // The pattern accepts and refuses what validTemplateUrl does (Java regex lookaheads and JS agree on this syntax).
-    const pattern = new RegExp(BEDROCK_TEMPLATE_URL_PATTERN, "u");
-    expect(pattern.test("")).toBe(true);
-    const sha = "a".repeat(40);
-    const urls = [
-      `https://raw.githubusercontent.com/PrepLabsAI/Rovara/${sha}/docs/bedrock/rovara-bedrock-role.json`, "https://docs.rovara.example/bedrock/rovara-bedrock-role.json",
-      "http://docs.rovara.example/t.json", "https://docs.rovara.example/t.yaml", "https://docs.rovara.example/t.json?x=1", "https://docs.rovara.example/", "https://docs.rovara.example",
-      "https://my-bucket.s3.us-west-2.amazonaws.com/t.json", "https://s3.us-west-2.amazonaws.com/b/t.json", "https://s3-us-west-2.amazonaws.com/b/t.json", "https://s3.amazonaws.com/b/t.json",
-      "https://x.cloudfront.net/t.yaml", "https://x.cloudfront.net/t.json", "https://x.amazonaws.com/t.json", "https://bucket.s3.example.com/t.json", "https://s3-bucket.example.com/t.json",
-      "https://s3bucket.example.com/t.json", "https://docs.s3x.example.com/t.json", "https://a b/t.json", "ftp://docs/t.json", "https://docs.example.com/a b.json", "https://DOCS.example.com/t.json",
-      "https://x..s3.example.com/t.json", "https://.s3.example.com/t.json", "https://a.b..s3-x.com/t.json",
-    ];
-    for (const url of urls) expect(pattern.test(url), url).toBe(validTemplateUrl(url));
-    expect(pattern.test(urls[0]!)).toBe(true);
-    expect(pattern.test(urls[7]!)).toBe(false);
+    // Gateway address set: the address; empty: AWS::NoValue, so CloudFormation leaves the variable out (the routes answer 501).
+    expect(env[CLOUD_BEDROCK_TEMPLATE_URL_ENV]).toEqual({ "Fn::If": ["ModelGatewayUrlSet", BEDROCK_ROLE_TEMPLATE_URL, { Ref: "AWS::NoValue" }] });
   });
-  it("BedrockTemplateUrl exists only with the product AI settings: the off templates stay byte for byte (see the first test)", () => {
+  it("the derived template address is the file this repo holds (the gateway pins that file's SHA-256, the set-up command checks it)", () => {
+    expect(readFileSync(new URL("../../docs/bedrock/rovara-bedrock-role.json", import.meta.url), "utf8")).toBe(bedrockRoleTemplateText());
+    expect(createHash("sha256").update(bedrockRoleTemplateText()).digest("hex")).toBe(bedrockRoleTemplateSha256());
+  });
+  it("the Bedrock template setting exists only with the product AI settings: the off templates stay byte for byte (see the first test)", () => {
     expect(synth("staging", false).Parameters.BedrockTemplateUrl).toBeUndefined();
     expect(synth("production").Parameters.BedrockTemplateUrl).toBeUndefined();
   });

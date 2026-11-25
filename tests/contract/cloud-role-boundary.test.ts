@@ -16,7 +16,7 @@ import { BOUNDARY_LOGICAL_ID, CDK_BOOTSTRAP_QUALIFIER, CLOUD_STACK_PARTS, GATEWA
 import { boundaryViolations, globMatch, overlaps, resolvedBoundaries, roleCases, type CfnTemplate, type StackTemplate } from "../../infra/lib/cloud-boundary-check.js";
 import { CLOUD_PIPELINE_BOOTSTRAP_QUALIFIER, CloudReleasePipelineStack } from "../../infra/lib/cloud-release-pipeline.js";
 import { CloudWebStack } from "../../infra/lib/cloud-web.js";
-import { BEDROCK_BYO_CUSTOMER_ROLE_PREFIX, MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, MODEL_GATEWAY_PROVIDERS, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, bedrockBrokerRoleName } from "../../infra/lib/model-gateway.js";
+import { BEDROCK_BYO_CUSTOMER_ROLE_PREFIX, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, MODEL_GATEWAY_PROVIDERS, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, bedrockBrokerRoleName } from "../../infra/lib/model-gateway.js";
 
 const ENV = "staging";
 /** The longest environment name the rules allow (14 characters): generated names get shortened past their limits. */
@@ -60,11 +60,11 @@ const SHAPES: Record<string, () => StackTemplate[]> = {
   "gateway (images + gateway)": () => gateway({}),
   // The provider secrets' two namings (model-gateway.ts MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY): generated (the default, above) and fixed.
   "gateway with fixed provider secret names": () => gateway({ [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "fixed" }),
-  "gateway, everything on, fixed provider secret names": () => gateway({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on", [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: "org_00000000000000000000", [MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY]: "on", [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "fixed" }),
+  "gateway, everything on, fixed provider secret names": () => gateway({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on", [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: "org_00000000000000000000", [MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY]: "fixed" }),
   "gateway with product AI": () => gateway(productOn),
   "gateway with Rovara's AI": () => gateway({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on", [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: "org_00000000000000000000" }),
-  "gateway with BYO Bedrock": () => gateway({ ...productOn, [MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY]: "on" }),
-  "gateway, everything on (staging)": () => gateway({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on", [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: "org_00000000000000000000", [MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY]: "on" }),
+  "gateway with BYO Bedrock": () => gateway({ ...productOn }),
+  "gateway, everything on (staging)": () => gateway({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on", [MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY]: "org_00000000000000000000" }),
 };
 const synthesized = Object.fromEntries(Object.entries(SHAPES).map(([name, make]) => [name, make()]));
 const byType = (t: StackTemplate, type: string) => Object.entries(t.template.Resources as Record<string, Resource>).filter(([, r]) => r.Type === type);
@@ -975,7 +975,7 @@ describe("the boundary breaks nothing a Cloud role's own policy grants", () => {
 
   it("the longest environment name (CloudFormation shortens long generated role and function names): still nothing breaks", () => {
     const long = { ...scope, env: LONG_ENV };
-    for (const stacks of [cloudApp(true, LONG_ENV), pipeline(LONG_ENV), gateway({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on", [MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY]: "on" }, LONG_ENV)]) {
+    for (const stacks of [cloudApp(true, LONG_ENV), pipeline(LONG_ENV), gateway({ ...productOn, [MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY]: "on" }, LONG_ENV)]) {
       expect(boundaryViolations(stacks, long).map((v) => `${v.role} ${v.action} ${v.resource} ${v.reason}`)).toEqual([]);
     }
     // The checker models the shortening: a boundary that named roles by the stack-name prefix (as the first version did) fails.

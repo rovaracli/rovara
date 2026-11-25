@@ -92,6 +92,8 @@ export type AiSourceKind = (typeof AI_SOURCE_KINDS)[number];
 export const AGENT_SOURCE_OF_KIND: Readonly<Record<AiSourceKind, string>> = Object.freeze({ anthropic: "anthropic_key", openai: "openai_key", openrouter: "openrouter_key", bedrock: "bedrock_byo", endpoint: "custom_endpoint" });
 /** The sources that were live before the switch (DEC 236, DEC 238): choosable as before, switch or no switch (the gateway's PRE_SWITCH_AGENT_SOURCES). */
 export const PRE_SWITCH_AGENT_SOURCES: readonly string[] = ["anthropic_key", "bedrock_byo"];
+/** The pre-switch sources that stay live only on an install that names no kinds (the gateway's PRE_SWITCH_ONLY_WITHOUT_KINDS: DEC 254zzz520 covers the product route, not the agents). */
+export const PRE_SWITCH_ONLY_WITHOUT_KINDS: readonly string[] = ["bedrock_byo"];
 /** CLOUD_AI_SOURCE_KINDS: comma-separated supported kinds, no spaces, no repeats; absent or empty is none; anything else throws (fixed words). */
 export function parseAiSourceKinds(value: string | undefined): Set<AiSourceKind> {
   if (value === undefined || value === "") return new Set();
@@ -101,19 +103,22 @@ export function parseAiSourceKinds(value: string | undefined): Set<AiSourceKind>
 }
 /** Whether an agent source is switched on for this install: Rovara's AI and the pre-switch sources always; any other only when its kind is on. */
 export function agentSourceSwitchedOn(source: string, switchedOn: ReadonlySet<string>): boolean {
-  if (source === "rovara" || PRE_SWITCH_AGENT_SOURCES.includes(source)) return true;
+  if (source === "rovara" || (PRE_SWITCH_AGENT_SOURCES.includes(source) && (switchedOn.size === 0 || !PRE_SWITCH_ONLY_WITHOUT_KINDS.includes(source)))) return true;
   const kind = AI_SOURCE_KINDS.find((k) => AGENT_SOURCE_OF_KIND[k] === source);
   return kind !== undefined && switchedOn.has(kind);
 }
 
-/** R-1 / DEC 254zzz279: saved choices win; otherwise own Anthropic, then own Bedrock, then Rovara AI. Unknown connections are never guessed. Exemption affects billing only. */
+/** DEC 254zzz525: the old DEC 254zzz279 backfill wrote `bedrock_byo` ("backfill:..." as the writer) for companies that only had a role. That row is not a choice the company made: every read treats it as no choice (the row and its version stay, so a later save still matches). The gateway holds the same rule (agent-ai.ts backfilledBedrockChoice). */
+export const BACKFILL_UPDATED_BY = /^backfill:/u;
+export function explicitAgentChoice(choice: AgentAiChoice | undefined): AgentAiChoice | undefined {
+  return choice !== undefined && choice.source === "bedrock_byo" && BACKFILL_UPDATED_BY.test(choice.updatedBy) ? undefined : choice;
+}
+/** R-1 / DEC 254zzz279, narrowed by DEC 254zzz525: saved choices win; otherwise own Anthropic, else Rovara AI. A connected own Bedrock role never becomes the default (own Bedrock only when explicitly chosen). Unknown connections are never guessed. Exemption affects billing only. */
 export type EffectiveAgentSource = { source: AgentAiSource | null; isDefault: boolean };
-export function effectiveAgentSource(input: { saved: AgentAiSource | undefined; exempt: boolean; keyConnected: boolean | null; bedrockConnected: boolean | null }): EffectiveAgentSource {
+export function effectiveAgentSource(input: { saved: AgentAiSource | undefined; exempt: boolean; keyConnected: boolean | null }): EffectiveAgentSource {
   if (input.saved !== undefined) return { source: input.saved, isDefault: false };
   if (input.keyConnected === null) return { source: null, isDefault: false };
   if (input.keyConnected) return { source: "anthropic_key", isDefault: true };
-  if (input.bedrockConnected === null) return { source: null, isDefault: false };
-  if (input.bedrockConnected) return { source: "bedrock_byo", isDefault: true };
   return { source: "rovara", isDefault: true };
 }
 export const ROVARA_AI_EXEMPT_MAX = 10;

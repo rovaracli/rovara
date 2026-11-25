@@ -9,7 +9,7 @@ import { buildAgentXApp } from "../../infra/lib/app.js";
 import { CloudAppStack } from "../../infra/lib/cloud-app.js";
 import { CloudWebStack } from "../../infra/lib/cloud-web.js";
 import { CLOUD_PIPELINE_CONTEXT_KEY } from "../../infra/lib/cloud-release-pipeline.js";
-import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
+import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
 
 // EC2 refuses a security group or rule description with any other character ("Invalid rule description", 2026-11-16: an
 // apostrophe stopped the staging gateway deploy). CloudFormation's template checks do not catch it; only the deploy does.
@@ -38,7 +38,7 @@ const APPS: Array<[string, () => App]> = ([
   ["release pipeline", { [CLOUD_PIPELINE_CONTEXT_KEY]: "production", agentxRegion: "us-west-2" }],
   ["gateway and images", { [MODEL_GATEWAY_CONTEXT_KEY]: "staging", agentxRegion: "us-west-2" }],
   ["gateway, product AI on", { [MODEL_GATEWAY_CONTEXT_KEY]: "staging", agentxRegion: "us-west-2", [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" }],
-  ["gateway, product AI and Bedrock BYO on", { [MODEL_GATEWAY_CONTEXT_KEY]: "staging", agentxRegion: "us-west-2", [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on", [MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY]: "on" }],
+  ["gateway, product AI on (with the Bedrock broker)", { [MODEL_GATEWAY_CONTEXT_KEY]: "staging", agentxRegion: "us-west-2", [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" }],
 ]).map(([name, context]): [string, () => App] => [name, () => buildAgentXApp(context)]));
 
 /** Every EC2 security group description and rule description in one template, as [where, value]. */

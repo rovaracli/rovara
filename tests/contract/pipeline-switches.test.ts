@@ -75,10 +75,10 @@ describe("ops/pipeline/switches.json: separate beta and production rows", () => 
     expect(file.environments.beta).not.toBe(file.environments.production);
   });
 
-  it("holds the live beta settings (read from the beta stack templates and parameters, 2026-11-24)", () => {
+  it("holds the beta settings (read from the beta stack templates and parameters, 2026-11-24), plus `bedrock` among the source kinds (DEC 254zzz524: the company's own Bedrock for its agents)", () => {
     expect(file.environments.beta).toEqual({
       region: "us-east-1", deployAccount: DEPLOY_ACCOUNT_PLACEHOLDER, codeUrl: "https://lznfb0pf48.execute-api.us-east-1.amazonaws.com",
-      aiSourceKinds: "openai", productAi: "on", rovaraAi: "on", rovaraAiExempt: null, rovaraAiDisabled: null, bedrockByo: null,
+      aiSourceKinds: "openai,bedrock", productAi: "on", rovaraAi: "on", rovaraAiExempt: null, rovaraAiDisabled: null,
       offeredPrices: "on", providerSecretNames: "generated", pending: [],
     });
   });
@@ -86,7 +86,7 @@ describe("ops/pipeline/switches.json: separate beta and production rows", () => 
   it("holds production's settings, read from the live production stacks by the prod session (read-only, 2026-11-24)", () => {
     expect(file.environments.production).toEqual({
       region: "us-east-1", deployAccount: null, codeUrl: "https://3m38w35kz2.execute-api.us-east-1.amazonaws.com", aiSourceKinds: "openai", productAi: "on", rovaraAi: "on", rovaraAiExempt: null,
-      rovaraAiDisabled: null, bedrockByo: null, offeredPrices: "on", providerSecretNames: "generated", pending: [],
+      rovaraAiDisabled: null, offeredPrices: "on", providerSecretNames: "generated", pending: [],
     });
     expect(codeUrlFor("production", file)).toBe("https://3m38w35kz2.execute-api.us-east-1.amazonaws.com");
     expect(codeUrlFor("beta", file)).toBe("https://lznfb0pf48.execute-api.us-east-1.amazonaws.com");
@@ -113,7 +113,7 @@ describe("the loader's names equal the infra constants they repeat", () => {
       gatewayEnvironment: gateway.MODEL_GATEWAY_CONTEXT_KEY, webEnvironment: cloudApp.CLOUD_APP_CONTEXT_KEY, region: "agentxRegion", deployAccount: pipeline.DEPLOY_ACCOUNT_CONTEXT_KEY,
       aiSourceKinds: app.AI_SOURCE_KINDS_CONTEXT_KEY, productAi: gateway.MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, rovaraAi: gateway.MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY,
       rovaraAiExempt: gateway.MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, rovaraAiDisabled: gateway.MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY,
-      bedrockByo: gateway.MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, offeredPrices: gateway.MODEL_GATEWAY_OFFERED_PRICES_CONTEXT_KEY,
+      offeredPrices: gateway.MODEL_GATEWAY_OFFERED_PRICES_CONTEXT_KEY,
       providerSecretNames: gateway.MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY,
     });
     expect(pipeline.PIPELINE_AI_SOURCE_KINDS_CONTEXT_KEY).toBe(CONTEXT_KEYS.aiSourceKinds);
@@ -162,7 +162,8 @@ describe("each row against CLOUD_PIPELINE_SWITCHES and the PRODUCTION_SOURCE_KIN
     expect(productionSourceKindsAllowed(file.environments.production.aiSourceKinds)).toBe(true);
     expect(() => parseSwitches(mutate((v) => { v.environments.production!.aiSourceKinds = "openai,openrouter"; }))).toThrow(/production may switch on only/u);
     expect(() => parseSwitches(mutate((v) => { v.environments.production!.rovaraAiExempt = `org_${"a".repeat(20)}`; }))).toThrow(/never production/u);
-    expect(() => parseSwitches(mutate((v) => { v.environments.production!.bedrockByo = "on"; }))).toThrow(/never production/u);
+    // DEC 254zzz520: bring-your-own Bedrock has no switch: a row that still carries the old key is an unknown key.
+    expect(() => parseSwitches(mutate((v) => { v.environments.production!.bedrockByo = "on"; }))).toThrow(/unknown key bedrockByo/u);
     // Beta is a named test environment and may carry other kinds.
     expect(() => parseSwitches(mutate((v) => { v.environments.beta!.aiSourceKinds = "openai,openrouter"; }))).not.toThrow();
   });
@@ -178,22 +179,29 @@ describe("each row against CLOUD_PIPELINE_SWITCHES and the PRODUCTION_SOURCE_KIN
 });
 
 describe("the rows fed to the real stacks", () => {
-  it("beta's gateway is what the live beta template carries", () => {
+  it("beta's gateway is what the live beta template carries, plus bring-your-own Bedrock (DEC 254zzz520)", () => {
     const { vars, template } = serveEnv("beta");
-    expect(vars[gateway.MODEL_GATEWAY_ENV.aiSourceKinds]).toBe("openai");
+    expect(vars[gateway.MODEL_GATEWAY_ENV.aiSourceKinds]).toBe("openai,bedrock");
     expect(vars[gateway.MODEL_GATEWAY_ENV.offeredPrices]).toBe("on");
     // The live GATEWAY_ROVARA_AI_MODELS (read 2026-11-24) is exactly what `rovaraAi: on` expands to.
     expect(vars[gateway.MODEL_GATEWAY_ENV.rovaraAiModels]).toBe(`${gateway.ROVARA_AI_US_MODELS},${gateway.ROVARA_AI_US_CONVERSE_MODELS}`);
     expect(vars[gateway.MODEL_GATEWAY_ENV.rovaraAiExempt]).toBeUndefined();
     expect(vars[gateway.MODEL_GATEWAY_ENV.agentModelsDisabled]).toBeUndefined();
-    expect(template).not.toContain("GATEWAY_BEDROCK_BROKER_ROLE");
+    // DEC 254zzz520: the retained broker role and the external-id key are part of beta (the settings of a company's own role come later, per company).
+    expect(vars[gateway.MODEL_GATEWAY_ENV.bedrockBrokerRole]).toBeDefined();
+    expect(vars[gateway.MODEL_GATEWAY_ENV.bedrockExternalIdKey]).toBeDefined();
+    expect(template).toContain("RovaraBedrockBroker-beta");
     expect(vars[gateway.MODEL_GATEWAY_ENV.productKeysTable]).toBeDefined();
     expect(template).toContain("ProviderKeyanthropic");
   });
 
   it("production's gateway and web stacks are made with its row (the production source kinds rule runs at synth)", () => {
-    const { vars } = serveEnv("production");
+    const { vars, template } = serveEnv("production");
     expect(vars[gateway.MODEL_GATEWAY_ENV.aiSourceKinds]).toBe("openai");
+    // DEC 254zzz520: production carries the retained broker role and the external-id key under its own names.
+    expect(vars[gateway.MODEL_GATEWAY_ENV.bedrockBrokerRole]).toBeDefined();
+    expect(vars[gateway.MODEL_GATEWAY_ENV.bedrockExternalIdKey]).toBeDefined();
+    expect(template).toContain("RovaraBedrockBroker-production");
     expect(vars[gateway.MODEL_GATEWAY_ENV.offeredPrices]).toBe("on");
     expect(vars[gateway.MODEL_GATEWAY_ENV.rovaraAiExempt]).toBeUndefined();
     expect(webServerEnv("production").vars[CLOUD_AI_SOURCE_KINDS_ENV]).toBe("openai");
@@ -202,17 +210,17 @@ describe("the rows fed to the real stacks", () => {
   it("beta's web stack is made with its row and the deploy account", () => {
     const context = contextArgs("beta", "web", filled, SIGNED_IN);
     expect(context).toEqual({
-      rovaraCloudApp: "beta", agentxRegion: "us-east-1", agentxAccount: FAKE, rovaraModelGatewayProductAi: "on", rovaraAiSourceKinds: "openai",
+      rovaraCloudApp: "beta", agentxRegion: "us-east-1", agentxAccount: FAKE, rovaraModelGatewayProductAi: "on", rovaraAiSourceKinds: "openai,bedrock",
     });
     const { stack, vars } = webServerEnv("beta");
     expect(stack.account).toBe(FAKE);
-    expect(vars[CLOUD_AI_SOURCE_KINDS_ENV]).toBe("openai");
+    expect(vars[CLOUD_AI_SOURCE_KINDS_ENV]).toBe("openai,bedrock");
   });
 
   it("the gateway context lists exactly the hand command's contexts, and none for the default secret names", () => {
     expect(contextArgs("beta", "gateway", filled)).toEqual({
       rovaraModelGateway: "beta", agentxRegion: "us-east-1", rovaraModelGatewayProductAi: "on", rovaraModelGatewayRovaraAi: "on",
-      rovaraAiSourceKinds: "openai", rovaraModelGatewayOfferedPrices: "on",
+      rovaraAiSourceKinds: "openai,bedrock", rovaraModelGatewayOfferedPrices: "on",
     });
     expect(contextArgs("production", "gateway", filled)).toEqual({
       rovaraModelGateway: "production", agentxRegion: "us-east-1", rovaraModelGatewayProductAi: "on", rovaraModelGatewayRovaraAi: "on",
