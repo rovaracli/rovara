@@ -39,6 +39,7 @@ import { createTaskEndedHandler, TASK_ENDED_PATH, TASK_ENDED_TOKEN_KIND } from "
 import { COMPANY_INSTRUCTIONS_PATH, COMPANY_INSTRUCTIONS_TOKEN_KIND, CompanyStoredInstructions, createCompanyInstructionsHandler, type CompanyInstructionsSource } from "./company-instructions.js";
 import { createOfferedModelsHandler, offeredModelPrice, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
 import { createUpkeepCapReadHandler, UPKEEP_CAP_READ_PATH, UPKEEP_CAP_READ_TOKEN_KIND } from "./upkeep-cap-read.js";
+import { createRunChargesHandler, RUN_CHARGES_PATH, RUN_CHARGES_TOKEN_KIND } from "./run-charges-read.js";
 import { BEDROCK_CHECK_PATH, BEDROCK_SETUP_PATH, createBedrockServiceHandlers, createVertexCheckHandler, VERTEX_CHECK_PATH, type MacVerifier } from "./service-call.js";
 import { Dynamo } from "./dynamo.js";
 import { DynamoEndedTasks, DynamoMeter } from "./dynamo-meter.js";
@@ -430,6 +431,11 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, UPKEEP_CAP_READ_TOKEN_KIND),
     limits: upkeepLimits, meter, now,
   });
+  // GATEWAY-RUN-CHARGES-ROUTE: Code's read of one run's actual charges (run-charges-read.ts), from the agent meter's receipts, signed with the task key.
+  const runCharges = createRunChargesHandler({
+    verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, RUN_CHARGES_TOKEN_KIND),
+    meter, now,
+  });
   const rateQuote = companyKeys === undefined ? undefined : createRateQuoteHandler({
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, RATE_QUOTE_TOKEN_KIND),
     sources: agentAiSources, keys: companyKeys, prices, region: config.region, now, disabled: config.agentModelsDisabled ?? parseDisabledAgentModels(undefined), switchedOn: config.aiSourceKinds ?? new Set<string>(),
@@ -459,6 +465,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
       : offeredModels !== undefined && OFFERED_MODELS_PATH.test(req.url ?? "") ? offeredModels
       : rateQuote !== undefined && RATE_QUOTE_PATH.test(req.url ?? "") ? rateQuote
       : UPKEEP_CAP_READ_PATH.test(req.url ?? "") ? upkeepCapRead
+      : RUN_CHARGES_PATH.test(path ?? "") ? runCharges
       : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority
       : path === COMPANY_INSTRUCTIONS_PATH ? companyInstructions
       : path === TASK_ENDED_PATH ? taskEnded

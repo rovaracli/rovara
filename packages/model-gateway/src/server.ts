@@ -895,6 +895,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (rovaraPurpose && charge === undefined) { await respond(503, "unavailable", "model access unavailable"); return; }
     const reserved = grant !== undefined && !customerReview && session?.bind === bind ? { ok: true as const, reservation: undefined } : await route.meter.reserve({ scope, caps, estimateMicros: grant === undefined || customerReview ? estimate : ceilingMicros, appliedMaxOutputTokens,
       routeClass: route.product ? "product" : "agent",
+      // GATEWAY-RUN-CHARGES-ROUTE: every hold of a task call is findable by its run, so the run's charges are read whole or not at all.
+      run: { operationId: claims.op },
       ...(route.payer === "bedrock_byo" ? { customerSource: "bedrock_byo" as const } : route.provider === "openrouter" ? { customerSource: "openrouter" as const } : {}), ...(charge === undefined ? {} : { charge: { receipt: charge, kind: guarded.priceKind ?? "chat", requestFingerprint: createHash("sha256").update(guarded.bytes).digest("hex") }, ...(claims.runPrice !== undefined || customerBedrock ? {} : { provisional: { requestBytes: inputBytes, toolInputAllowanceTokens: guarded.hasTools ? TOOL_INPUT_ALLOWANCE_TOKENS : 0, maxOutputTokens: guarded.maxTokens, price } }) }), ...(line === undefined ? {} : { line }),
       ...(grant === undefined || customerReview ? {} : { sweepAfter: now() + (REVIEW_SESSION_SECONDS * 1000) + REVIEW_SESSION_CLOSE_GRACE_MS, review: { jti: claims.jti.toLowerCase() } }),
       ...(!overrunCapable ? {} : { overrun: { deadlineSeconds: Math.floor(deadline / 1000), tokenExpiresSeconds: admissionExpiresSeconds } }),
