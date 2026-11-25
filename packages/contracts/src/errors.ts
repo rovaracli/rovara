@@ -124,6 +124,9 @@ export const AgentXErrorCodeSchema = z.enum([
   // another of the company's projects. ROUTE_NOT_SERVED (404): a task page route whose read Code does not serve yet; a client shows its "not available yet" words. Appended: no code changes meaning.
   "LINEAR_TEAM_TAKEN",
   "ROUTE_NOT_SERVED",
+  // Code's read rule (RD-2.0, Code packages/code-api/src/errors.ts, 403): the person is shown the task but not this part of it (a task shared with them for its summary: the plan, the checks and the code
+  // changes are not shown). The response carries Code's own sentence. It is NOT "access lost": a client keeps the rest of the page and shows that sentence on that one part (ui served-read.ts). Appended.
+  "TASK_PART_NOT_SHOWN",
 ]);
 
 export const CSRF_STALE_MESSAGE = "Your sign-in changed in another tab. Trying again.";
@@ -174,8 +177,8 @@ export function errorStatus(code: AgentXErrorCode): number {
   if (code === "TASK_STOP_CONFIG_MISSING" || code === "TASK_STOP_CONFIG_INVALID" || code === "TASK_STOP_APPROVAL_ABOVE_CEILING") return 409;
   if (code === "AUTH_REQUIRED") return 401;
   // The sign-in is valid but too old, or the wrong kind, for this change: 403, so a client does not treat it as a sign-in that ended.
-  if (code === "CSRF_STALE" || code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED" || code === "SESSION_LEVEL_REQUIRED" || code === "LOCAL_AGENT_NOT_ALLOWED" || code === "PROCESS_SELF_CONFIRM" || code === "LINK_START_AGAIN" || code === "TASK_ACTION_NEEDS_WEB") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND" || code === "LEARNING_OFF" || code === "LEARNING_LOCKED" || code === "ROUTE_NOT_SERVED") return 404;
+  if (code === "CSRF_STALE" || code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED" || code === "SESSION_LEVEL_REQUIRED" || code === "LOCAL_AGENT_NOT_ALLOWED" || code === "PROCESS_SELF_CONFIRM" || code === "LINK_START_AGAIN" || code === "TASK_ACTION_NEEDS_WEB" || code === "TASK_PART_NOT_SHOWN") return 403;
   if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED" || code === "PROJECT_BUDGET_EXCEEDED" || code === "AGENT_BUDGET_EXCEEDED" || code === "TEST_ALLOWANCE_USED" || code === "CHAIN_BUDGET_EXCEEDED") return 402;
   if (code === "CONFIG_INVALID" || code === "PROCESS_UNAVAILABLE" || code === "AUDIT_RANGE_INVALID" || code === "AUDIT_REASON_REQUIRED" || code === "AUDIT_FILTER_TOO_WIDE" || code === "TASK_ACTION_NEEDS_INPUT") return 400;
   if (code === "TOO_MANY_REQUESTS") return 429;
