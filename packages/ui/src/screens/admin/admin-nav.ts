@@ -21,6 +21,7 @@ export const ADMIN_GROUPS: readonly AdminGroup[] = [
   { to: "/app/admin/ai-spending", label: "AI and spending", blurb: "Who pays for the AI, the model Rovara uses, and the company's monthly limit." },
   { to: "/app/admin/product-ai", label: "Product AI keys", blurb: "A project's own AI key for its tests, and what its evals may spend." },
   { to: "/app/admin/connections", label: "Connections", blurb: "Slack, GitHub, Jira and other connected tools." },
+  { to: "/app/account/automation-keys", label: "Automation keys", blurb: "Your own keys that let scripts act as you in chosen projects. They live on your Account page." },
  ] },
  { id: "oversight", title: "Oversight", links: [
   { to: "/app/admin/audit", label: "Audit", blurb: "Who did what, and when." },

@@ -3,6 +3,7 @@
 // This file has NO imports and no runtime dependencies, so the same bytes can sit in both repositories (plan 3.1, lane CI:
 // a byte-identical check; until that check exists, copy it whole and change it in one place first). Cloud's copy is
 // `packages/contracts/src/code-contract-v0.ts`; Code's copy goes in its contracts package under the same file name.
+// NOT A SOURCE OF TRUTH (2026-11-25): the `later` and `awsApi` flags below are stale; check the routes themselves, and regenerate the flags the next time this file changes (add this same line to Code's copy).
 //
 // It describes two layers.
 //   1. CODE_ROUTES: the calls Cloud's server makes to Code as the signed-in person (plan 2.5 path 1). Each has a typed

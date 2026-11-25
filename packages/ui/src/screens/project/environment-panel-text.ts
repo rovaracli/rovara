@@ -6,11 +6,6 @@ export const ENV = {
  HEADING: "Saved environment",
  HELP: "Rovara saves this project's proven setup so a new task starts from it instead of installing everything again. If the saved copy has a problem, the task sets up fresh and nothing is blocked.",
  LOADING: "Loading the saved environment", LOAD_FAILED: "Couldn't load the saved environment. Try again.", TRY_AGAIN: "Try again",
- RESET: "Reset", RESET_HELP: "Throw away the saved copy and build a new one from the current code.",
- RESET_QUEUED: "A new saved environment is being built.", RESET_NOTHING: "Nothing to build right now. The project needs an approved test environment and code to build from.",
- RESET_IN_FLIGHT: "A new saved environment is already waiting to be built or being built.", RESET_COOLDOWN: "A reset was asked a few minutes ago. Wait a little before asking again.",
- RESET_FAILED: "Couldn't start the rebuild. Try again.", RESET_REFUSED: "Only a maintainer of this project can reset the saved environment.",
- ONLY_MAINTAINER: "Only a maintainer of this project can reset it.",
  NO_IMAGE: "No saved copy yet.",
  NOT_AVAILABLE: "Saved environments aren't available yet.",
 } as const;
@@ -27,7 +22,7 @@ const REASON: Record<string, string> = {
  key_changed: "the setup files changed",
  max_age: "the saved copy was more than a week old",
  stale: "a task could not use the saved copy",
- reset: "a maintainer pressed Reset",
+ reset: "a rebuild was asked for",
 };
 export const reasonText = (reason: string): string => REASON[reason] ?? "of a reason this version of the app does not know";
 

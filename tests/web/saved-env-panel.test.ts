@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-// SH26: the project's saved environment panel. It shows health, the saved copy's age and why the last rebuild started in the app's fixed words; Reset is offered to a maintainer only (the server says so), is sent once
-// per press, and its answer is the new panel; where the route answers 404 (saved environments off) the panel shows nothing, and the project page does not break.
+// SH26: the project's saved environment panel. It shows health, the saved copy's age and why the last rebuild started in the app's fixed words. There is no Reset (DEC 540: Cloud does not forward one and hosted Code's
+// `canReset` is always false), even when a server says canReset true; where the route answers 404 (saved environments off) the panel shows nothing, and the project page does not break. The panel lives on the Setup tab.
 import { expect, it } from "vitest";
-import { act, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Routes, Route } from "react-router";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { SavedEnvPanelSchema } from "@agentx/contracts/web";
@@ -23,7 +23,7 @@ const panel = (over: Record<string, unknown> = {}) => SavedEnvPanelSchema.parse(
 });
 type Handler = (request: ApiRequest) => Promise<ApiResponse | undefined> | ApiResponse | undefined;
 
-function setup(options: { panel?: ReturnType<typeof panel>; read?: ApiResponse; post?: Handler; page?: boolean } = {}) {
+function setup(options: { panel?: ReturnType<typeof panel>; read?: ApiResponse; post?: Handler; page?: boolean; path?: string } = {}) {
  let state = options.panel ?? panel();
  const f = fakeHost(async request => {
   const path = request.path.split("?")[0];
@@ -41,7 +41,7 @@ function setup(options: { panel?: ReturnType<typeof panel>; read?: ApiResponse; 
  });
  const query = createQueryClient();
  const element = options.page === true
-  ? h(MemoryRouter, { initialEntries: ["/app/projects/payments"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) })
+  ? h(MemoryRouter, { initialEntries: [options.path ?? "/app/projects/payments?tab=setup"], children: h(Announcer, { children: h(Routes, { children: h(Route, { path: "/app/projects/:name", element: h(ProjectScreen, {}) }) }) }) })
   : h(EnvironmentPanel, { project: "payments" });
  const ui = renderUi(h(AppHostProvider, { host: f.host, children: h(QueryClientProvider, { client: query, children: element }) }), { theme: "light" });
  const posts = () => f.request.mock.calls.map(([request]) => request).filter(request => request.method === "POST");
@@ -55,7 +55,7 @@ it("shows health, the age of the saved copy and why the last rebuild started, in
  expect(await section.findByText("Healthy. New tasks start from the saved copy.")).toBeTruthy();
  expect(section.getByText("Saved copy built 3 days ago (Oct 30, 2026).")).toBeTruthy();
  expect(section.getByText("The last rebuild was started because the setup files changed.")).toBeTruthy();
- expect(section.getByRole("button", { name: "Reset" })).toBeTruthy();
+ expect(section.queryByRole("button", { name: "Reset" })).toBeNull();
 });
 
 it("says what a waiting or running rebuild is for, a stale copy, and the last failure", async () => {
@@ -82,57 +82,24 @@ it("a word a newer server sends is shown as a plain sentence, not as a blank or 
  expect(document.body.textContent).not.toContain("future_state");
 });
 
-it("offers no Reset to a person who cannot reset, and says who can", async () => {
- setup({ panel: panel({ canReset: false }) });
- const section = await region();
- expect(await section.findByText("Only a maintainer of this project can reset it.")).toBeTruthy();
- expect(section.queryByRole("button", { name: "Reset" })).toBeNull();
-});
-
-it("Reset is sent once per press, with a request id, and the answer is the new panel", async () => {
- let release: (() => void) | undefined;
- const f = setup({ post: () => new Promise<ApiResponse>(resolve => { release = () => resolve({ status: 200, body: { status: "queued", panel: panel({ rebuild: { state: "queued", reason: "reset" }, lastRebuildReason: "reset" }) } }); }) });
- const section = await region();
- const button = await section.findByRole("button", { name: "Reset" });
- act(() => { button.click();button.click(); });
- await waitFor(() => expect(f.posts()).toHaveLength(1));
- release?.();
- expect(await section.findByText("A new saved copy is waiting to be built because a maintainer pressed Reset.")).toBeTruthy();
- expect(section.getByText("A new saved environment is being built.")).toBeTruthy();
- expect(f.posts()).toHaveLength(1);
- expect(f.posts()[0]!.body).toMatchObject({ action: "reset" });
- expect(typeof (f.posts()[0]!.body as { requestId: string }).requestId).toBe("string");
-});
-
-it("says when a rebuild is already waiting or a reset was just asked, and keeps what the server answered", async () => {
- for (const [status, text] of [["in_flight", "A new saved environment is already waiting to be built or being built."], ["cooldown", "A reset was asked a few minutes ago. Wait a little before asking again."]] as const) {
-  const f = setup({ post: () => ({ status: 200, body: { status, panel: panel() } }) });
-  fireEvent.click(await (await region()).findByRole("button", { name: "Reset" }));
-  expect(await screen.findByText(text)).toBeTruthy();
+it("draws no Reset and no sentence about who can reset, whatever canReset says, and never sends a rebuild", async () => {
+ for (const canReset of [true, false]) {
+  const f = setup({ panel: panel({ canReset }) });
+  const section = await region();
+  await section.findByText("Healthy. New tasks start from the saved copy.");
+  expect(section.queryByRole("button", { name: /reset|rebuild/iu })).toBeNull();
+  expect(document.body.textContent).not.toMatch(/Only a maintainer of this project can reset/u);
+  expect(document.body.textContent).not.toMatch(/pressed Reset/u);
+  expect(f.posts()).toHaveLength(0);
   f.unmount();
  }
 });
 
-it("each press carries its own request id", async () => {
- const f = setup();
+it("a rebuild reason of reset is said without naming a control", async () => {
+ setup({ panel: panel({ lastRebuildReason: "reset", rebuild: { state: "queued", reason: "reset" } }) });
  const section = await region();
- fireEvent.click(await section.findByRole("button", { name: "Reset" }));
- await waitFor(() => expect(f.posts()).toHaveLength(1));
- await waitFor(() => expect(section.getByRole("button", { name: "Reset" }).hasAttribute("disabled")).toBe(false));
- fireEvent.click(section.getByRole("button", { name: "Reset" }));
- await waitFor(() => expect(f.posts()).toHaveLength(2));
- expect((f.posts()[0]!.body as { requestId: string }).requestId).not.toBe((f.posts()[1]!.body as { requestId: string }).requestId);
-});
-
-it("says when there was nothing to build, and shows a refusal as one fixed sentence", async () => {
- const nothing = setup({ post: () => ({ status: 200, body: { status: "nothing_to_do", panel: panel() } }) });
- fireEvent.click(await (await region()).findByRole("button", { name: "Reset" }));
- expect(await screen.findByText("Nothing to build right now. The project needs an approved test environment and code to build from.")).toBeTruthy();
- nothing.unmount();
- setup({ post: () => ({ status: 403, body: { error: { code: "FORBIDDEN", message: "server words that are not shown <b>x</b>" } } }) });
- fireEvent.click(await (await region()).findByRole("button", { name: "Reset" }));
- expect((await screen.findByRole("alert")).textContent).toBe("Only a maintainer of this project can reset the saved environment.");
- expect(document.querySelector("b")).toBeNull();
+ expect(await section.findByText("The last rebuild was started because a rebuild was asked for.")).toBeTruthy();
+ expect(document.body.textContent).not.toContain("Reset");
 });
 
 it("shows nothing at all where saved environments are off (404) or the person may not see them (403)", async () => {
@@ -158,9 +125,15 @@ it("a read that fails says so and can be tried again", async () => {
  expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
 });
 
-it("the project page shows the panel, and a project page whose route answers 404 shows no panel and no error", async () => {
+it("the project page shows the panel on the Setup tab and not on the Overview, and a project page whose route answers 404 shows no panel and no error", async () => {
+ const overview = setup({ page: true, path: "/app/projects/payments" });
+ await screen.findByRole("heading", { name: "payments" });
+ await waitFor(() => expect(overview.request.mock.calls.some(([request]) => request.path === PATH)).toBe(false));
+ expect(screen.queryByRole("heading", { name: "Saved environment" })).toBeNull();
+ overview.unmount();
  const on = setup({ page: true });
  expect(await screen.findByRole("heading", { name: "Saved environment" })).toBeTruthy();
+ expect(screen.getByRole("tab", { name: "Setup" }).getAttribute("aria-selected")).toBe("true");
  on.unmount();
  setup({ page: true, read: { status: 404, body: { error: { code: "NOT_FOUND", message: "Not found." } } } });
  await screen.findByRole("heading", { name: "payments" });
