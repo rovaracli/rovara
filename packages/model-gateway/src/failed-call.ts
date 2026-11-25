@@ -1,6 +1,13 @@
 // A call that FAILED AFTER the request was sent (a stream that broke, a connection that dropped) is settled at what was used, never at
-// the full hold. Only for a route whose provider is Bedrock on Rovara's own account (`GatewayRoute.settlesFailedCalls`): its error answers
-// are already free (rovaraProviderFailure); this is the same rule for a failure that is not an HTTP error answer.
+// the full hold. For a route whose provider is Bedrock on Rovara's own account (`GatewayRoute.settlesFailedCalls`) that is every failure
+// after the send: its error answers are already free (rovaraProviderFailure); this is the same rule for a failure that is not an HTTP
+// error answer.
+//
+// A call WE cut short (`cause: "aborted"`: the client left, the deadline passed, the task ended) is settled the same way on EVERY route,
+// including the company's own provider keys (DEC 254zzz521: "count only what was actually spent" covers the company's cap meter too).
+// `cutCallMicros` is the one function for that. Usage the provider DID report (a complete usage read, or OpenRouter's final reported
+// cost) is settled as measured by the caller before this module is asked; a stream the PROVIDER broke on the company's own key keeps
+// the hold as before (only Rovara's own Bedrock settles those at use).
 //
 // Bedrock reports usage only at the END of a stream (ConverseStream: the last `metadata` event; InvokeModel: the last message_delta), so a
 // stream that breaks first reports none. What the gateway CAN see is how far the stream got (counted where it is read, so reasoning the
@@ -80,4 +87,17 @@ export function failedCallMicros(input: FailedCallInput): number | undefined {
   // The hold's own arithmetic (dearest applicable input rate; tiers by size), over the estimated counts.
   try { micros = estimateCall(inputTokens, outputTokens, input.price, 0, input.plainInput, measured ? undefined : input.media); } catch { return input.reservationMicros; }
   return Math.min(input.reservationMicros, Math.max(1, micros));
+}
+
+/**
+ * The ONE rule for a call that ended without a complete answer (a call cut at a task end, a client disconnect or the deadline on any
+ * route; any failure after the send on Rovara's own Bedrock): what it is charged, in micro-dollars, as an ESTIMATE of use: the input
+ * tokens sent (the provider's own count when it reported one, else the request's bytes) priced, plus the output streamed so far priced,
+ * never above the hold and at least 1. Callers settle MEASURED usage (a complete usage read, a final reported cost) before asking.
+ * `undefined`: this rule does not settle the call (a provider-broken stream on a company's own key, a gateway fault, a whole non-streaming
+ * answer whose head arrived): the caller keeps the hold, marked estimated, as before.
+ */
+export function cutCallMicros(input: FailedCallInput & { /** The route is Bedrock on Rovara's own account (`GatewayRoute.settlesFailedCalls`). */ ownBedrock: boolean }): number | undefined {
+  if (!input.ownBedrock && input.cause !== "aborted") return undefined;
+  return failedCallMicros(input);
 }

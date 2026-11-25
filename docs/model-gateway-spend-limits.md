@@ -135,6 +135,16 @@ Bedrock reports usage only at the end of a stream, so a stream that breaks first
 
 The estimate never exceeds the hold and is at least 1 micro-dollar when charged. It is settled at once as a never-confirmed receipt (`estimated`, `missing_usage`, `neverConfirmed`, `usageComplete: false`, billable unknown, revision 1), never `final`. Nothing revises it later: a price correction skips it, like the 24 h sweep's estimate. Measured usage is never replaced: a call whose usage arrived settles from it, as before. Every `provider_error` log line carries a `reason`: `not_sent`, `gateway_error`, or `provider_` / `aborted_` plus `before_events`, `before_output` or `after_output`.
 
+### A call the gateway cut, on the company's own key (DEC 254zzz521)
+
+"Count only what was actually spent" covers the company's cap meter too. A call the gateway cut short (cause `aborted`: the client left, the deadline passed, the run price expired mid-call, and, once it lands, the task ended) on ANY route, including the company's own Anthropic, OpenRouter, Bedrock or custom-endpoint key, no longer keeps the whole hold marked estimated. `cutCallMicros` (`src/failed-call.ts`) is the one function, called from `settleOnce` in `src/server.ts`; the task-end cut only has to set `stoppedByUs`. In order:
+
+1. The provider's complete usage was already read (the stream's last usage event, or a whole answer read in full before the client left): the call settles at that **actual** usage (OpenRouter: only with its complete reported cost, which wins as for a finished call), not estimated.
+2. A final reported cost (OpenRouter) with no token usage: settles at it when within the hold, as for a broken stream.
+3. Otherwise an **estimate of use**, the same arithmetic as the Bedrock rows above: the input sent (the provider's own count when its start event gave one) plus the output streamed so far, never above the hold, at least 1, marked `estimated` (`missing_usage`, `neverConfirmed`).
+
+Unchanged: a stream the PROVIDER broke on a company's own key keeps the hold, marked estimated; a whole non-streaming answer whose head arrived keeps the hold (the provider finished and billed it); a failure inside the gateway keeps the hold; Rovara's own Bedrock rows above. The hold is closed once (`settleOnce`'s guard, then the meter's conditional close).
+
 A hold that stays `awaiting_usage` for another reason (a completed call whose usage the gateway could not read, on a route without this rule) is not left open forever: the open-hold sweep settles it 24 hours after cut-off (`USAGE_WAIT_MS`, above). With fewer than 20 history samples for the model that estimate is the whole hold.
 
 
