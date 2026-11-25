@@ -15,7 +15,7 @@ export function buildSummary(manifest: Manifest, env: PipelineEnv, stage: StageR
       liveSha: manifest.code.liveSha?.[env] ?? null, rollbackTarget: manifest.code.rollbackTarget ?? null,
     },
     cloud: { tag: manifest.cloud.tag, sha: manifest.cloud.sha, liveSha: manifest.cloud.liveSha[env] },
-    gateway: { digest: manifest.gateway.digest, source: manifest.gateway.source },
+    gateway: { digest: manifest.gateway.digest, source: manifest.gateway.source, codeSha: manifest.gateway.codeSha ?? null },
     changeSets: stage.changeSets.map((cs) => ({ part: cs.part, stack: cs.stack, noChanges: cs.noChanges, counts: cs.counts })),
     gates: stage.gates.map((g) => ({ name: g.name, phase: g.phase, result: g.result, skippedReason: g.skippedReason })),
     warnings,
@@ -31,7 +31,7 @@ export function renderSummary(summary: PromotionSummary): string {
   lines.push(`PROMOTION SUMMARY ${summary.env}  execution ${summary.executionId.slice(0, 8)}  mode ${summary.mode}`);
   lines.push(`  Code   : sha ${short(summary.code.sha)}  release=${summary.code.release}  (pinned: ${short(summary.code.pinnedSha)})`);
   lines.push(`  Cloud  : ${summary.cloud.tag} ${short(summary.cloud.sha)}  (live: ${summary.cloud.liveSha === null ? "unknown" : short(summary.cloud.liveSha)})`);
-  lines.push(`  Gateway: ${summary.gateway.digest === null ? "no digest yet" : `${summary.gateway.digest.slice(0, 19)}...`}  source=${summary.gateway.source ?? "none"}`);
+  lines.push(`  Gateway: ${summary.gateway.digest === null ? "no digest yet" : `${summary.gateway.digest.slice(0, 19)}...`}  source=${summary.gateway.source ?? "none"}  built from Code ${short(summary.gateway.codeSha ?? null)}`);
   const sets = summary.changeSets.map((cs) => (cs.noChanges ? `${cs.part}  no changes` : `${cs.part}  +${cs.counts.add} ~${cs.counts.modify} -${cs.counts.remove} r${cs.counts.replace}`));
   lines.push(`  Change sets: ${sets.length === 0 ? "none yet" : sets.join(" | ")}`);
   const gates = summary.gates.map((g) => (g.result === "skipped" ? `skipped ${g.name} (${g.skippedReason ?? ""})` : `${g.result} ${g.name}`));

@@ -12,7 +12,8 @@ export interface PipelineConfig {
   stackNames: Record<StackPart | "gatewayImages", string>;
   stackIds: Record<StackPart, string>;
   environments: Record<PipelineEnv, { profile: string | null }>;
-  build: { common: string[]; web: string[] };
+  /** `codeGateway`: the commands that make a Code checkout ready to synthesize the gateway stacks (#1478 phase 2); run without AWS credentials. */
+  build: { common: string[]; web: string[]; codeGateway: string[] };
   releaseCheck: { paths: string[]; intervalSeconds: number };
 }
 
@@ -45,8 +46,9 @@ export function parseConfig(raw: string): PipelineConfig {
     const row = envs?.[env];
     if (row === undefined || !(row.profile === null || typeof row.profile === "string")) throw new Error(`config.json: environments.${env}.profile must be a name or null`);
   }
-  const build = file.build as { common?: unknown; web?: unknown } | undefined;
+  const build = file.build as { common?: unknown; web?: unknown; codeGateway?: unknown } | undefined;
   if (!isStringList(build?.common) || !isStringList(build?.web)) throw new Error("config.json: build.common and build.web must be command lists");
+  if (!isStringList(build?.codeGateway)) throw new Error("config.json: build.codeGateway must be a command list (the Code checkout's install and build, for the gateway stacks)");
   const check = file.releaseCheck as { paths?: unknown; intervalSeconds?: unknown } | undefined;
   if (!isStringList(check?.paths) || typeof check.intervalSeconds !== "number" || check.intervalSeconds <= 0) throw new Error("config.json: releaseCheck needs paths and a positive intervalSeconds");
   return file as unknown as PipelineConfig;

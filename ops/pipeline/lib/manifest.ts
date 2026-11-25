@@ -79,6 +79,7 @@ export function parseManifest(raw: string): Manifest {
       source: source === "built" || source === "copied" || source === "adopted" || source === "supplied" ? source : null,
       imageTag: text(gateway.imageTag),
       repository: text(gateway.repository),
+      codeSha: text(gateway.codeSha),
     },
     stages,
   };

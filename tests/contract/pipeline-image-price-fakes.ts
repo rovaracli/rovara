@@ -54,14 +54,15 @@ export interface Scenario {
 }
 
 export const emptyScenario = (): Scenario => ({
-  accounts: { "": FAKE_ACCOUNT, [BETA_PROFILE]: BETA_ACCOUNT }, stacks: {}, resources: [], ecr: {}, ecrDigests: {}, pushDigest: `sha256:${"c".repeat(64)}`, contextSha256: "a".repeat(64), contextExit: 0, contextNoise: false, buildHash: "same", head: sha("4"), dirty: "", ignored: "", pushReportsDigest: null, pushFails: false,
+  accounts: { "": FAKE_ACCOUNT, [BETA_PROFILE]: BETA_ACCOUNT }, stacks: {}, resources: [], ecr: {}, ecrDigests: {}, pushDigest: `sha256:${"c".repeat(64)}`, contextSha256: "a".repeat(64), contextExit: 0, contextNoise: false, buildHash: "same", head: sha("c"), dirty: "", ignored: "", pushReportsDigest: null, pushFails: false,
   buildExit: 0, platform: "linux/arm64", craneCopyExit: 0, craneCopyDigest: null, craneDigestOverride: null, logEvents: [], eventsAfterRunTask: [], targets: null, runTask: null, describeTasks: [],
 });
 
 const SCRIPT = `#!/usr/bin/env node
 const fs = require("fs");
 const dir = process.env.FAKE_DIR;
-const tool = require("path").basename(process.argv[1]);
+const base = require("path").basename(process.argv[1]);
+const tool = base === "nodeimg" ? "node" : base;
 const args = process.argv.slice(2);
 const sc = JSON.parse(fs.readFileSync(dir + "/scenario.json", "utf8"));
 const save = () => fs.writeFileSync(dir + "/scenario.json", JSON.stringify(sc));
@@ -122,7 +123,7 @@ if (tool === "git") {
   if (args[0] === "rev-parse" && args[1] === "HEAD") out(sc.head + "\\n");
   if (args[0] === "status") out(args.includes("--ignored") ? sc.ignored : sc.dirty);
 }
-if (tool === "npx") {
+if (tool === "node") {
   if (args.includes("context")) {
     const o = flag("--out");
     // as assembleContext does: a directory that is not empty is refused; otherwise the context is written there
@@ -157,8 +158,12 @@ export interface Harness {
 export function makeHarness(): Harness {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "l6-fake-")));
   mkdirSync(join(dir, "bin"));
-  mkdirSync(join(dir, "cloud"));
-  for (const name of ["aws", "docker", "crane", "npx", "git"]) { writeFileSync(join(dir, "bin", name), SCRIPT); chmodSync(join(dir, "bin", name), 0o755); }
+  mkdirSync(join(dir, "code"));
+  for (const name of ["aws", "docker", "crane", "git", "nodeimg"]) { writeFileSync(join(dir, "bin", name), SCRIPT); chmodSync(join(dir, "bin", name), 0o755); }
+  // The image script runs under plain `node` (no tsx, no npm install in the Code tree). A `node` that answers ONLY for that script and hands everything else to the real node (the fake tools' own shebang goes through it).
+  writeFileSync(join(dir, "bin", "node"), `#!/bin/sh\ncase "$1" in\n  scripts/model-gateway-image.ts) exec "$FAKE_REAL_NODE" "$FAKE_DIR/bin/nodeimg" "$@" ;;\n  *) exec "$FAKE_REAL_NODE" "$@" ;;\nesac\n`);
+  chmodSync(join(dir, "bin", "node"), 0o755);
+  process.env.FAKE_REAL_NODE = process.execPath;
   writeFileSync(join(dir, "calls.jsonl"), "");
   const oldPath = process.env.PATH;
   process.env.PATH = `${join(dir, "bin")}:${oldPath}`;
@@ -177,7 +182,7 @@ export function makeHarness(): Harness {
       let now = T0;
       return { ...real, clock: { now: () => new Date(now), sleep: (ms) => { now += ms; return Promise.resolve(); } } };
     },
-    restorePath: () => { process.env.PATH = oldPath; delete process.env.FAKE_DIR; if (oldProfile !== undefined) process.env.AWS_PROFILE = oldProfile; },
+    restorePath: () => { process.env.PATH = oldPath; delete process.env.FAKE_DIR; delete process.env.FAKE_REAL_NODE; if (oldProfile !== undefined) process.env.AWS_PROFILE = oldProfile; },
   };
   h.write();
   return h;

@@ -67,5 +67,6 @@
     { "resourceType": "AWS::Events::Rule", "logicalIdPattern": "^PriceFetchSchedule[0-9A-F]{8}$" },
     { "resourceType": "AWS::IAM::Policy", "logicalIdPattern": "^PriceFetchTaskEventsRoleDefaultPolicy[0-9A-F]{8}$" }
   ],
-  "imageOnlyPaths": ["infra", "packages/contracts", "ops/pipeline/switches.json", "package-lock.json"]
+  "imageOnlyPaths": ["ops/pipeline/switches.json"],
+  "imageOnlyCodePaths": ["infra/lib/model-gateway*", "infra/lib/app.ts", "infra/bin/agentx.ts", "infra/package.json", "package-lock.json"]
 }

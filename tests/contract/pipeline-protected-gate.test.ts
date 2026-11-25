@@ -5,26 +5,28 @@ import { gate as protectedGate } from "../../ops/pipeline/gates/protected.gate.t
 import { checkProtected, isReplacement, parseProtected } from "../../ops/pipeline/lib/protected.ts";
 import { countRows } from "../../ops/pipeline/lib/changesets.ts";
 import type { ChangeRow, ChangeSetRecord, GateInput, Manifest } from "../../ops/pipeline/types.ts";
-import { CDK_METADATA, EXEC8, EXEC_ID, config, makePorts, newState, row, sha } from "./pipeline-stage-fakes.ts";
+import { CDK_METADATA, CODE_REPO, EXEC8, EXEC_ID, config, makePorts, newState, row, sha, withCodeClone } from "./pipeline-stage-fakes.ts";
 
 const LIST_FILE = new URL("../../ops/pipeline/protected.json", import.meta.url);
 const RAW = readFileSync(LIST_FILE, "utf8");
 const LIST_PATH = new URL("../../ops/pipeline/protected.json", import.meta.url).pathname;
 
-const manifest = (over: { mode?: Manifest["mode"]; live?: string | null } = {}): Manifest => ({
+const manifest = (over: { mode?: Manifest["mode"]; live?: string | null; codeSha?: string | null } = {}): Manifest => ({
   schema: 1, executionId: EXEC_ID, exec8: EXEC8, createdAt: "2026-11-24T12:00:00.000Z", mode: over.mode ?? "release",
   cloud: { tag: "v0.13.10", sha: sha("4"), ref: "latest-tag", trunk: "cloud/next", liveSha: { beta: over.live === undefined ? sha("3") : over.live, production: null } },
   code: { sha: null, release: "run", requestedRelease: "run", pinnedSha: { beta: null, production: null }, supersedes: null },
-  gateway: { digest: null, source: null, imageTag: null, repository: null }, stages: {},
+  gateway: { digest: null, source: null, imageTag: null, repository: null, codeSha: over.codeSha === undefined ? sha("e") : over.codeSha }, stages: {},
 });
 const cs = (part: ChangeSetRecord["part"], rows: ChangeRow[]): ChangeSetRecord => ({
   part, stack: `rovara-cloud-beta-${part}`, changeSetName: `rovara-pipeline-${EXEC8}`, changeSetId: "id", noChanges: rows.length === 0, status: "CREATE_COMPLETE", executionStatus: "AVAILABLE",
   templateSha256: "h", rows, counts: countRows(rows), previewedAt: "x", executedAt: null, finalStatus: null,
 });
-const run = (records: ChangeSetRecord[], over: { mode?: Manifest["mode"]; live?: string | null; exec?: (cmd: string, args: readonly string[]) => { code: number; stdout: string; stderr: string } } = {}) => {
+/** The gateway change is image-only only when the LIVE gateway was deployed from Code (its DeployedCodeSha) and the gateway infra paths are equal in Code between that commit and this run's. */
+const run = (records: ChangeSetRecord[], over: { mode?: Manifest["mode"]; live?: string | null; codeSha?: string | null; liveCode?: string | null; exec?: (cmd: string, args: readonly string[]) => { code: number; stdout: string; stderr: string } } = {}) => {
   const state = newState();
   state.files[LIST_PATH] = RAW;
-  if (over.exec !== undefined) state.exec = over.exec;
+  state.stacks["rovara-cloud-beta-gateway"] = { status: "UPDATE_COMPLETE", parameters: {}, outputs: (over.liveCode === undefined ? sha("d") : over.liveCode) === null ? {} : { DeployedCodeSha: over.liveCode === undefined ? sha("d") : over.liveCode! }, templateSha: "live" };
+  state.exec = withCodeClone(over.exec);
   const input: GateInput = { env: "beta", phase: "change-sets", region: "us-east-1", config, manifest: manifest(over), changeSets: records, dirs: { pipeline: "/p", cloud: "/c", out: "/out", work: "/w" }, ports: makePorts(state), log: () => {} };
   return protectedGate.run(input).then((outcome) => ({ outcome, state }));
 };
@@ -125,12 +127,13 @@ describe("protected gate: the gateway change set", () => {
     expect(outcome.failures).toHaveLength(7);
   });
 
-  it("an image-only change (infra unchanged from the deployed Cloud) may touch only the five image rows and the CDK metadata line", async () => {
+  it("an image-only change (gateway infra unchanged in Code since the deployed gateway) may touch only the five image rows and the CDK metadata line", async () => {
     const ok = await run([cs("gateway", [...IMAGE_ROWS, CDK_METADATA])], { exec: sameInfra });
     expect(ok.outcome.result).toBe("pass");
     expect(ok.outcome.data).toMatchObject({ imageOnly: true });
-    const diff = ok.state.calls.find((c) => c.startsWith("exec git -C /p diff --quiet"))!;
-    expect(diff).toContain(`${sha("3")} ${sha("4")} -- infra packages/contracts ops/pipeline/switches.json package-lock.json`);
+    // two comparisons, both must hold: the pipeline's settings file between the live and the candidate Cloud, and Code's gateway infra between the live gateway's Code commit and this run's (in the Code clone)
+    expect(ok.state.calls).toContain(`exec git -C /p diff --quiet ${sha("3")} ${sha("4")} -- ops/pipeline/switches.json`);
+    expect(ok.state.calls).toContain(`exec git -C ${CODE_REPO} diff --quiet ${sha("d")} ${sha("e")} -- infra/lib/model-gateway* infra/lib/app.ts infra/bin/agentx.ts infra/package.json package-lock.json`);
     const extra = await run([cs("gateway", [...IMAGE_ROWS, row("Add", "NewAlarm11111111", "AWS::CloudWatch::Alarm", null), row("Modify", "ServeLogs9729A15B", "AWS::Logs::LogGroup", "False")])], { exec: sameInfra });
     expect(extra.outcome.result).toBe("fail");
     expect(extra.outcome.failures).toHaveLength(2);
@@ -142,10 +145,19 @@ describe("protected gate: the gateway change set", () => {
     expect(outcome.failures).toHaveLength(2);
   });
 
-  it("when infra changed since the deployed Cloud, or the deployed sha or the diff is unknown, only the general rules apply (and the note says so)", async () => {
+  it("when the gateway infra changed in Code, the gateway was last deployed from Cloud, or a commit or the diff is unknown, only the general rules apply (and the note says so)", async () => {
     const changed = await run([cs("gateway", [...IMAGE_ROWS, row("Add", "NewAlarm11111111", "AWS::CloudWatch::Alarm", null)])], { exec: infraChanged });
     expect(changed.outcome.result).toBe("pass");
-    expect(changed.outcome.notes?.join(" ")).toMatch(/infra changed between/);
+    expect(changed.outcome.notes?.join(" ")).toMatch(/settings changed between|gateway infra changed in Code between/);
+    const codeChanged = await run([cs("gateway", [...IMAGE_ROWS, row("Add", "NewAlarm11111111", "AWS::CloudWatch::Alarm", null)])], { exec: (cmd, args) => (args.includes(CODE_REPO) ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: "", stderr: "" }) });
+    expect(codeChanged.outcome.result).toBe("pass");
+    expect(codeChanged.outcome.notes?.join(" ")).toMatch(/gateway infra changed in Code between the deployed ddddddddd and eeeeeeeee/);
+    const fromCloud = await run([cs("gateway", [...IMAGE_ROWS, row("Add", "NewAlarm11111111", "AWS::CloudWatch::Alarm", null)])], { exec: sameInfra, liveCode: null });
+    expect(fromCloud.outcome.result).toBe("pass");
+    expect(fromCloud.outcome.data).toMatchObject({ imageOnly: false });
+    expect(fromCloud.outcome.notes?.join(" ")).toMatch(/not deployed from Code/);
+    const noCode = await run([cs("gateway", [row("Add", "NewAlarm11111111", "AWS::CloudWatch::Alarm", null)])], { exec: sameInfra, codeSha: null });
+    expect(noCode.outcome.notes?.join(" ")).toMatch(/names no Code commit/);
     const unknown = await run([cs("gateway", [row("Add", "NewAlarm11111111", "AWS::CloudWatch::Alarm", null)])], { live: null });
     expect(unknown.outcome.result).toBe("pass");
     expect(unknown.outcome.notes?.join(" ")).toMatch(/deployed Cloud sha is unknown/);
@@ -155,8 +167,8 @@ describe("protected gate: the gateway change set", () => {
     expect((await run([cs("gateway", [TABLE("LedgerB7379752", "Modify", "True")])], { live: null })).outcome.result).toBe("fail");
   });
 
-  it("the same candidate as the deployed one is image-only without asking git; an adoption run is left to the integrity gate", async () => {
-    const same = await run([cs("gateway", [row("Add", "NewAlarm11111111", "AWS::CloudWatch::Alarm", null)])], { live: sha("4") });
+  it("the same Cloud and Code commits as the deployed ones are image-only without asking git; an adoption run is left to the integrity gate", async () => {
+    const same = await run([cs("gateway", [row("Add", "NewAlarm11111111", "AWS::CloudWatch::Alarm", null)])], { live: sha("4"), codeSha: sha("d") });
     expect(same.outcome.result).toBe("fail");
     expect(same.state.calls.some((c) => c.includes("diff --quiet"))).toBe(false);
     const adoption = await run([cs("gateway", [CDK_METADATA])], { mode: "adoption", exec: sameInfra });

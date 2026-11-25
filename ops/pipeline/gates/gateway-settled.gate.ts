@@ -1,6 +1,6 @@
 // Gate 2b (L5): the gateway is SETTLED on the digest the pipeline deployed (the staging pack's gate-gateway-deployed.sh, ported). /healthz alone also passes on the old image,
 // so this reads ECS: one deployment, rollout COMPLETED, running == desired (and at least one), and the task definition's image is pinned `@sha256:<64 hex>`, equal to
-// the manifest's gateway digest. The service comes from the gateway stack's `ServiceArn` output (written with DeployedCloudSha); a stack without it (nothing deployed it yet)
+// the manifest's gateway digest. The service comes from the gateway stack's `ServiceArn` output (written with the gateway's DeployedCodeSha); a stack without it (nothing deployed it yet)
 // is read with cloudformation list-stack-resources instead, and the verdict says which. Read-only. AWS actions: cloudformation:DescribeStacks (+ ListStackResources for
 // the fallback), ecs:DescribeServices, ecs:DescribeTaskDefinition.
 import { stackName } from "../config.ts";

@@ -17,20 +17,21 @@ import { proofStep } from "../../ops/pipeline/steps/proof.ts";
 import { webAppStep } from "../../ops/pipeline/steps/web-app.ts";
 import type { Gate, ImageStepResult, PipelineEnv, StepName } from "../../ops/pipeline/types.ts";
 import type { Inputs } from "../../ops/pipeline/lib/context.ts";
-import { CDK_METADATA, DIGEST_A, DIGEST_B, EXEC_ID, FAKE_ACCOUNT, MODIFY_FUNCTION, config, fakeSwitches, liveStack, makeCtx, makePorts, newState, row, sha, stackFor } from "./pipeline-stage-fakes.ts";
+import { withCodeClone, CDK_METADATA, DIGEST_A, DIGEST_B, EXEC_ID, FAKE_ACCOUNT, MODIFY_FUNCTION, config, fakeSwitches, liveStack, makeCtx, makePorts, newState, row, sha, stackFor } from "./pipeline-stage-fakes.ts";
 import type { FakeState } from "./pipeline-stage-fakes.ts";
 
 const LAST_GOOD = "/rovara-cloud/beta/release/last-good";
 const FLOORS = JSON.stringify({ schema: 1, floors: { web: [{ sha: sha("1"), reason: "web train one" }] }, gatewayDigests: { belowFloor: [{ digest: `sha256:${"c".repeat(64)}`, reason: "no price bands" }] } });
 const record = (over: Record<string, unknown> = {}): string => JSON.stringify({
   schema: 1, env: "beta", recordedAt: "2026-11-24T10:00:00.000Z", executionId: "aaaabbbb-0000-4000-8000-000000000000", mode: "release",
-  cloud: { tag: "v0.13.9", sha: sha("3") }, gateway: { digest: DIGEST_A }, code: { sha: sha("c") }, proofGates: ["healthz"],
-  previous: { cloudTag: "v0.13.2", cloudSha: sha("2"), gatewayDigest: DIGEST_B }, ...over,
+  cloud: { tag: "v0.13.9", sha: sha("3") }, gateway: { digest: DIGEST_A, codeSha: sha("c") }, code: { sha: sha("c") }, proofGates: ["healthz"],
+  previous: { cloudTag: "v0.13.2", cloudSha: sha("2"), gatewayDigest: DIGEST_B, gatewayCodeSha: sha("b") }, ...over,
 });
 
 /** Beta runs v0.13.10 (sha 4); last-good is v0.13.9; the floors file is in the pipeline tree. */
 function world(over: Partial<FakeState> = {}, lastGood: string | null = record(), floors: string | null = FLOORS): FakeState {
   const state = newState({
+    exec: withCodeClone(),
     plan: { RovaraCloudApp: [CDK_METADATA], RovaraCloudWeb: [MODIFY_FUNCTION], RovaraModelGateway: [row("Modify", "TaskDef", "AWS::ECS::TaskDefinition", "True")] },
     ssm: lastGood === null ? {} : { [LAST_GOOD]: lastGood },
     files: floors === null ? {} : { [`/pipeline/${FLOORS_PATH}`]: floors, [`${process.cwd()}/${FLOORS_PATH}`]: floors },
@@ -55,7 +56,7 @@ describe("rollback-plan: which release and which variables", () => {
       "ROLLBACK PLAN beta  (read-only: nothing was changed)",
       `  Live   : v0.13.10 ${sha("4").slice(0, 12)}`,
       `  Target : v0.13.9 ${sha("3").slice(0, 12)}  (last-good, recorded 2026-11-24T10:00:00.000Z by execution aaaabbbb, mode release)`,
-      `  Gateway: ${DIGEST_A}`,
+      `  Gateway: ${DIGEST_A}  (built from Code ${sha("c").slice(0, 12)})`,
       "  Floors : 1 checked, none below",
       "  Run the pipeline with these variables (beta first, then production, each with its own CODE_LIVE_SHA):",
       "    CLOUD_REF=v0.13.9",
@@ -95,7 +96,23 @@ describe("rollback-plan: which release and which variables", () => {
   it("refuses a target below a floor with the floor's reason, and a digest the file lists below the floor", async () => {
     const floors = JSON.stringify({ schema: 1, floors: { web: [{ sha: sha("3"), reason: "web train three" }] } });
     await refuses(plan(world({}, record(), floors), "previous"), "ROLLBACK_REFUSED", /below the web floor.*web train three/u);
-    await refuses(plan(world({}, record({ gateway: { digest: `sha256:${"c".repeat(64)}` } }))), "ROLLBACK_REFUSED", /no price bands/);
+    await refuses(plan(world({}, record({ gateway: { digest: `sha256:${"c".repeat(64)}`, codeSha: sha("c") } }))), "ROLLBACK_REFUSED", /no price bands/);
+  });
+
+  it("names the Code commit the target gateway was built from, and refuses a target whose gateway has none recorded (an image from before the gateway moved to Code)", async () => {
+    expect((await plan(world(), "previous")).join("\n")).toContain(`Gateway: ${DIGEST_B}  (built from Code ${sha("b").slice(0, 12)})`);
+    await refuses(plan(world({}, record({ previous: { cloudTag: "v0.13.2", cloudSha: sha("2"), gatewayDigest: DIGEST_B } })), "previous"), "ROLLBACK_REFUSED", /no Code commit for it.*recorded before the gateway moved to Code/u);
+    await refuses(plan(world({}, record({ gateway: { digest: DIGEST_A } }))), "ROLLBACK_REFUSED", /no Code commit for it/u);
+  });
+
+  it("judges the target gateway's Code commit against the gatewayCode floors in the Code clone, and says when the plan was made without a clone", async () => {
+    const floors = JSON.stringify({ schema: 1, floors: { gatewayCode: [{ sha: sha("e"), reason: "gateway needs the e commit" }] } });
+    const below = world({ exec: withCodeClone((cmd, args) => (cmd === "git" && args.includes("merge-base") ? { code: 1, stdout: "", stderr: "" } : { code: 0, stdout: "", stderr: "" })) }, record(), floors);
+    await refuses(plan(below), "ROLLBACK_REFUSED", /below the gatewayCode floor eeeeeeeeeeee: gateway needs the e commit/u);
+    const above = world({ exec: withCodeClone() }, record(), floors);
+    expect((await plan(above)).join("\n")).not.toMatch(/WARN/u);
+    const noClone = world({ exec: () => ({ code: 0, stdout: "", stderr: "" }) }, record(), floors);
+    expect((await plan(noClone)).join("\n")).toMatch(/WARN {3}: the gateway's Code commit was not judged against the 1 gatewayCode floor\(s\): no Code clone/u);
   });
 
   it("refuses when the floors file is missing (never 'no floors')", async () => {
@@ -217,7 +234,7 @@ describe("a rollback run", () => {
 
   it("is refused in the gateway step when the supplied digest is one the file lists below the floor", async () => {
     const below = `sha256:${"c".repeat(64)}`;
-    const run: Run = { state: world({}, record({ previous: { cloudTag: "v0.13.2", cloudSha: sha("2"), gatewayDigest: below } })), gates: [integrity, floorGate], inputs: ROLLBACK_INPUTS };
+    const run: Run = { state: world({}, record({ previous: { cloudTag: "v0.13.2", cloudSha: sha("2"), gatewayDigest: below, gatewayCodeSha: sha("b") } })), gates: [integrity, floorGate], inputs: ROLLBACK_INPUTS };
     run.state.plan = { RovaraCloudApp: [CDK_METADATA], RovaraCloudWeb: [MODIFY_FUNCTION], RovaraModelGateway: [row("Modify", "TaskDef", "AWS::ECS::TaskDefinition", "True")] };
     await step(run, "preflight");
     const ctxSteps: Record<string, StepFunction> = { ...STEPS, image: (c, s) => imageStep(c, s, okImage(below)) };

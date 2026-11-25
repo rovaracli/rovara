@@ -19,14 +19,14 @@ export function parseLastGood(raw: string): LastGoodRecord {
   const gateway = isObject(file.gateway) ? file.gateway : {};
   const code = isObject(file.code) ? file.code : {};
   const previous = isObject(file.previous) && text(file.previous.cloudTag) !== null && text(file.previous.cloudSha) !== null
-    ? { cloudTag: text(file.previous.cloudTag)!, cloudSha: text(file.previous.cloudSha)!, gatewayDigest: text(file.previous.gatewayDigest) }
+    ? { cloudTag: text(file.previous.cloudTag)!, cloudSha: text(file.previous.cloudSha)!, gatewayDigest: text(file.previous.gatewayDigest), gatewayCodeSha: text(file.previous.gatewayCodeSha) }
     : null;
   const tag = text(cloud.tag), sha = text(cloud.sha), digest = text(gateway.digest), executionId = text(file.executionId), recordedAt = text(file.recordedAt);
   if (env === null || mode === null || tag === null || sha === null || digest === null || executionId === null || recordedAt === null) throw new StageError("REFUSED", "the last-good record is missing required values");
   return {
     schema: 1, env, recordedAt, executionId, mode,
     cloud: { tag, sha },
-    gateway: { digest },
+    gateway: { digest, codeSha: text(gateway.codeSha) },
     code: { sha: text(code.sha) },
     proofGates: Array.isArray(file.proofGates) ? file.proofGates.filter((name): name is string => typeof name === "string") : [],
     ...(Array.isArray(file.proofSkipped) ? { proofSkipped: file.proofSkipped.filter((name): name is string => typeof name === "string") } : {}),
@@ -48,11 +48,11 @@ export function buildLastGood(manifest: Manifest, env: PipelineEnv, proofGates: 
     executionId: manifest.executionId,
     mode: manifest.mode,
     cloud: { tag: manifest.cloud.tag, sha: manifest.cloud.sha },
-    gateway: { digest: manifest.gateway.digest },
+    gateway: { digest: manifest.gateway.digest, codeSha: manifest.gateway.codeSha ?? null },
     code: { sha: codeShaAfterRun(manifest, env) },
     proofGates,
     ...(proofSkipped.length === 0 ? {} : { proofSkipped }),
-    previous: previous === null ? null : { cloudTag: previous.cloud.tag, cloudSha: previous.cloud.sha, gatewayDigest: previous.gateway.digest },
+    previous: previous === null ? null : { cloudTag: previous.cloud.tag, cloudSha: previous.cloud.sha, gatewayDigest: previous.gateway.digest, gatewayCodeSha: previous.gateway.codeSha ?? null },
   };
 }
 

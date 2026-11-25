@@ -297,7 +297,7 @@ describe("the rollback-floor gate: the `code` group", () => {
     const floors = parseFloors(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8"));
     expect(floors.floors.filter((f) => f.group === "code").map((f) => f.sha)).toEqual(["5e6c41b127a3be962f8e9790f98dc6420b0f3c1e"]);
     expect((JSON.parse(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8")) as { floors: object }).floors).toHaveProperty("code");
-    expect(floors.floors.map((f) => f.group).sort()).toEqual(["code", "gateway", "gateway", "web", "web"]);
+    expect(floors.floors.map((f) => f.group).sort()).toEqual(["code", "gateway", "gateway", "gatewayCode", "gatewayCode", "web", "web"]);
   });
 });
 
@@ -481,8 +481,8 @@ describe("rollback-plan --code-target", () => {
   const LAST_GOOD = "/rovara-cloud/beta/release/last-good";
   const record = JSON.stringify({
     schema: 1, env: "beta", recordedAt: "2026-11-24T10:00:00.000Z", executionId: "aaaabbbb-0000-4000-8000-000000000000", mode: "release",
-    cloud: { tag: "v0.13.10", sha: sha("4") }, gateway: { digest: DIGEST_A }, code: { sha: LIVE }, proofGates: [],
-    previous: { cloudTag: "v0.13.9", cloudSha: sha("3"), gatewayDigest: DIGEST_B },
+    cloud: { tag: "v0.13.10", sha: sha("4") }, gateway: { digest: DIGEST_A, codeSha: LIVE }, code: { sha: LIVE }, proofGates: [],
+    previous: { cloudTag: "v0.13.9", cloudSha: sha("3"), gatewayDigest: DIGEST_B, gatewayCodeSha: LIVE },
   });
   const planWorld = (over: Partial<FakeState> = {}): FakeState => { const s = world(over); s.ssm[LAST_GOOD] = record; return s; };
   const plan = (state: FakeState, codeTarget: string | null, which: "last-good" | "previous" = "last-good"): Promise<string[]> =>
@@ -494,7 +494,7 @@ describe("rollback-plan --code-target", () => {
       `  Live   : v0.13.10 ${sha("4").slice(0, 12)}`,
       `  Cloud  : stays at v0.13.10  (last-good, recorded 2026-11-24T10:00:00.000Z by execution aaaabbbb, mode release)`,
       `  Code   : rolls back to ${OLD.slice(0, 12)}`,
-      `  Gateway: ${DIGEST_A}`,
+      `  Gateway: ${DIGEST_A}  (built from Code ${LIVE.slice(0, 12)})`,
       "  Floors : 1 cloud floor(s) checked, none below",
       "  Run the pipeline with these variables (CODE_LIVE_SHA and the supersession are supplied by the pipeline itself):",
       "    PIPELINE_MODE=rollback",

@@ -73,11 +73,12 @@ export const CLOUD_RELEASE_STEPS = ["preflight", "image", "gateway", "gateway-ch
 export const CLOUD_RELEASE_EXPORTED_VARIABLES = ["CLOUD_TAG", "CLOUD_SHA", "CLOUD_MODE", "CODE_RELEASE_EFFECTIVE", "CODE_PINNED_SHA", "SUMMARY_LINE"] as const;
 /**
  * The public pipeline gives every Cloud action the Code source as a secondary input named `Source` (a full clone; its Code `sourceOutput` artifact), next to the previous
- * action's state. CodeBuild puts it at $CODEBUILD_SRC_DIR_Source. The build exports that directory as ROVARA_CODE_REPO, which the stage CLI's Code-side checks read (the deployed-drift gate,
- * the gateway run-price gate, the rollback `code` floors). The steps that run those checks refuse to start without it.
+ * action's state. CodeBuild puts it at $CODEBUILD_SRC_DIR_Source. The build exports that directory as ROVARA_CODE_REPO, which the stage CLI's Code-side work reads: the deployed-drift gate,
+ * the gateway run-price gate, the rollback `code` and `gatewayCode` floors and, since the gateway moved to Code (#1478 phase 2), the gateway itself: the `image` step builds the gateway
+ * image from a checkout of the Code commit and the `gateway` step makes its stack with Code's CDK app at that commit. The steps that read the clone refuse to start without it.
  */
 export const CLOUD_RELEASE_CODE_CLONE_ARTIFACT = "Source";
-export const CLOUD_RELEASE_CODE_CLONE_STEPS = ["preflight", "gateway-check"] as const;
+export const CLOUD_RELEASE_CODE_CLONE_STEPS = ["preflight", "image", "gateway", "gateway-check"] as const;
 /** The AWS profile of the beta release role (BETA-RELEASE-ROLE-PREP.md 2.4; ops/pipeline/config.json environments.beta.profile) and its fixed session name. */
 export const CLOUD_BETA_PROFILE = "rovara-cloud-beta";
 export const CLOUD_BETA_SESSION_NAME = "rovara-cloud-beta-release";

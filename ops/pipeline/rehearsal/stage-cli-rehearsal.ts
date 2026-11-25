@@ -46,6 +46,8 @@ export function guardPorts(ports: Ports): Ports {
       describeChangeSet: (s, n) => { assertScratchName(s); return c.describeChangeSet(s, n); },
       templateSha256: (s, n) => { assertScratchName(s); return c.templateSha256(s, n); },
       liveTemplateSha256: (s) => { assertScratchName(s); return c.liveTemplateSha256(s); },
+      templateBody: (s, n) => { assertScratchName(s); return c.templateBody(s, n); },
+      liveTemplateBody: (s) => { assertScratchName(s); return c.liveTemplateBody(s); },
       executeChangeSet: (s, n) => { assertScratchName(s); return c.executeChangeSet(s, n); },
       deleteChangeSet: (s, n) => { assertScratchName(s); return c.deleteChangeSet(s, n); },
       listChangeSetNames: (s) => { assertScratchName(s); return c.listChangeSetNames(s); },

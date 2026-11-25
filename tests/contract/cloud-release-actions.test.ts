@@ -441,7 +441,7 @@ describe("the projects", () => {
     expect(releaseActionBuildCommands("beta").join("\n")).toContain('code_ref="CODEBUILD_SRC_DIR_Source"');
   });
 
-  it("refuses to start a step that checks Code when the Code clone input is missing (preflight, gateway-check; the CLI never runs), and a hand-set ROVARA_CODE_REPO does not stand in", () => {
+  it("refuses to start a step that checks Code when the Code clone input is missing (preflight, image, gateway, gateway-check: the image is built from, and the stack made by, the Code checkout; the CLI never runs), and a hand-set ROVARA_CODE_REPO does not stand in", () => {
     const state = mkdtempSync(join(tmpdir(), "state-"));
     writeFileSync(join(state, "manifest.json"), "{}");
     for (const environment of ["beta", "production"] as const) {
@@ -457,7 +457,7 @@ describe("the projects", () => {
       }
     }
     // a step that needs no Code clone still runs without one
-    expect(runBuild("beta", { STAGE_ENV: "beta", STAGE_STEP: "image", PIPELINE_STATE_ARTIFACT: "StateBetaPreflight", CODEBUILD_SRC_DIR_StateBetaPreflight: state }, { codeClone: false }).status).toBe(0);
+    expect(runBuild("beta", { STAGE_ENV: "beta", STAGE_STEP: "web-app", PIPELINE_STATE_ARTIFACT: "StateBetaPreflight", CODEBUILD_SRC_DIR_StateBetaPreflight: state }, { codeClone: false }).status).toBe(0);
   });
 
   it("grants no CodePipeline right at all: nothing in this stack can reopen the promotion gate (only the public Preflight closes it)", () => {

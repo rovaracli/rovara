@@ -21,6 +21,17 @@ export const OTHER_ACCOUNT = String(Number(FAKE_ACCOUNT) + 1);
 
 export const config: PipelineConfig = loadConfig();
 
+/** The directory the fake build action provides as ROVARA_CODE_REPO (a full Code clone). */
+export const CODE_REPO = "/code-clone";
+/** An `exec` answer for a world with a Code clone: ROVARA_CODE_REPO is set, every commit is in it, and `git worktree add` into it succeeds (the others fall through to `rest`). */
+export function withCodeClone(rest: FakeState["exec"] = () => ({ code: 0, stdout: "", stderr: "" }), known: (sha: string) => boolean = () => true): FakeState["exec"] {
+  return (cmd, args) => {
+    if (cmd === "printenv" && args[0] === "ROVARA_CODE_REPO") return { code: 0, stdout: `${CODE_REPO}\n`, stderr: "" };
+    if (cmd === "git" && args[0] === "-C" && args[1] === CODE_REPO && args[2] === "cat-file") return { code: known(String(args[4]).replace("^{commit}", "")) ? 0 : 1, stdout: "", stderr: "" };
+    return rest(cmd, args);
+  };
+}
+
 /** A switches file with fake values (no real account or host), both rows filled. */
 export const fakeSwitches: SwitchesFile = parseSwitches(JSON.stringify({
   schema: 1,
@@ -55,7 +66,13 @@ export interface FakeState {
   exec: (cmd: string, args: readonly string[]) => ExecResult;
   account: string;
   calls: string[];
+  /** Each `exec` call's working directory and whether AWS credential variables were removed from its environment (set to undefined), in order. */
+  execRuns?: Array<{ cmd: string; args: readonly string[]; cwd: string | undefined; awsRemoved: boolean }>;
+  /** The directory and the context of each cdk call, in order. */
+  cdkRuns?: Array<{ dir: string; context: Record<string, string>; parameters: Record<string, string> }>;
   now: number;
+  /** Template bodies (parsed JSON) the cfn port answers: `live:<stack>` is the live stack's, `cs:<stack>/<change set>` a change set's. A missing one is `null` / `{}`. */
+  templates?: Record<string, unknown>;
   /** Called after an execute (the change sets are already gone, the stack already points at the executed one), so a test can change the world mid-run. */
   onExecute?: (stack: string) => void;
 }
@@ -103,7 +120,11 @@ export function makePorts(state: FakeState, env: PipelineEnv = "beta"): Ports {
   };
   let csCounter = 0;
   const ports: Ports = {
-    exec: (cmd, args) => { state.calls.push(`exec ${cmd} ${args.join(" ")}`); return Promise.resolve(state.exec(cmd, args)); },
+    exec: (cmd, args, opts) => {
+      state.calls.push(`exec ${cmd} ${args.join(" ")}`);
+      (state.execRuns ??= []).push({ cmd, args, cwd: opts?.cwd, awsRemoved: opts?.env !== undefined && "AWS_ACCESS_KEY_ID" in opts.env && opts.env.AWS_ACCESS_KEY_ID === undefined });
+      return Promise.resolve(state.exec(cmd, args));
+    },
     aws: { json: (args) => { state.calls.push(`aws ${args.join(" ")}`); return Promise.resolve(null); } },
     git: {
       fetchTags: () => { state.calls.push("git fetchTags"); return Promise.resolve(); },
@@ -135,6 +156,8 @@ export function makePorts(state: FakeState, env: PipelineEnv = "beta"): Ports {
       describeChangeSet: (stack, name) => { const c = state.changeSets[`${stack}/${name}`]; return Promise.resolve(c === undefined ? null : { id: c.id, status: c.status, executionStatus: c.executionStatus, statusReason: c.statusReason, rows: c.rows }); },
       templateSha256: (stack, name) => Promise.resolve(state.changeSets[`${stack}/${name}`]?.template ?? "missing"),
       liveTemplateSha256: (stack) => Promise.resolve(state.stacks[stack]?.templateSha ?? null),
+      templateBody: (stack, name) => Promise.resolve(state.templates?.[`cs:${stack}/${name}`] ?? {}),
+      liveTemplateBody: (stack) => Promise.resolve(state.templates?.[`live:${stack}`] ?? null),
       executeChangeSet: (stack, name) => {
         state.calls.push(`cfn execute ${stack} ${name}`);
         const c = state.changeSets[`${stack}/${name}`];
@@ -161,6 +184,7 @@ export function makePorts(state: FakeState, env: PipelineEnv = "beta"): Ports {
       deployNoExecute: (a) => {
         state.calls.push(`cdk ${a.stacks.map((s) => s.stackId).join(",")} ${a.changeSetName} ctx=${Object.keys(a.context).sort().join(",")} params=${a.stacks.flatMap((s) => Object.entries(s.parameters).map(([k, v]) => `${s.stackName}:${k}=${v}`)).join(",")}`);
         if (a.context.agentxAccount !== undefined) state.calls.push(`cdk-account ${a.context.agentxAccount}`);
+        (state.cdkRuns ??= []).push({ dir: a.dir, context: a.context, parameters: Object.fromEntries(a.stacks.flatMap((s) => Object.entries(s.parameters))) });
         for (const { stackId: id } of a.stacks) {
           const part = STACK_ID_PART[id]!;
           const stack = stackFor(env, part);
@@ -196,7 +220,7 @@ export function makePorts(state: FakeState, env: PipelineEnv = "beta"): Ports {
 
 /** A last-good record for an environment: the proof that an environment has had its first (adoption) run. */
 export function seedLastGood(state: FakeState, env: PipelineEnv): void {
-  state.ssm[`/rovara-cloud/${env}/release/last-good`] = JSON.stringify({ schema: 1, env, recordedAt: "2026-11-20T00:00:00.000Z", executionId: "earlier", mode: "adoption", cloud: { tag: "v0.13.1", sha: sha("1") }, gateway: { digest: DIGEST_B } });
+  state.ssm[`/rovara-cloud/${env}/release/last-good`] = JSON.stringify({ schema: 1, env, recordedAt: "2026-11-20T00:00:00.000Z", executionId: "earlier", mode: "adoption", cloud: { tag: "v0.13.1", sha: sha("1") }, gateway: { digest: DIGEST_B, codeSha: sha("c") } });
 }
 
 export const row = (action: string, logicalId: string, resourceType: string, replacement: ChangeRow["replacement"] = "False"): ChangeRow => ({ action, logicalId, physicalId: null, resourceType, replacement });

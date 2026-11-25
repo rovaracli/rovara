@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "about": "Rollback floors (BETA-CLOUD-PLAN 5). A Cloud ref must equal or descend from every sha under floors, or the rollback-floor gate refuses it with that floor's reason. Read from the pipeline tree, never from the candidate. The `code` group is the exception: its shas are Code commits that a Code rollback target must equal or descend from (judged in the Code clone, only when a run rolls Code back); it is empty until the controller names the first Code floor. A new floor is one reviewed edit here. Pending rows are NOT enforced: they name the condition after which the controller moves them into floors.",
+  "about": "Rollback floors (BETA-CLOUD-PLAN 5). A Cloud ref must equal or descend from every sha under floors (every group but `code` and `gatewayCode`), or the rollback-floor gate refuses it with that floor's reason. Read from the pipeline tree, never from the candidate. The `gatewayCode` group holds the gateway's floors as CODE commits (#1478 phase 2: the gateway image and stack are built from Code, so a Cloud sha cannot say what gateway source an image holds): the Code commit a gateway is built from must equal or descend from each, judged in the Code clone in the gateway step and by `rollback-plan`. Each row names the Code commit whose gateway tree is blob-equal to the Cloud commit its `gateway` row names. The `gateway` rows stay: they keep judging the Cloud ref, and a gateway image recorded before phase 2 was built from that Cloud ref. The `code` group is the exception: its shas are Code commits that a Code rollback target must equal or descend from (judged in the Code clone, only when a run rolls Code back); it is empty until the controller names the first Code floor. A new floor is one reviewed edit here. Pending rows are NOT enforced: they name the condition after which the controller moves them into floors.",
   "floors": {
     "code": [
       {
@@ -26,6 +26,16 @@
       {
         "sha": "59edd60f2bff237a42a06380222269264e6889d5",
         "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
+      }
+    ],
+    "gatewayCode": [
+      {
+        "sha": "d531e8357c4056a9d2a7e54776deecc541971f42",
+        "reason": "the Code commit that first held the gateway source (price bands, quota-aware routing, failed-call settle): the counterpart of the gateway floor 465e372f; every gateway file that commit changed is blob-equal in this Code commit"
+      },
+      {
+        "sha": "5e6c41b127a3be962f8e9790f98dc6420b0f3c1e",
+        "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable: the counterpart of the gateway floor 59edd60f; every gateway file that commit changed is blob-equal in this Code commit"
       }
     ]
   },

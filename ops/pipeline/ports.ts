@@ -85,6 +85,11 @@ export function createRealPorts(args: RealPortsArgs): Ports {
     if (typeof t === "string") { try { return canonicalSha256(JSON.parse(t)); } catch { return sha256Hex(t); } }
     return canonicalSha256(t);
   };
+  /** A template as an object: CloudFormation answers a JSON template as an object and a YAML one as text; this pipeline's stacks are JSON, so text that is not JSON is refused, never guessed at. */
+  const parseTemplate = (template: unknown): unknown => {
+    if (typeof template !== "string") return template;
+    try { return JSON.parse(template) as unknown; } catch { throw new StageError("FAILED", "CloudFormation returned a template that is not JSON"); }
+  };
   const cfn: Ports["cfn"] = {
     async describeStack(stack) {
       try {
@@ -122,6 +127,15 @@ export function createRealPorts(args: RealPortsArgs): Ports {
     },
     async liveTemplateSha256(stack) {
       try { return hashTemplate(body(await cfnJson(["get-template", "--stack-name", stack, "--template-stage", "Original"]))); } catch (error) {
+        if (notThere(error, /does not exist/u)) return null;
+        throw error;
+      }
+    },
+    async templateBody(stack, changeSetName) {
+      return parseTemplate(body(await cfnJson(["get-template", "--stack-name", stack, "--change-set-name", changeSetName, "--template-stage", "Original"])));
+    },
+    async liveTemplateBody(stack) {
+      try { return parseTemplate(body(await cfnJson(["get-template", "--stack-name", stack, "--template-stage", "Original"]))); } catch (error) {
         if (notThere(error, /does not exist/u)) return null;
         throw error;
       }

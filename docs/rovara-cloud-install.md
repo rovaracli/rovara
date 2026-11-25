@@ -158,10 +158,25 @@ Approve the run in the CodePipeline console. The Deploy stage runs `npm ci`, bui
 app, then deploys the web stack and the first address with the release check around them. It takes a few
 minutes.
 
+## The gateway comes from Code (#1478 phase 2)
+
+The release pipeline builds and deploys the model gateway from the CODE commit, not the Cloud one. In each stage:
+
+- `CloudImage` checks out the Code commit the run releases (with Code skipped: the Code that stays, the stage's pinned commit) from the full Code clone the pipeline hands every Cloud action (`ROVARA_CODE_REPO`, the `Source`
+  input) and builds the image from it with `node scripts/model-gateway-image.ts` (the same script and context files as here, so the same source gives the same hash and the same tag). Production copies beta's digest and keeps beta's Code commit.
+- `CloudGateway` installs and builds that Code checkout without AWS credentials (`build.codeGateway` in `ops/pipeline/config.json`) and makes the stack with Code's CDK app (`-c rovaraModelGateway=<env> -c rovaraCodeSha=<commit>`).
+- The stack records the commit as its own `DeployedCodeSha` output (no resource), and no longer writes `DeployedCloudSha`. Cloud's live sha is read from the WEB stack only. `last-good` records the gateway's Code commit beside its digest, and a rollback goes back to the image by that recorded Code commit
+  (`stage.ts <env> rollback-plan` prints it). An image recorded before this change has no Code commit and is refused for a rollback (keep the gateway that runs now: name the last-good digest); its stack cannot be made from today's Code.
+- **The first change set made from Code** must change no resource of the stack Cloud deployed: the `gateway-source-switch` gate compares the change set's template with the live one and stops the step on any difference outside the Outputs (only `DeployedCloudSha` may go, only `DeployedCodeSha` may come).
+- **Rollback floors.** A floor written as a Cloud sha cannot judge a gateway built from Code. Each `gateway` floor has a `gatewayCode` row in `ops/pipeline/rollback-floors.json`: a Code commit whose gateway files are blob-equal to the Cloud floor commit's; the Code commit a gateway is built from must equal or descend from every such row
+  (judged in the Code clone by the rollback-floor gate, and by `rollback-plan`). The Cloud-sha rows stay and keep judging the Cloud ref. A new gateway floor is a `gatewayCode` row (a Code commit); add a Cloud-sha `gateway` row only when the Cloud ref must be held back too.
+
+Never two deployers of one gateway: this pipeline is the only one. Cloud's own `infra/lib/model-gateway.ts` and `packages/model-gateway` are no longer deployed from here and are deleted in the next step of #1478.
+
 ## The gateway image tag
 
 The release pipeline tags the model gateway image by its content: `ctx-` plus the 64 hex of the hash of the exact build context
-(`npx tsx scripts/model-gateway-image.ts context --out <dir>` prints it as `contextSha256`: the Dockerfile with its base image digest,
+(`node scripts/model-gateway-image.ts context --out <dir>`, run in the Code checkout, prints it as `contextSha256`: the Dockerfile with its base image digest,
 the lockfiles, the package files and every source file, plus the script's own bytes and its `IMAGE_FORMAT_VERSION`, so a change to how
 the image is built makes a new tag by itself; bump the constant for a builder change that touches no file). The same context always has the same tag, so a release whose gateway files did
 not change (for example a Code-only run) finds the tag in beta's repository, reuses its digest, builds and pushes nothing, and the
@@ -240,7 +255,7 @@ This needs the client registered with `--loopback`. See `packages/cloud-server/R
 
 ## The model gateway's provider keys
 
-The model gateway (`-c rovaraModelGateway=<env>`, deployed by hand, never by the pipeline) keeps each provider's key in a
+The model gateway (`-c rovaraModelGateway=<env>`, deployed by the release pipeline from Code, or by hand with Code's CDK app) keeps each provider's key in a
 retained secret. By default CloudFormation generates the secret's name: a fixed name stays reserved for its recovery window
 after a failed create and a delete, which blocks making the stack again. The gateway reads the secret by ARN, so the name
 doesn't matter to it.
