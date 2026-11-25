@@ -667,6 +667,31 @@ describe("pipeline stage CLI: the image step", () => {
     expect(manifestOf(run.state).stages.production).toMatchObject({ skipped: "CLOUD_PROD=off", completed: [] });
   });
 
+  it("CLOUD_REF=latest (from the environment, via buildInputs) runs beta to production: Production deploys what Beta resolved and is not refused over the word latest", async () => {
+    const fromEnv = (over: Record<string, string>) => { const i = buildInputs({}, { EXEC_ID, AWS_REGION: "us-east-1", ROVARA_EXPECTED_DEPLOY_ACCOUNT: FAKE_ACCOUNT, CLOUD_REF: "latest", CODE_RELEASE: "run", ...over }, new Date()); return { cloudRef: i.cloudRef, cloudProd: i.cloudProd, codeRelease: i.codeRelease }; };
+    const betaIn = fromEnv({ CLOUD_PROD: "off" });
+    expect(betaIn).toEqual({ cloudRef: null, cloudProd: false, codeRelease: "run" });
+    const run = newRun(betaWorld(), { inputs: betaIn });
+    run.gates = [integrity, pass("g2", "gateway-live"), pass("p", "proof")];
+    for (const name of ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as StepName[]) await step(run, "beta", name);
+    expect(manifestOf(run.state).cloud).toMatchObject({ tag: "v0.13.10", ref: "latest-tag" });
+    // CLOUD_PROD=off: every Production step skips (exit 0), nothing is touched.
+    const calls = run.state.calls.length;
+    for (const name of ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as StepName[]) await step(run, "production", name);
+    expect(run.state.calls.length).toBe(calls);
+    expect(manifestOf(run.state).stages.production).toMatchObject({ skipped: "CLOUD_PROD=off", completed: [] });
+    // Production's own preflight (reached when CLOUD_PROD is on) reads the same normalized input: latest is null there, so it deploys Beta's tag instead of refusing the word latest.
+    const prod = betaWorld();
+    for (const part of ["gateway", "web", "app"] as const) { prod.stacks[stackFor("production", part)] = { ...prod.stacks[stackFor("beta", part)]!, templateSha: `live-prod-${part}` }; delete prod.stacks[stackFor("beta", part)]; }
+    prod.files = { ...run.state.files }; prod.account = OTHER_ACCOUNT;
+    seedLastGood(prod, "production");
+    const prodRun = newRun(prod, { inputs: { ...fromEnv({ CLOUD_PROD: "off" }), cloudProd: true, expectedAccount: OTHER_ACCOUNT } });
+    prodRun.gates = run.gates;
+    await step(prodRun, "production", "preflight");
+    expect(manifestOf(prod).stages.production!.completed).toContain("preflight");
+    expect(manifestOf(prod).cloud.tag).toBe("v0.13.10");
+  });
+
   it("production preflight refuses a manifest whose beta stage did not finish its proof in this execution", async () => {
     const run = newRun(betaWorld());
     run.gates = [integrity, pass("g2", "gateway-live")];
@@ -736,7 +761,7 @@ describe("pipeline stage CLI: command line and exit codes", () => {
 
   it("CLOUD_PROD=on is refused unless CLOUD_REF is an explicit release tag, before any port is used", async () => {
     const env = { ...ctxEnv, CLOUD_SOURCE_COMMIT: sha("3") };
-    for (const ref of [undefined, "from-trigger", "latest", "cloud/next"]) {
+    for (const ref of [undefined, "", "from-trigger", "latest", "cloud/next"]) {
       const r = await run(["beta", "preflight"], { ...env, CLOUD_PROD: "on", ...(ref === undefined ? {} : { CLOUD_REF: ref }) });
       expect(r.code).toBe(3);
       expect(r.lines.join("\n")).toMatch(/CLOUD_PROD=on needs CLOUD_REF set to a release tag/u);

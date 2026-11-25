@@ -19,7 +19,7 @@ import { discoverGates } from "./lib/gates.ts";
 import { readLastGood, renderLastGood } from "./lib/lastgood.ts";
 import { planRollback } from "./lib/rollbackplan.ts";
 import { parseManifest } from "./lib/manifest.ts";
-import { decideMode, readLiveCloudSha, resolveCloudRef } from "./lib/refs.ts";
+import { LATEST, decideMode, readLiveCloudSha, resolveCloudRef } from "./lib/refs.ts";
 import { runStep } from "./lib/run.ts";
 import type { StepFunction } from "./lib/run.ts";
 import { buildSummary, renderSummary } from "./lib/summary.ts";
@@ -135,7 +135,8 @@ export function buildInputs(flags: Record<string, string | true>, env: Record<st
   void now;
   return {
     execId,
-    cloudRef: pick("cloud-ref", "CLOUD_REF"),
+    // CLOUD_REF=latest is the newest trunk tag, the same as no CLOUD_REF: normalized ONCE here, so every reader of inputs.cloudRef (the CLOUD_PROD=on rule, Beta's resolver, Production's "deploys what Beta deployed" check) sees null.
+    cloudRef: ((ref) => ref === LATEST ? null : ref)(pick("cloud-ref", "CLOUD_REF")),
     cloudSourceCommit: pick("cloud-source-commit", "CLOUD_SOURCE_COMMIT"),
     codeRelease,
     cloudProd: cloudProd === "on",
