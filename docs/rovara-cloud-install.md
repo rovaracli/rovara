@@ -158,6 +158,26 @@ Approve the run in the CodePipeline console. The Deploy stage runs `npm ci`, bui
 app, then deploys the web stack and the first address with the release check around them. It takes a few
 minutes.
 
+## The gateway image tag
+
+The release pipeline tags the model gateway image by its content: `ctx-` plus the 64 hex of the hash of the exact build context
+(`npx tsx scripts/model-gateway-image.ts context --out <dir>` prints it as `contextSha256`: the Dockerfile with its base image digest,
+the lockfiles, the package files and every source file, plus the script's own bytes and its `IMAGE_FORMAT_VERSION`, so a change to how
+the image is built makes a new tag by itself; bump the constant for a builder change that touches no file). The same context always has the same tag, so a release whose gateway files did
+not change (for example a Code-only run) finds the tag in beta's repository, reuses its digest, builds and pushes nothing, and the
+gateway change set says "no changes". Older images are tagged `pipe-<exec8>-<sha9>`; those tags stay valid in rollback records.
+
+Two cases need an administrator, because the release role can push and read the gateway repositories but not delete from them (do not
+add that permission):
+
+- **A bad image under a `ctx-` tag.** Every later run of the same context reuses it, and a retry cannot rebuild it (the repository is
+  immutable). Remove that image by its digest from the beta repository (and from the production repository if it was copied there),
+  then run the release again: it builds a fresh image under the same tag.
+- **A revert to old gateway source after the old image expired from beta.** Beta keeps the last 50 images. If beta's `ctx-` image has
+  expired and the same context is built again, beta gets a new digest under the same tag while production may still hold the old digest
+  under it. Production then refuses ("tag already exists ... not beta's"), which is correct: it never deploys a digest beta did not run.
+  Remove the old image from the production repository, then retry.
+
 ## Release order with Code: Cloud's text parsers ship first
 
 Cloud and Code are released separately, so for a while a newer one runs against an older other. Some of Cloud's parsers are strict about the **text** Code sends, not only its shape: the "Setup needs repair" card's

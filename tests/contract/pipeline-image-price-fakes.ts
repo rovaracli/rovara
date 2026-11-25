@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRealPorts } from "../../ops/pipeline/ports.ts";
 import type { Ports } from "../../ops/pipeline/types.ts";
-import { config, FAKE_ACCOUNT } from "./pipeline-stage-fakes.ts";
+import { config, FAKE_ACCOUNT, sha } from "./pipeline-stage-fakes.ts";
 
 export const BETA_ACCOUNT = String(Number(FAKE_ACCOUNT) + 7);
 export const BETA_PROFILE = "rovara-cloud-beta";
@@ -26,6 +26,19 @@ export interface Scenario {
   /** repository name -> digests present without a tag */
   ecrDigests: Record<string, string[]>;
   pushDigest: string;
+  /** What `model-gateway-image.ts context` reports as the build-context hash. */
+  contextSha256: string;
+  /** `context` prints its JSON line and then exits with this code. */
+  contextExit: number;
+  /** `context` prints a JSON line without a hash, and a plain-text line, BEFORE its real answer. */
+  contextNoise: boolean;
+  /** What `build` prints as its context hash line: the same hash, another one, or none. */
+  buildHash: "same" | "other" | "none";
+  /** What `git rev-parse HEAD` answers in the candidate tree, and what `git status --porcelain` lists there. */
+  head: string;
+  dirty: string;
+  /** What `git status --porcelain --ignored` lists under the gateway source. */
+  ignored: string;
   pushReportsDigest: string | null;
   pushFails: boolean;
   buildExit: number;
@@ -41,7 +54,7 @@ export interface Scenario {
 }
 
 export const emptyScenario = (): Scenario => ({
-  accounts: { "": FAKE_ACCOUNT, [BETA_PROFILE]: BETA_ACCOUNT }, stacks: {}, resources: [], ecr: {}, ecrDigests: {}, pushDigest: `sha256:${"c".repeat(64)}`, pushReportsDigest: null, pushFails: false,
+  accounts: { "": FAKE_ACCOUNT, [BETA_PROFILE]: BETA_ACCOUNT }, stacks: {}, resources: [], ecr: {}, ecrDigests: {}, pushDigest: `sha256:${"c".repeat(64)}`, contextSha256: "a".repeat(64), contextExit: 0, contextNoise: false, buildHash: "same", head: sha("4"), dirty: "", ignored: "", pushReportsDigest: null, pushFails: false,
   buildExit: 0, platform: "linux/arm64", craneCopyExit: 0, craneCopyDigest: null, craneDigestOverride: null, logEvents: [], eventsAfterRunTask: [], targets: null, runTask: null, describeTasks: [],
 });
 
@@ -75,7 +88,7 @@ if (tool === "aws") {
   if (cmd === "ecr describe-images") {
     const repo = flag("--repository-name"); const id = flag("--image-ids");
     const tags = sc.ecr[repo] || {};
-    if (id.startsWith("imageTag=")) { const d = tags[id.slice(9)]; if (!d) notFound(); out({ imageDetails: [{ imageDigest: d, imageTags: Object.entries(tags).filter(([, v]) => v === d).map(([k]) => k) }] }); }
+    if (id.startsWith("imageTag=")) { const d = tags[id.slice(9)]; if (!d) notFound(); out({ imageDetails: [{ imageDigest: d, imagePushedAt: "2026-11-20T12:00:00+00:00", imageTags: Object.entries(tags).filter(([, v]) => v === d).map(([k]) => k) }] }); }
     const d = id.slice(12);
     if (!Object.values(tags).includes(d) && !(sc.ecrDigests[repo] || []).includes(d)) notFound();
     out({ imageDetails: [{ imageDigest: d, imageTags: Object.entries(tags).filter(([, v]) => v === d).map(([k]) => k) }] });
@@ -105,7 +118,24 @@ if (tool === "crane") {
   }
   if (args[0] === "digest") { const [repo, tag] = repoTag(args[1]); out((sc.craneDigestOverride || (sc.ecr[repo] || {})[tag]) + "\\n"); }
 }
-if (tool === "npx") { if (sc.buildExit !== 0) fail("tsc: build error", sc.buildExit); out("built\\n"); }
+if (tool === "git") {
+  if (args[0] === "rev-parse" && args[1] === "HEAD") out(sc.head + "\\n");
+  if (args[0] === "status") out(args.includes("--ignored") ? sc.ignored : sc.dirty);
+}
+if (tool === "npx") {
+  if (args.includes("context")) {
+    const o = flag("--out");
+    // as assembleContext does: a directory that is not empty is refused; otherwise the context is written there
+    if (fs.existsSync(o) && fs.readdirSync(o).length > 0) fail("the output directory is not empty", 1);
+    fs.mkdirSync(o, { recursive: true }); fs.writeFileSync(o + "/Dockerfile", "x");
+    if (sc.contextNoise) process.stdout.write('{"warn":"a banner that is JSON but has no hash"}\\nsome plain text line\\n');
+    process.stdout.write(JSON.stringify({ out: o, files: 3, totalBytes: 10, contextSha256: sc.contextSha256, entryPresent: true }) + "\\n");
+    process.exit(sc.contextExit);
+  }
+  if (sc.buildExit !== 0) fail("tsc: build error", sc.buildExit);
+  if (sc.buildHash !== "none") process.stdout.write(JSON.stringify({ contextSha256: sc.buildHash === "same" ? sc.contextSha256 : "b".repeat(64), files: 3 }) + "\\n");
+  out("built\\n");
+}
 fail("fake " + tool + ": unhandled " + args.join(" "), 1);
 `.replace('"PASSWORD_PLACEHOLDER"', JSON.stringify(PASSWORD)).replace(/\$\{REGION\}/gu, REGION);
 
@@ -128,7 +158,7 @@ export function makeHarness(): Harness {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "l6-fake-")));
   mkdirSync(join(dir, "bin"));
   mkdirSync(join(dir, "cloud"));
-  for (const name of ["aws", "docker", "crane", "npx"]) { writeFileSync(join(dir, "bin", name), SCRIPT); chmodSync(join(dir, "bin", name), 0o755); }
+  for (const name of ["aws", "docker", "crane", "npx", "git"]) { writeFileSync(join(dir, "bin", name), SCRIPT); chmodSync(join(dir, "bin", name), 0o755); }
   writeFileSync(join(dir, "calls.jsonl"), "");
   const oldPath = process.env.PATH;
   process.env.PATH = `${join(dir, "bin")}:${oldPath}`;

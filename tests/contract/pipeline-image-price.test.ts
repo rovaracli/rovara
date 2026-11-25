@@ -1,5 +1,7 @@
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { runImage } from "../../ops/pipeline/steps/image.ts";
+import { contentTagFor, imageTagFor } from "../../ops/pipeline/lib/ecr.ts";
 import { gate as digestEqual } from "../../ops/pipeline/gates/gateway-digest-equal.gate.ts";
 import { gate as priceFresh } from "../../ops/pipeline/gates/price-freshness.gate.ts";
 import { runPhase } from "../../ops/pipeline/lib/gates.ts";
@@ -13,7 +15,9 @@ import { FAKE_ACCOUNT } from "./pipeline-stage-fakes.ts";
 const h = makeHarness();
 afterAll(() => { h.restorePath(); });
 
-const TAG = `pipe-${EXEC8}-${sha("4").slice(0, 9)}`;
+/** Beta names its image by the build-context hash (the fake `model-gateway-image.ts context` reports "a" x 64); `LEGACY_TAG` is the older per-execution form, still readable. */
+const TAG = `ctx-${"a".repeat(64)}`;
+const LEGACY_TAG = `pipe-${EXEC8}-${sha("4").slice(0, 9)}`;
 const BETA_REG = registryOf(FAKE_ACCOUNT);
 const betaUri = `${BETA_REG}/${BETA_REPO}`;
 const prodRegistry = registryOf(FAKE_ACCOUNT);
@@ -45,7 +49,7 @@ function prodWorld(digest = DIGEST_A): { srcRegistry: string; prodUri: string } 
 }
 
 beforeEach(() => {
-  h.scenario = { ...h.scenario, stacks: {}, resources: [], ecr: {}, ecrDigests: {}, pushFails: false, pushReportsDigest: null, buildExit: 0, platform: "linux/arm64", craneCopyExit: 0, craneCopyDigest: null, craneDigestOverride: null, logEvents: [], eventsAfterRunTask: [], targets: null, runTask: null, describeTasks: [] };
+  h.scenario = { ...h.scenario, stacks: {}, resources: [], ecr: {}, ecrDigests: {}, pushFails: false, contextSha256: "a".repeat(64), contextExit: 0, contextNoise: false, buildHash: "same" as const, head: sha("4"), dirty: "", ignored: "", pushReportsDigest: null, buildExit: 0, platform: "linux/arm64", craneCopyExit: 0, craneCopyDigest: null, craneDigestOverride: null, logEvents: [], eventsAfterRunTask: [], targets: null, runTask: null, describeTasks: [] };
   h.write();
   h.reset();
 });
@@ -69,6 +73,10 @@ describe("L6 image step, beta: build once, push under the immutable tag", () => 
     const lines = h.lines();
     const config8 = `${h.dir}/work/registry-auth-docker`;
     expect(lines.filter((l) => !l.startsWith("aws sts") && !l.startsWith("aws cloudformation"))).toEqual([
+      "git rev-parse HEAD",
+      "git status --porcelain --untracked-files=all -- packages/model-gateway environments/model-gateway tsconfig.base.json scripts/model-gateway-image.ts",
+      "git status --porcelain --ignored --untracked-files=all -- packages/model-gateway/src",
+      `npx --no-install tsx scripts/model-gateway-image.ts context --out ${h.dir}/work/gateway-context`,
       `aws ecr describe-images --repository-name ${BETA_REPO} --image-ids imageTag=${TAG}`,
       `npx --no-install tsx scripts/model-gateway-image.ts build --tag rovara-model-gateway:${TAG}`,
       "docker image inspect rovara-model-gateway:" + TAG + " --format {{.Os}}/{{.Architecture}}",
@@ -79,7 +87,7 @@ describe("L6 image step, beta: build once, push under the immutable tag", () => 
       `aws ecr describe-images --repository-name ${BETA_REPO} --image-ids imageTag=${TAG}`,
     ]);
     const calls = h.calls();
-    expect(calls.find((c) => c.tool === "npx")!.cwd).toBe(`${h.dir}/cloud`);
+    expect(calls.filter((c) => c.tool === "npx").map((c) => c.cwd)).toEqual([`${h.dir}/cloud`, `${h.dir}/cloud`]);
     const login = calls.find((c) => c.tool === "docker" && c.args[0] === "login")!;
     expect(login.stdin).toBe(PASSWORD);
     expect(login.dockerConfig).toBe(config8);
@@ -89,13 +97,129 @@ describe("L6 image step, beta: build once, push under the immutable tag", () => 
     expect(logs.join("\n")).not.toContain(PASSWORD);
   });
 
-  it("an existing tag from an earlier attempt of this execution is reused: nothing is rebuilt or pushed", async () => {
+  it("an existing tag for the same build context is reused: nothing is rebuilt or pushed", async () => {
     betaWorld();
     h.scenario.ecr[BETA_REPO] = { [TAG]: DIGEST_B };
     h.write();
     const result = await runImage(imageInput("beta", manifest()));
     expect(result).toMatchObject({ digest: DIGEST_B, source: "built", imageTag: TAG });
+    expect(h.calls().some((c) => c.tool === "docker")).toBe(false);
+    expect(h.calls().filter((c) => c.tool === "npx").map((c) => c.args)).toEqual([["--no-install", "tsx", "scripts/model-gateway-image.ts", "context", "--out", `${h.dir}/work/gateway-context`]]);
+  });
+
+  it("the same context in ANOTHER execution and Cloud commit finds the same tag: no build, no push, the same digest (a Code-only run leaves the gateway alone)", async () => {
+    betaWorld();
+    h.scenario.pushDigest = DIGEST_A;
+    h.write();
+    const first = await runImage(imageInput("beta", manifest()));
+    expect(first).toEqual<ImageStepResult>({ digest: DIGEST_A, source: "built", imageTag: TAG, repository: BETA_REPO });
+    expect(h.calls().some((c) => c.tool === "docker" && c.args[0] === "push")).toBe(true);
+    h.reset();
+    h.scenario.ecr[BETA_REPO] = { [TAG]: DIGEST_A }; // what the first run pushed (the fake keeps it in its own file; rewriting the scenario must carry it over)
+    h.scenario.head = sha("9"); // the second execution's candidate tree is at its own (newer) Cloud commit
+    h.write();
+    // another execution (new exec8, new Cloud sha, a manifest still holding the first run's tag or none): only the context hash matters
+    const later: Manifest = { ...manifest({ imageTag: LEGACY_TAG, digest: DIGEST_B }), exec8: "ffffeeee", executionId: "ffffeeee-1111-2222-3333-4444555566ab", cloud: { ...manifest().cloud, sha: sha("9") } };
+    const logs: string[] = [];
+    const second = await runImage(imageInput("beta", later, null, logs));
+    expect(second).toEqual<ImageStepResult>({ digest: DIGEST_A, source: "built", imageTag: TAG, repository: BETA_REPO });
+    expect(h.calls().some((c) => c.tool === "docker" || c.tool === "crane")).toBe(false);
+    expect(h.calls().filter((c) => c.tool === "npx").every((c) => c.args.includes("context"))).toBe(true);
+    expect(h.calls().filter((c) => c.tool === "aws").map((c) => c.args.slice(0, 2).join(" ")).filter((l) => l.startsWith("ecr") && l !== "ecr describe-images")).toEqual([]);
+    expect(logs.join("\n")).toMatch(/already in .* \(same gateway build context, pushed 2026-11-20T12:00:00\+00:00\): reusing .*no build, no push/);
+  });
+
+  it("a changed build context is a new tag: it builds, tags and pushes under the new content tag and leaves the old image alone", async () => {
+    betaWorld();
+    h.scenario.ecr[BETA_REPO] = { [TAG]: DIGEST_B };
+    h.scenario.contextSha256 = `b${"a".repeat(63)}`;
+    h.scenario.pushDigest = DIGEST_A;
+    h.write();
+    const NEW_TAG = `ctx-b${"a".repeat(63)}`;
+    const result = await runImage(imageInput("beta", manifest()));
+    expect(result).toEqual<ImageStepResult>({ digest: DIGEST_A, source: "built", imageTag: NEW_TAG, repository: BETA_REPO });
+    expect(h.lines()).toContain(`docker push ${betaUri}:${NEW_TAG}`);
+    expect(h.lines().filter((l) => l.startsWith("docker push"))).toHaveLength(1);
+  });
+
+  const workDir = (): string => `${h.dir}/work/gateway-context`;
+  const noBuildOrPush = (): void => {
+    expect(h.calls().some((c) => c.tool === "docker" || c.tool === "crane")).toBe(false);
+    expect(h.calls().some((c) => c.tool === "npx" && c.args.includes("build"))).toBe(false);
+  };
+
+  it("a context script that exits non-zero after printing a valid-looking hash is a failure: nothing is built or pushed, and its directory is gone", async () => {
+    betaWorld();
+    h.scenario.contextExit = 1;
+    h.write();
+    await refused(runImage(imageInput("beta", manifest())), "FAILED", /context could not be computed \(exit 1\)/);
+    noBuildOrPush();
+    expect(existsSync(workDir())).toBe(false);
+  });
+
+  it("the hash is the LAST stdout line: a banner or noise line printed first (even JSON without a hash) is ignored", async () => {
+    betaWorld();
+    h.scenario.contextNoise = true;
+    h.scenario.pushDigest = DIGEST_A;
+    h.write();
+    expect(await runImage(imageInput("beta", manifest()))).toMatchObject({ digest: DIGEST_A, imageTag: TAG });
+  });
+
+  it("a context directory left by a crashed earlier attempt does not break the retry, and nothing is left behind after success", async () => {
+    betaWorld();
+    mkdirSync(workDir(), { recursive: true });
+    writeFileSync(`${workDir()}/stale-file`, "left over");
+    h.scenario.pushDigest = DIGEST_A;
+    h.write();
+    expect(await runImage(imageInput("beta", manifest()))).toMatchObject({ digest: DIGEST_A });
+    expect(existsSync(workDir())).toBe(false);
+  });
+
+  it("an ECR answer that is not a digest on the reuse path is refused: nothing is reused, built or pushed", async () => {
+    betaWorld();
+    h.scenario.ecr[BETA_REPO] = { [TAG]: "not-a-digest" };
+    h.write();
+    await refused(runImage(imageInput("beta", manifest())), "FAILED", /resolves to something that is not a digest/);
+    noBuildOrPush();
+  });
+
+  it("the context the build used must be the one the tag was made from: another hash, or no hash, is refused before any push", async () => {
+    betaWorld();
+    h.scenario.buildHash = "other";
+    h.write();
+    await refused(runImage(imageInput("beta", manifest())), "REFUSED", /build used context bbbbbbbbbbbb\.\.\., not aaaaaaaaaaaa\.\.\. the tag was made from/);
+    h.scenario.buildHash = "none";
+    h.write();
+    await refused(runImage(imageInput("beta", manifest())), "FAILED", /printed no context hash/);
+    expect(h.calls().some((c) => c.tool === "docker" && (c.args[0] === "push" || c.args[0] === "tag"))).toBe(false);
+  });
+
+  it("the hash is only taken from a clean checkout of the manifest's Cloud commit: another HEAD or an edited/untracked gateway file is refused before the context is computed", async () => {
+    betaWorld();
+    h.scenario.head = sha("9");
+    h.write();
+    await refused(runImage(imageInput("beta", manifest())), "REFUSED", /not at the manifest's Cloud commit/);
+    h.scenario.head = sha("4");
+    h.scenario.dirty = " M packages/model-gateway/src/main.ts\n?? packages/model-gateway/src/extra.ts\n";
+    h.write();
+    await refused(runImage(imageInput("beta", manifest())), "REFUSED", /changed or untracked files under the gateway's build inputs/);
+    h.scenario.dirty = " M scripts/model-gateway-image.ts\n"; // the script decides how the image is built and prints the hash: it is a build input too
+    h.write();
+    await refused(runImage(imageInput("beta", manifest())), "REFUSED", /changed or untracked files under the gateway's build inputs/);
+    h.scenario.dirty = "";
+    h.scenario.ignored = "!! packages/model-gateway/src/dist/extra.ts\n"; // an ignored file in a reused tree would enter the context unseen by a plain status
+    h.write();
+    await refused(runImage(imageInput("beta", manifest())), "REFUSED", /ignored files under the gateway source/);
     expect(h.calls().some((c) => c.tool === "npx" || c.tool === "docker")).toBe(false);
+  });
+
+  it("refuses when the context script fails or prints no usable hash: nothing is built or pushed", async () => {
+    betaWorld();
+    h.scenario.contextSha256 = "not-a-hash";
+    h.write();
+    await refused(runImage(imageInput("beta", manifest())), "FAILED", /context hash is not 64 hex/);
+    expect(h.calls().some((c) => c.tool === "docker")).toBe(false);
+    expect(h.calls().some((c) => c.tool === "npx" && c.args.includes("build"))).toBe(false);
   });
 
   it("refuses a build that fails, an image that is not linux/arm64 (never pushed), and a missing or foreign repository", async () => {
@@ -259,10 +383,31 @@ describe("L6 image step, production: crane copy beta's digest, never a rebuild",
     expect(await runImage(imageInput("production", prodManifest()), { env: prodEnv, switches: fakeSwitches })).toMatchObject({ source: "copied" });
   });
 
+  it("an older run's pipe- tag recorded in the manifest still parses: production copies under it (rollback records and in-flight executions keep working)", async () => {
+    prodWorld();
+    h.scenario.ecr[BETA_REPO] = { [LEGACY_TAG]: DIGEST_A };
+    h.write();
+    expect(await runImage(imageInput("production", prodManifest({ imageTag: LEGACY_TAG })), { env: prodEnv })).toEqual<ImageStepResult>({ digest: DIGEST_A, source: "copied", imageTag: LEGACY_TAG, repository: PROD_REPO });
+    expect(h.lines().some((l) => l.startsWith(`crane copy ${registryOf(BETA_ACCOUNT)}/${BETA_REPO}@${DIGEST_A} ${prodRegistry}/${PROD_REPO}:${LEGACY_TAG}`))).toBe(true);
+  });
+
+  it("production copies a ctx- tag beta recorded; a recorded value that is neither form is ignored for the older per-execution tag", async () => {
+    prodWorld();
+    h.write();
+    expect((await runImage(imageInput("production", prodManifest({ imageTag: TAG })), { env: prodEnv })).imageTag).toBe(TAG);
+    for (const bad of ["ctx-ABCDEF0123456789".padEnd(68, "A"), "ctx-abc", "latest", "pipe-1234-5678", `ctx-${"a".repeat(16)}`, `ctx-${"a".repeat(65)}`, `ctx-${"a".repeat(63)}g`]) {
+      expect(imageTagFor(manifest({ imageTag: bad }))).toBe(LEGACY_TAG);
+    }
+    for (const good of [TAG, LEGACY_TAG, `ctx-${"0123456789abcdef".repeat(4)}`, "pipe-deadbeef-012345678"]) expect(imageTagFor(manifest({ imageTag: good }))).toBe(good);
+    expect(contentTagFor("f".repeat(64))).toBe(`ctx-${"f".repeat(64)}`);
+    expect(contentTagFor("f".repeat(64))).toHaveLength(68);
+    expect(() => contentTagFor("f".repeat(63))).toThrow(/64 hex/);
+  });
+
   it("recomputes the tag when the manifest holds none, and a supplied digest is checked against the production repository only", async () => {
     prodWorld();
     h.write();
-    expect((await runImage(imageInput("production", prodManifest({ imageTag: null })), { env: prodEnv })).imageTag).toBe(TAG);
+    expect((await runImage(imageInput("production", prodManifest({ imageTag: null })), { env: prodEnv })).imageTag).toBe(LEGACY_TAG);
     h.scenario.ecr[PROD_REPO] = { old: DIGEST_B };
     h.write();
     expect(await runImage(imageInput("production", prodManifest(), { digest: DIGEST_B }), { env: prodEnv })).toMatchObject({ source: "supplied", repository: PROD_REPO });
