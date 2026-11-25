@@ -232,6 +232,14 @@ describe("Company settings", () => {
    expect(screen.getByText("$5.00")).toBeTruthy();
   } finally { f.close(); }
  });
+ it("says on the Company policy card that these company rules are not enforced on tasks yet (owner DEC 254zzz518)", async () => {
+  const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
+  try {
+   const note = await screen.findByTestId("company-policy-not-enforced");
+   expect(note.textContent).toBe("These company rules are not enforced on tasks yet. Each project's own settings, the per-task and daily spend caps, and owner approval still apply.");
+   expect(screen.getByRole("region", { name: "Company policy" }).contains(note)).toBe(true);
+  } finally { f.close(); }
+ });
  it("opens the editor straight away with no step-up, and never sends the person to a sign-in page", async () => {
   const f = mount("/app/admin/settings", r => (r.path === "/v1/app/org/settings" ? ok(settingsBody()) : ok({})));
   try {
