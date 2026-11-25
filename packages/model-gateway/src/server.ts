@@ -656,10 +656,12 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   // The settle, run once: early for a route that sends its cost in the head, else in the finally. Its result says what was written.
   let settled: { ok: boolean; micros: number; estimated: boolean } | undefined; let settling = false;
   // How far the answer got: the larger of what the usage reader saw in the stream passed on and what the transport saw as it read it (reasoning and held text included).
-  const streamProgress = (): StreamProgress => {
+  // UNDEFINED when neither counts progress (the OpenAI, Gemini and product-Bedrock readers do not): the caller then uses the bytes received, never "nothing came" (an under-count).
+  const streamProgress = (): StreamProgress | undefined => {
     let a: StreamProgress | undefined; let b: StreamProgress | undefined;
     try { a = usage?.progress?.(); } catch { a = undefined; }
     try { b = provider?.progress?.(); } catch { b = undefined; }
+    if (a === undefined && b === undefined) return undefined;
     return { events: Math.max(a?.events ?? 0, b?.events ?? 0), outputBytes: Math.max(a?.outputBytes ?? 0, b?.outputBytes ?? 0) };
   };
   const settleOnce = async (): Promise<{ ok: boolean; micros: number; estimated: boolean } | undefined> => {
@@ -699,7 +701,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       let failedMicros: number | undefined;
       if (failure !== undefined && cost > 0 && !completed && settlementUsage === undefined && !failedWithReportedCost && settlementPrice !== undefined && failureInput !== undefined) {
         const measured = usage?.actualInputTokens?.();
-        failedMicros = cutCallMicros({ ownBedrock: route.settlesFailedCalls === true, ...failure, inputBytes: failureInput.bytes, fixedInputTokens: failureInput.fixedTokens, media: failureInput.media, ...(measured === undefined ? {} : { inputTokens: measured }), outputBytes: failure.phase === "after_output" ? Math.max(streamProgress().outputBytes, streamed ? 0 : received) : 0, wholeAnswer: !streamed && provider !== undefined, price: settlementPrice, plainInput: failureInput.plainInput, reservationMicros: reservedMicros });
+        failedMicros = cutCallMicros({ ownBedrock: route.settlesFailedCalls === true, ...failure, inputBytes: failureInput.bytes, fixedInputTokens: failureInput.fixedTokens, media: failureInput.media, ...(measured === undefined ? {} : { inputTokens: measured }), outputBytes: failure.phase === "after_output" ? ((progress) => Math.max(progress?.outputBytes ?? 0, progress === undefined || !streamed ? received : 0))(streamProgress()) : 0, wholeAnswer: !streamed && provider !== undefined, price: settlementPrice, plainInput: failureInput.plainInput, reservationMicros: reservedMicros });
       }
       if (failedMicros !== undefined) {
         cost = failedMicros; estimated = failedMicros > 0;

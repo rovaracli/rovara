@@ -16,7 +16,11 @@ import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 import type { InMemoryMeter } from "../../packages/model-gateway/src/meter.js";
-import { handleGateway } from "../../packages/model-gateway/src/server.js";
+import { handleGateway, type GatewayDependencies } from "../../packages/model-gateway/src/server.js";
+import { FixedCapsSource } from "../../packages/model-gateway/src/caps.js";
+import { createLearningRoutes, LEARNING_STEP } from "../../packages/model-gateway/src/learning-route.js";
+import { InMemoryMeter as LearningMeter } from "../../packages/model-gateway/src/meter.js";
+import { productGateway, productScope, streamPath, geminiBody } from "./model-gateway-product-fixture.js";
 beforeAll(denyNetwork);
 
 type Family = "anthropic_key" | "openrouter" | "endpoint" | "bedrock_byo";
@@ -224,5 +228,54 @@ describe("what does not change", () => {
     // Never above the hold; a whole answer that already came is billed in full (the hold stands).
     expect(cutCallMicros({ ...base, cause: "aborted", ownBedrock: false, reservationMicros: 500 })).toBe(500);
     expect(cutCallMicros({ ...base, cause: "aborted", ownBedrock: false, wholeAnswer: true })).toBeUndefined();
+  });
+});
+
+// Readers that do NOT count stream progress (the OpenAI learning reader, the Gemini product reader): a call cut after output streamed is charged
+// the bytes received as output, never the input only (Opus review F1).
+describe("a cut call on a route whose reader does not count progress charges the output received", () => {
+  const geminiChunk = (n: number) => Buffer.from(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: "g".repeat(400) + n }] } }] })}\r\n\r\n`);
+  const openAiChunk = () => Buffer.from(`data: ${JSON.stringify({ choices: [{ delta: { content: "o".repeat(400) } }] })}\n\n`);
+  async function cutAfter(chunks: number, chunk: (n: number) => Buffer, start: (transport: ProviderTransport) => Promise<{ deps: GatewayDependencies; url: string; body: unknown; token: string; read: () => Promise<Array<{ spentMicros: number; estimatedMicros: number }>>; held: () => number }>) {
+    const reached = { done: false };
+    const transport: ProviderTransport = async () => ({ status: 200, body: (async function* () { for (let i = 0; i < chunks; i++) yield chunk(i); reached.done = true; await hang(); })() });
+    const w = await start(transport);
+    const controller = new AbortController();
+    const done = handleGateway(w.deps, { method: "POST", url: w.url, headers: { "content-type": "application/json", "x-api-key": w.token }, body: (async function* () { yield Buffer.from(JSON.stringify(w.body)); })(), signal: controller.signal }, new MemorySink());
+    for (let i = 0; i < 400 && !reached.done; i++) await new Promise((r) => setTimeout(r, 5));
+    await new Promise((r) => setTimeout(r, 40));
+    controller.abort(); await done;
+    const rows = await w.read();
+    return { micros: rows[0]!.spentMicros, estimated: rows[0]!.estimatedMicros, held: w.held(), logs: w.deps };
+  }
+  const gemini = (transport: ProviderTransport) => async () => {
+    const g = await productGateway({ transport });
+    const reserve = vi.spyOn(g.productMeter, "reserve");
+    return { deps: g.deps, url: streamPath, body: { ...geminiBody, generationConfig: { maxOutputTokens: 8_192 } }, token: mint(), read: () => g.productMeter.read(productScope), held: () => reserve.mock.calls[0]![0].estimateMicros };
+  };
+  it("product Gemini stream: after N chunks it settles above the input-only figure (0 chunks), estimated, below the hold", async () => {
+    const none = await cutAfter(0, geminiChunk, (t) => gemini(t)());
+    const some = await cutAfter(10, geminiChunk, (t) => gemini(t)());
+    expect(some.micros).toBeGreaterThan(none.micros + 1_000);
+    expect(some.micros).toBeLessThan(some.held);
+    expect(some.estimated).toBe(some.micros);
+    expect(none.estimated).toBe(none.micros);
+  });
+  it("learning OpenAI stream (the company's own key): after N chunks it settles above the input-only figure, estimated, below the hold", async () => {
+    const run = (chunks: number) => cutAfter(chunks, openAiChunk, async (transport) => {
+      const keys = { connected: async () => true, keyFor: async () => "openai-key", vertexTarget: async () => undefined, refused: async () => undefined };
+      const agentMeter = new LearningMeter(() => now);
+      const learningMeter = new LearningMeter(() => now, undefined, undefined, { combineCompanyWith: agentMeter });
+      const companyCaps = new FixedCapsSource({ task: 1_000_000_000, personMonth: 1_000_000_000, projectMonth: 1_000_000_000, companyMonth: 1_000_000_000 });
+      const learning = createLearningRoutes({ keys, meter: learningMeter, companyCaps, lessons: { isOn: async () => true }, modelLimits: { maxOutputTokens: () => 8192 }, transport, transports: { openai: transport } });
+      const g = setup({ meter: agentMeter, caps: companyCaps, keys: { keyFor: async () => { throw new Error("install key must not be read"); } }, learning });
+      const reserve = vi.spyOn(learningMeter, "reserve");
+      const model = "gpt-5-mini";
+      return { deps: g.deps, url: "/v1/learning/openai/chat/completions", body: { model, messages: [{ role: "user", content: "reflect" }], max_completion_tokens: 4_096, stream: true }, token: mint({ stp: LEARNING_STEP, mdl: [model] }), read: () => learningMeter.read({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid }), held: () => reserve.mock.calls[0]![0].estimateMicros };
+    });
+    const none = await run(0); const some = await run(10);
+    expect(some.micros).toBeGreaterThan(none.micros + 1_000);
+    expect(some.micros).toBeLessThan(some.held);
+    expect(some.estimated).toBe(some.micros);
   });
 });
