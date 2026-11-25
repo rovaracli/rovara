@@ -27,6 +27,9 @@ import { agentRoute, REVIEWER_CEILING_REFUSED, type GatewayDependencies } from "
 import { createSignedTokenVerifier, createTaskTokenVerifier } from "../../packages/model-gateway/src/token.js";
 import { answer, call, claims, jwk, keys, kid, mint, MemorySink, now, requestBody, scope, setup } from "./model-gateway-fixture.js";
 import { companyPartition } from "../../packages/model-gateway/src/dynamo-meter.js";
+import { SnapshotPriceSource } from "../../packages/model-gateway/src/price-index.js";
+import { answerRateQuote, RATE_QUOTE_AUDIENCE } from "../../packages/model-gateway/src/rate-quote.js";
+import type { RunPrice } from "../../packages/model-gateway/src/model-gateway-token.js";
 import { sign } from "node:crypto";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 
@@ -723,6 +726,42 @@ describe("the tier_review kind", () => {
       expect(g.keySent).toEqual([]);
       await nothingHeld(g.meter);
     }
+  });
+  it("carrying a signed runPrice (as Code's hosted tier review mints it) on Rovara's AI: accepted, with the ceiling and the ws/op binding applied", async () => {
+    const catalogModel = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+    const prices = new SnapshotPriceSource({ load: async () => ({ version: 7, sources: { litellm: { fetchedAt: now - 100, count: 1, entries: [
+      { provider: "bedrock", model: catalogModel, kind: "chat", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000, cacheReadMicrosPerMTok: 500_000, cacheWrite5mMicrosPerMTok: 1_000_000, cacheWrite1hMicrosPerMTok: 2_000_000 },
+    ] } } }), save: async () => false }, { now: () => now, overrides: [] });
+    await prices.reload();
+    const spy = spyStore();
+    const g = gateway({ grants: spy.store, overrides: { prices, chargeReceipts: { source: (_c, _m, resolved) => resolved } } });
+    g.choices.saved.set(cidA, "rovara");
+    const rovara = { ...g.deps.agentAi!.rovara!, sourceId: "operator-serving-role-us-west-2" };
+    g.deps.agentAi = { ...g.deps.agentAi!, rovara };
+    const quote = await answerRateQuote({ prices, verify: async () => ({ ...claims, aud: RATE_QUOTE_AUDIENCE }), now: () => now, sources: g.choices, keys: g.companyKeys, rovara, region: "us-west-2", switchedOn: new Set(), offeredProviders: new Set(["bedrock", "anthropic"]) },
+      { method: "GET", url: `/v1/service/companies/${cidA}/rate-quote?model=${MODEL}&runPrice=1`, headers: { authorization: "Bearer fixture" } });
+    const runPrice = (quote.body as { runPrice: RunPrice }).runPrice;
+    expect(runPrice).toBeDefined();
+    const jti = randomUUID();
+    // Accepted: Rovara's Bedrock is called once and the call is held inside the task row and the company row.
+    expect((await call(g.deps, requestBody, tier({ jti, runPrice }))).status).toBe(200);
+    expect(g.bedrockSent).toHaveLength(1); expect(g.keySent).toEqual([]);
+    expect(spy.opened).toHaveLength(1);
+    expect(await committed(g.meter, "task")).toBeGreaterThan(0);
+    expect(await committed(g.meter, "company")).toBe(await committed(g.meter, "task"));
+    // The binding still applies with the signed price: another workspace, operation or task under the same grant id is refused.
+    for (const other of [{ ws: randomUUID() }, { op: randomUUID() }, { tid: "task_2" }]) expect((await call(g.deps, requestBody, tier({ jti, runPrice, ...other }))).status).toBe(401);
+    expect(g.bedrockSent).toHaveLength(1);
+    // The ceiling still applies with the signed price: refused with the fixed words before any hold, claim or send.
+    const spy2 = spyStore();
+    const h = gateway({ grants: spy2.store, overrides: { prices, chargeReceipts: { source: (_c, _m, resolved) => resolved } } });
+    h.choices.saved.set(cidA, "rovara");
+    h.deps.agentAi = { ...h.deps.agentAi!, rovara };
+    const over = await call(h.deps, requestBody, tier({ runPrice }, 0.000001));
+    expect(over.status).toBe(REVIEWER_CEILING_REFUSED.status);
+    expect(JSON.parse(over.text())).toEqual({ error: { type: "budget_exceeded", message: REVIEWER_CEILING_REFUSED.message } });
+    expect(h.bedrockSent).toEqual([]); expect(spy2.claimed).toEqual([]);
+    await nothingHeld(h.meter);
   });
   it("an ended task is refused like any grant, before anything is held", async () => {
     const g = gateway({ overrides: { ended: { isEnded: async () => true } } });
