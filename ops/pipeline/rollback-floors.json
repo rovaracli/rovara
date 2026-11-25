@@ -9,7 +9,7 @@
         "reason": "web train 11: while Code is at 0.5.49 or newer it sends timeoutSeconds and price-band tokens that earlier Cloud trains do not accept"
       },
       {
-        "sha": "159d568458a628178415385db299ae62510cabd6",
+        "sha": "59edd60f2bff237a42a06380222269264e6889d5",
         "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
       }
     ],
@@ -19,7 +19,7 @@
         "reason": "gateway source of image 2cc25438 (price bands, quota-aware routing, failed-call settle): older gateway code has no price bands and wrongly handles stored no_quota records"
       },
       {
-        "sha": "159d568458a628178415385db299ae62510cabd6",
+        "sha": "59edd60f2bff237a42a06380222269264e6889d5",
         "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
       }
     ]

@@ -70,7 +70,7 @@ describe("rollback floors file: tolerant read", () => {
     const enforced = floors.floors.filter((floor) => /no_answer/u.test(floor.reason));
     expect(enforced.map((floor) => floor.group).sort()).toEqual(["gateway", "web"]);
     for (const floor of enforced) {
-      expect(floor.sha).toBe("159d568458a628178415385db299ae62510cabd6");
+      expect(floor.sha).toBe("59edd60f2bff237a42a06380222269264e6889d5");
       expect(floor.reason).toMatch(/whole company product-AI document/u);
     }
     const rows = floors.pending.filter((row) => row.tag === "BEDROCK-BYO-CHECK-FIXES");
