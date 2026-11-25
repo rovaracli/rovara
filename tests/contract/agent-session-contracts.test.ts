@@ -472,6 +472,17 @@ describe("the view schemas", () => {
     expect(SessionEventPageSchema.safeParse({ events: Array.from({ length: 201 }, () => event) }).success).toBe(false);
   });
 
+  it("accepts chargedTo (Code's \"Charged to <name>\", 1 to 260 characters) on the view's you, and refuses it empty, over 260 or at the view's top level", () => {
+    const words = "Charged to Acme project";
+    for (const schema of [SessionViewSchema, SessionViewReaderSchema]) {
+      expect(schema.safeParse({ ...view, you: { ...view.you, chargedTo: words } }).success).toBe(true);
+      expect(schema.safeParse({ ...view, you: { ...view.you, chargedTo: "x".repeat(260) } }).success).toBe(true);
+    }
+    for (const bad of ["", "x".repeat(261)]) expect(SessionViewSchema.safeParse({ ...view, you: { ...view.you, chargedTo: bad } }).success).toBe(false);
+    // chargedTo is on `you` only: the view's top level stays strict.
+    expect(SessionViewSchema.safeParse({ ...view, chargedTo: words }).success).toBe(false);
+  });
+
   it("accepts ownerLeft (plain words, 1 to 400 characters) on the view's you and on the tile, and refuses it empty or over 400", () => {
     const words = "The person who owned this task has left the project.";
     for (const schema of [SessionViewSchema, SessionViewReaderSchema]) {
