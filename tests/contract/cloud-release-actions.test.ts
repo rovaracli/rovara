@@ -13,7 +13,7 @@ import { RELEASE_ACTIONS_PART, RequireCloudBoundary, applyCloudBoundary, cloudBo
 import { boundaryViolations, globMatch, resolvedBoundaries, roleCases, type CfnTemplate, type StackTemplate } from "../../infra/lib/cloud-boundary-check.js";
 import {
   CLOUD_RELEASE_ACTIONS_CONTEXT_KEY, CLOUD_RELEASE_ACTIONS_OUTPUTS, CLOUD_RELEASE_ACTIONS_STACK_NAME, CLOUD_RELEASE_BUILD_ROLE_NAMES, CLOUD_RELEASE_EXPORTED_VARIABLES,
-  CLOUD_RELEASE_PROJECT_NAMES, CLOUD_RELEASE_STEPS, CloudReleaseActionsStack, RELEASE_ACTION_TOOL_COMMANDS, RELEASE_ACTION_TOOL_VARIABLES, betaGatewayPullPolicy, releaseActionBuildCommands, releaseActionInstallCommands,
+  CLOUD_RELEASE_CODE_CLONE_STEPS, CLOUD_RELEASE_PROJECT_NAMES, CLOUD_RELEASE_STEPS, CloudReleaseActionsStack, RELEASE_ACTION_TOOL_COMMANDS, RELEASE_ACTION_TOOL_VARIABLES, betaGatewayPullPolicy, releaseActionBuildCommands, releaseActionInstallCommands,
   type ReleaseActionEnvironment,
 } from "../../infra/lib/cloud-release-actions.js";
 import { renderExports } from "../../ops/pipeline/lib/summary.ts";
@@ -335,15 +335,18 @@ describe("the projects", () => {
   });
 
   /** Runs the build commands in bash -e (CodeBuild stops at the first failing command) against a fake `node`, in a scratch directory. */
-  function runBuild(environment: ReleaseActionEnvironment, env: Record<string, string>, options: { exports?: boolean } = {}) {
+  function runBuild(environment: ReleaseActionEnvironment, env: Record<string, string>, options: { exports?: boolean; codeClone?: boolean } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "release-actions-"));
     mkdirSync(join(dir, "bin"));
     mkdirSync(join(dir, "ops/pipeline"), { recursive: true });
+    // The Code clone input of every Cloud action (CodeBuild's secondary input `Source`); a test names `codeClone: false` for an action without it.
+    mkdirSync(join(dir, "code-clone"));
+    const codeEnv: Record<string, string> = options.codeClone === false ? {} : { CODEBUILD_SRC_DIR_Source: join(dir, "code-clone") };
     const exportsLine = options.exports === false ? ":" : `mkdir -p out; printf "export CODE_RELEASE_EFFECTIVE='skip'\\nexport CLOUD_TAG='v1.2.3'\\n" > out/exports.env`;
-    writeFileSync(join(dir, "bin/node"), `#!/bin/bash\necho "NODE $* manifest=\${PIPELINE_MANIFEST:-none} adopt=\${PIPELINE_ADOPT:-} mode=\${PIPELINE_MODE:-} account=\${ROVARA_EXPECTED_DEPLOY_ACCOUNT:-}"\nif [ "$3" = preflight ]; then ${exportsLine}; fi\n`);
+    writeFileSync(join(dir, "bin/node"), `#!/bin/bash\necho "NODE $* manifest=\${PIPELINE_MANIFEST:-none} adopt=\${PIPELINE_ADOPT:-} code=\${ROVARA_CODE_REPO:-} mode=\${PIPELINE_MODE:-} account=\${ROVARA_EXPECTED_DEPLOY_ACCOUNT:-}"\nif [ "$3" = preflight ]; then ${exportsLine}; fi\n`);
     chmodSync(join(dir, "bin/node"), 0o755);
     const script = [...releaseActionBuildCommands(environment), 'echo "RELEASE=$CODE_RELEASE_EFFECTIVE TAG=$CLOUD_TAG MODE=[$CLOUD_MODE]"'].join("\n");
-    const result = spawnSync("bash", ["-e", "-c", script], { cwd: dir, env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin`, ...env }, encoding: "utf8" });
+    const result = spawnSync("bash", ["-e", "-c", script], { cwd: dir, env: { PATH: `${join(dir, "bin")}:/usr/bin:/bin`, ...codeEnv, ...env }, encoding: "utf8" });
     return { dir, status: result.status, out: result.stdout, err: result.stderr };
   }
 
@@ -366,7 +369,39 @@ describe("the projects", () => {
 
   it("passes the action's own variables through to the CLI untouched: the mode, adoption and the expected account the pipeline sets", () => {
     const run = runBuild("beta", { STAGE_ENV: "beta", STAGE_STEP: "gateway-check", PIPELINE_ADOPT: "1", PIPELINE_MODE: "adoption", ROVARA_EXPECTED_DEPLOY_ACCOUNT: "123456789012" });
-    expect(run.out).toContain("adopt=1 mode=adoption account=123456789012");
+    expect(run.out).toMatch(/adopt=1 code=\S+\/code-clone mode=adoption account=123456789012/u);
+  });
+
+  it("exports ROVARA_CODE_REPO from the Code clone input (CODEBUILD_SRC_DIR_Source) for every step, and drops one the environment brought along", () => {
+    const state = mkdtempSync(join(tmpdir(), "state-"));
+    writeFileSync(join(state, "manifest.json"), "{}");
+    const first = runBuild("beta", { STAGE_ENV: "beta", STAGE_STEP: "preflight", ROVARA_CODE_REPO: "/somewhere/else" });
+    expect(first.status).toBe(0);
+    expect(first.out).toContain(`code=${first.dir}/code-clone `);
+    for (const step of CLOUD_RELEASE_STEPS.filter((name) => name !== "preflight")) {
+      const run = runBuild("production", { STAGE_ENV: "production", STAGE_STEP: step, PIPELINE_STATE_ARTIFACT: "BetaCloudProofState", CODEBUILD_SRC_DIR_BetaCloudProofState: state });
+      expect(run.out, step).toContain(`code=${run.dir}/code-clone `);
+    }
+    expect(releaseActionBuildCommands("beta").join("\n")).toContain('code_ref="CODEBUILD_SRC_DIR_Source"');
+  });
+
+  it("refuses to start a step that checks Code when the Code clone input is missing (preflight, gateway-check; the CLI never runs), and a hand-set ROVARA_CODE_REPO does not stand in", () => {
+    const state = mkdtempSync(join(tmpdir(), "state-"));
+    writeFileSync(join(state, "manifest.json"), "{}");
+    for (const environment of ["beta", "production"] as const) {
+      for (const step of CLOUD_RELEASE_CODE_CLONE_STEPS) {
+        const env = { STAGE_ENV: environment, STAGE_STEP: step, ROVARA_CODE_REPO: "/hand/set", ...(step === "preflight" && environment === "beta" ? {} : { PIPELINE_STATE_ARTIFACT: "BetaCloudProofState", CODEBUILD_SRC_DIR_BetaCloudProofState: state }) };
+        const run = runBuild(environment, env, { codeClone: false });
+        expect(run.status, `${environment} ${step}`).not.toBe(0);
+        expect(run.err).toMatch(/no Code clone: the Source input directory is missing/u);
+        expect(run.out).not.toContain("NODE");
+        // an input name that points at a path that is not a directory is the same as missing
+        const gone = runBuild(environment, { ...env, CODEBUILD_SRC_DIR_Source: "/nonexistent-dir-for-test" }, { codeClone: false });
+        expect(gone.status).not.toBe(0);
+      }
+    }
+    // a step that needs no Code clone still runs without one
+    expect(runBuild("beta", { STAGE_ENV: "beta", STAGE_STEP: "image", PIPELINE_STATE_ARTIFACT: "BetaPreflightState", CODEBUILD_SRC_DIR_BetaPreflightState: state }, { codeClone: false }).status).toBe(0);
   });
 
   it("grants no CodePipeline right at all: nothing in this stack can reopen the promotion gate (only the public Preflight closes it)", () => {

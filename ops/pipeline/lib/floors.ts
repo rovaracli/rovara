@@ -9,6 +9,9 @@ export const FLOORS_PATH = "ops/pipeline/rollback-floors.json";
 const SHA40 = /^[0-9a-f]{40}$/u;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 
+/** The one floors group that is judged against a Code rollback target (in the Code clone), not against the Cloud ref (L9b). */
+export const CODE_GROUP = "code";
+
 export interface Floor { group: string; sha: string | null; reason: string }
 export interface DigestFloor { digest: string; reason: string }
 export interface PendingFloor { group: string; tag: string | null; sha: string | null; when: string; reason: string }
@@ -58,19 +61,24 @@ export function loadFloors(ports: Ports, pipelineDir: string): Floors {
   return parseFloors(ports.fs.readText(path));
 }
 
+/** The floors that apply to the Cloud ref: every group but `code`. */
+export const cloudFloors = (floors: Floors): Floor[] => floors.floors.filter((floor) => floor.group !== CODE_GROUP);
+/** The floors of the `code` group: each is a Code commit a Code rollback target must equal or descend from. */
+export const codeFloors = (floors: Floors): Floor[] => floors.floors.filter((floor) => floor.group === CODE_GROUP);
+
 export interface FloorVerdict { failures: string[]; notes: string[] }
 
-/** The Cloud ref (its commit) must equal or descend from every floor. A floor git cannot find is a failure, never a pass. */
+/** The Cloud ref (its commit) must equal or descend from every Cloud floor (every group but `code`). A floor git cannot find is a failure, never a pass. */
 export async function judgeRef(ports: Ports, floors: Floors, target: { tag: string; sha: string }): Promise<FloorVerdict> {
   const failures: string[] = [];
   const notes: string[] = [];
-  for (const floor of floors.floors) {
+  for (const floor of cloudFloors(floors)) {
     if (floor.sha === null) { failures.push(`a ${floor.group} floor in ${FLOORS_PATH} is not a full 40-hex sha, so ${target.tag} cannot be judged against it (${floor.reason})`); continue; }
     let above: boolean;
     try { above = await ports.git.isAncestor(floor.sha, target.sha); } catch { failures.push(`the ${floor.group} floor ${floor.sha.slice(0, 12)} is not in this repository, so ${target.tag} cannot be judged against it (${floor.reason})`); continue; }
     if (!above) failures.push(`${target.tag} (${target.sha.slice(0, 12)}) is below the ${floor.group} floor ${floor.sha.slice(0, 12)}: ${floor.reason}`);
   }
-  if (floors.floors.length === 0) notes.push("the floors file lists no floors");
+  if (cloudFloors(floors).length === 0) notes.push("the floors file lists no floors");
   for (const pending of floors.pending) notes.push(`pending floor (not enforced): ${pending.group} ${pending.tag ?? pending.sha?.slice(0, 12) ?? "?"} once ${pending.when}`);
   for (const key of floors.ignored) notes.push(`ignored unknown key ${key} in ${FLOORS_PATH}`);
   return { failures, notes };
@@ -79,4 +87,26 @@ export async function judgeRef(ports: Ports, floors: Floors, target: { tag: stri
 export function judgeDigest(floors: Floors, digest: string): string[] {
   const hit = floors.belowFloorDigests.find((entry) => entry.digest === digest);
   return hit === undefined ? [] : [`gateway digest ${digest.slice(0, 19)}... is below the gateway floor: ${hit.reason}`];
+}
+
+/**
+ * A Code rollback target (L9b) must equal or descend from every `code` floor, judged in the Code clone the build provides (`repo`, a full clone: git merge-base --is-ancestor).
+ * Nothing is assumed: a target or floor the clone does not hold, an unusable floor, or no clone while a floor exists, FAILS. No `code` floors = nothing to judge (a note).
+ */
+export async function judgeCodeTarget(ports: Ports, floors: Floors, repo: string | null, target: string): Promise<FloorVerdict> {
+  const failures: string[] = [];
+  const notes: string[] = [];
+  const list = codeFloors(floors);
+  if (list.length === 0) { notes.push(`the floors file lists no code floors: the Code target ${target.slice(0, 12)} was not judged`); return { failures, notes }; }
+  if (repo === null) return { failures: [`the Code target ${target.slice(0, 12)} cannot be judged against the code floors: no Code clone was provided (ROVARA_CODE_REPO)`], notes };
+  const known = async (sha: string): Promise<boolean> => (await ports.exec("git", ["-C", repo, "cat-file", "-e", `${sha}^{commit}`])).code === 0;
+  if (!await known(target)) return { failures: [`the Code target ${target.slice(0, 12)} is not in the Code clone, so it cannot be judged against the code floors`], notes };
+  for (const floor of list) {
+    if (floor.sha === null) { failures.push(`a code floor in ${FLOORS_PATH} is not a full 40-hex sha, so the Code target ${target.slice(0, 12)} cannot be judged against it (${floor.reason})`); continue; }
+    if (!await known(floor.sha)) { failures.push(`the code floor ${floor.sha.slice(0, 12)} is not in the Code clone, so the Code target ${target.slice(0, 12)} cannot be judged against it (${floor.reason})`); continue; }
+    const run = await ports.exec("git", ["-C", repo, "merge-base", "--is-ancestor", floor.sha, target]);
+    if (run.code === 1) failures.push(`the Code target ${target.slice(0, 12)} is below the code floor ${floor.sha.slice(0, 12)}: ${floor.reason}`);
+    else if (run.code !== 0) failures.push(`git could not compare the Code target ${target.slice(0, 12)} with the code floor ${floor.sha.slice(0, 12)} (exit ${run.code})`);
+  }
+  return { failures, notes };
 }

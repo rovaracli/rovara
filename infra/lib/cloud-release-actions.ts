@@ -69,6 +69,13 @@ export const CLOUD_RELEASE_BUILD_ROLE_NAMES: Readonly<Record<ReleaseActionEnviro
 export const CLOUD_RELEASE_STEPS = ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as const;
 /** What the stage CLI's preflight writes to out/exports.env and the project exports to the pipeline (the public Code actions read CODE_RELEASE_EFFECTIVE). */
 export const CLOUD_RELEASE_EXPORTED_VARIABLES = ["CLOUD_TAG", "CLOUD_SHA", "CLOUD_MODE", "CODE_RELEASE_EFFECTIVE", "CODE_PINNED_SHA", "SUMMARY_LINE"] as const;
+/**
+ * The public pipeline gives every Cloud action the Code source as a secondary input named `Source` (a full clone; its Code `sourceOutput` artifact), next to the previous
+ * action's state. CodeBuild puts it at $CODEBUILD_SRC_DIR_Source. The build exports that directory as ROVARA_CODE_REPO, which the stage CLI's Code-side checks read (the deployed-drift gate,
+ * the gateway run-price gate, the rollback `code` floors). The steps that run those checks refuse to start without it.
+ */
+export const CLOUD_RELEASE_CODE_CLONE_ARTIFACT = "Source";
+export const CLOUD_RELEASE_CODE_CLONE_STEPS = ["preflight", "gateway-check"] as const;
 /** The AWS profile of the beta release role (BETA-RELEASE-ROLE-PREP.md 2.4; ops/pipeline/config.json environments.beta.profile) and its fixed session name. */
 export const CLOUD_BETA_PROFILE = "rovara-cloud-beta";
 export const CLOUD_BETA_SESSION_NAME = "rovara-cloud-beta-release";
@@ -143,6 +150,9 @@ export function releaseActionBuildCommands(environment: ReleaseActionEnvironment
     `[ "$STAGE_ENV" = ${environment} ] || { echo "this project runs ${environment} steps only; STAGE_ENV is '$STAGE_ENV'" >&2; exit 1; }`,
     `case "$STAGE_STEP" in ${CLOUD_RELEASE_STEPS.join("|")}) ;; *) echo "unknown STAGE_STEP '$STAGE_STEP'" >&2; exit 1;; esac`,
     'if [ -n "${PIPELINE_STATE_ARTIFACT:-}" ]; then case "$PIPELINE_STATE_ARTIFACT" in *[!A-Za-z0-9_]*) echo "PIPELINE_STATE_ARTIFACT is not an artifact name" >&2; exit 1;; esac; state_ref="CODEBUILD_SRC_DIR_${PIPELINE_STATE_ARTIFACT}"; state_dir="${!state_ref:-}"; if [ ! -f "$state_dir/manifest.json" ]; then echo "no manifest.json in the previous action output $PIPELINE_STATE_ARTIFACT" >&2; exit 1; fi; export PIPELINE_MANIFEST="$state_dir/manifest.json"; fi',
+    // The Code clone input (a constant artifact name, so a plain indirect expansion; no eval). Whatever ROVARA_CODE_REPO the environment held is dropped first: only the input counts.
+    `unset ROVARA_CODE_REPO; code_ref="CODEBUILD_SRC_DIR_${CLOUD_RELEASE_CODE_CLONE_ARTIFACT}"; code_dir="\${!code_ref:-}"; if [ -n "$code_dir" ] && [ -d "$code_dir" ]; then export ROVARA_CODE_REPO="$code_dir"; fi`,
+    `case "$STAGE_STEP" in ${CLOUD_RELEASE_CODE_CLONE_STEPS.join("|")}) [ -n "\${ROVARA_CODE_REPO:-}" ] || { echo "no Code clone: the ${CLOUD_RELEASE_CODE_CLONE_ARTIFACT} input directory is missing, and the $STAGE_STEP step checks Code" >&2; exit 1; };; esac`,
     ...(environment === "production" ? ['if [ "$STAGE_STEP" = preflight ]; then node ops/pipeline/stage.ts beta summary; fi'] : []),
     ...CLOUD_RELEASE_EXPORTED_VARIABLES.map((name) => `export ${name}=""`),
     'node ops/pipeline/stage.ts "$STAGE_ENV" "$STAGE_STEP"',

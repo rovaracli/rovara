@@ -10,7 +10,10 @@ export function buildSummary(manifest: Manifest, env: PipelineEnv, stage: StageR
     env,
     executionId: manifest.executionId,
     mode: manifest.mode,
-    code: { sha: manifest.code.sha, release: manifest.code.release, pinnedSha: manifest.code.pinnedSha[env], supersedes: manifest.code.supersedes },
+    code: {
+      sha: manifest.code.sha, release: manifest.code.release, pinnedSha: manifest.code.pinnedSha[env], supersedes: manifest.code.supersedes,
+      liveSha: manifest.code.liveSha?.[env] ?? null, rollbackTarget: manifest.code.rollbackTarget ?? null,
+    },
     cloud: { tag: manifest.cloud.tag, sha: manifest.cloud.sha, liveSha: manifest.cloud.liveSha[env] },
     gateway: { digest: manifest.gateway.digest, source: manifest.gateway.source },
     changeSets: stage.changeSets.map((cs) => ({ part: cs.part, stack: cs.stack, noChanges: cs.noChanges, counts: cs.counts })),
@@ -18,6 +21,10 @@ export function buildSummary(manifest: Manifest, env: PipelineEnv, stage: StageR
     warnings,
   };
 }
+
+/** What the summary may say about Cloud in a rollback: the preflight proved the change is no move forward whenever the live sha is known (it refuses otherwise); unknown = not proven. */
+const cloudClaim = (summary: PromotionSummary): string =>
+  summary.cloud.liveSha === null ? "Cloud: the live Cloud is unknown, so whether it stays or rolls back is not proven" : `Cloud ${summary.cloud.liveSha === summary.cloud.sha ? "stays" : "rolls back"}`;
 
 export function renderSummary(summary: PromotionSummary): string {
   const lines: string[] = [];
@@ -29,8 +36,14 @@ export function renderSummary(summary: PromotionSummary): string {
   lines.push(`  Change sets: ${sets.length === 0 ? "none yet" : sets.join(" | ")}`);
   const gates = summary.gates.map((g) => (g.result === "skipped" ? `skipped ${g.name} (${g.skippedReason ?? ""})` : `${g.result} ${g.name}`));
   lines.push(`  Gates  : ${gates.length === 0 ? "none yet" : gates.join(" | ")}`);
-  if (summary.code.supersedes !== null) lines.push(`  NOTE   : this run supersedes execution ${summary.code.supersedes.executionId.slice(0, 8)}, whose Code sha ${short(summary.code.supersedes.codeSha)} is not promoted`);
-  if (summary.mode === "rollback") lines.push(`  NOTE   : rollback run: Code is skipped and pinned to ${short(summary.code.pinnedSha)}`);
+  const target = summary.code.rollbackTarget ?? null;
+  if (summary.code.supersedes !== null) {
+    // The waiting run's Code commit is promoted by this run only when this run releases that very commit (not in a Code rollback: Code goes to the target).
+    const same = summary.code.supersedes.codeSha !== null && summary.code.supersedes.codeSha === summary.code.sha && summary.code.release === "run" && target === null;
+    lines.push(`  NOTE   : this run supersedes execution ${summary.code.supersedes.executionId.slice(0, 8)}, whose Code sha ${short(summary.code.supersedes.codeSha)} is ${same ? "promoted by this run" : "not promoted"}`);
+  }
+  if (summary.mode === "rollback" && target !== null) lines.push(`  NOTE   : Code rolls back to ${short(target)} (from ${short(summary.code.liveSha ?? null)}); ${cloudClaim(summary)}`);
+  else if (summary.mode === "rollback") lines.push(`  NOTE   : rollback run: Code is skipped and pinned to ${short(summary.code.pinnedSha)}`);
   if (summary.code.release === "skip" && summary.mode !== "rollback") lines.push("  NOTE   : Code release is skipped in this run; its Code waits for a later run");
   for (const warning of summary.warnings) lines.push(`  WARN   : ${warning}`);
   return `${lines.join("\n")}\n`;
