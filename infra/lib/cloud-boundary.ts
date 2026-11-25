@@ -309,7 +309,7 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
         // The one-off price fetch: the schedule's own task definition, in the gateway's cluster. No overrides, no tags (the build passes none).
         Sid: "PriceFetchRun", Effect: "Allow", Action: ["ecs:RunTask"],
         Resource: [`arn:${p}:ecs:${r}:${a}:task-definition/${PRICE_FETCH_TASK_FAMILY}*`],
-        Condition: { StringLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
+        Condition: { ArnLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
       },
       {
         // Only to ECS tasks. (A task's role can be overridden at RunTask: the identity policy names the two exact roles, which a boundary by path cannot.)
@@ -318,7 +318,7 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
       },
       {
         Sid: "PriceFetchReads", Effect: "Allow", Action: ["ecs:DescribeTasks", "ecs:ListTasks", "ecs:DescribeServices", "ecs:ListServices"], Resource: ["*"],
-        Condition: { StringLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
+        Condition: { ArnLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
       },
       { Sid: "TaskDefinitionRead", Effect: "Allow", Action: ["ecs:DescribeTaskDefinition"], Resource: ["*"] },
       { Sid: "PriceScheduleRead", Effect: "Allow", Action: ["events:ListTargetsByRule"], Resource: [`arn:${p}:events:${r}:${a}:rule/*`] },
@@ -355,7 +355,7 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
 /**
  * The release actions' extra Deny statements (BETA-RELEASE-ROLE-PREP.md 2.3 and 2.5), which hold even if a later change widens an Allow: no role may assume the organization's
  * management-account Administrator path (any account), read a secret's value, or use a key other than through S3 (SSM here is plain String records; the artifact objects use the aws/s3 key), or
- * run a task with an interactive shell. The last carries a condition, which the boundary check cannot evaluate: a test pins it instead (cloud-release-actions.test.ts).
+ * run a task with an interactive shell. The last carries a condition (StringEquals on ecs:enable-execute-command, a String key), which the boundary check cannot evaluate: a test pins it instead (cloud-release-actions.test.ts).
  */
 export function releaseActionsDenies(): BoundaryStatement[] {
   return [
@@ -364,7 +364,7 @@ export function releaseActionsDenies(): BoundaryStatement[] {
     // Key use is denied everywhere except through S3: the pipeline's artifacts (read and written by CodePipeline and by the projects' own output) are encrypted with the
     // AWS-managed aws/s3 key, and S3 calls KMS as the requesting role. A direct Decrypt of any key (a customer-managed key a key policy happens to name this role on) stays denied.
     { Sid: "DenyKeyUseOutsideS3", Effect: "Deny", Action: ["kms:Decrypt", "kms:GenerateDataKey*"], Resource: ["*"], Condition: { StringNotLike: { "kms:ViaService": "s3.*.amazonaws.com" } } },
-    { Sid: "DenyExecIntoTasks", Effect: "Deny", Action: ["ecs:RunTask"], Resource: ["*"], Condition: { Bool: { "ecs:enable-execute-command": "true" } } },
+    { Sid: "DenyExecIntoTasks", Effect: "Deny", Action: ["ecs:RunTask"], Resource: ["*"], Condition: { StringEquals: { "ecs:enable-execute-command": "true" } } },
   ];
 }
 

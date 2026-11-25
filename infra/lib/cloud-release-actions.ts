@@ -299,7 +299,7 @@ export class CloudReleaseActionsStack extends Stack {
       sid: "PriceFetchRun",
       actions: ["ecs:RunTask"],
       resources: [`arn:${this.partition}:ecs:${this.region}:${this.account}:task-definition/${PRICE_FETCH_TASK_FAMILY}*:*`],
-      conditions: { StringLike: { "ecs:cluster": clusterPattern } },
+      conditions: { ArnLike: { "ecs:cluster": clusterPattern } },
     }));
     // Exactly the schedule's two roles: RunTask can override a task's role, so a path would let the build run the price fetch image as the serving role.
     productionRole.addToPolicy(new iam.PolicyStatement({
@@ -312,7 +312,7 @@ export class CloudReleaseActionsStack extends Stack {
       sid: "PriceFetchReads",
       actions: ["ecs:DescribeTasks", "ecs:ListTasks", "ecs:DescribeServices", "ecs:ListServices"],
       resources: ["*"],
-      conditions: { StringLike: { "ecs:cluster": clusterPattern } },
+      conditions: { ArnLike: { "ecs:cluster": clusterPattern } },
     }));
     productionRole.addToPolicy(new iam.PolicyStatement({ sid: "TaskDefinitionRead", actions: ["ecs:DescribeTaskDefinition"], resources: ["*"] }));
     productionRole.addToPolicy(new iam.PolicyStatement({ sid: "PriceScheduleRead", actions: ["events:ListTargetsByRule"], resources: [`arn:${this.partition}:events:${this.region}:${this.account}:rule/*`] }));

@@ -155,15 +155,48 @@ describe("every role is bounded, named and trusted narrowly", () => {
     ]) expect(boundaryViolations([widen(statement)], scope), JSON.stringify(statement)).toHaveLength(1);
   });
 
-  it("the boundary check understands the Bool deny it ignores, and refuses a conditional Deny it cannot read", () => {
+  it("the boundary check understands the exec deny it ignores, and refuses a conditional Deny it cannot read", () => {
     const [boundary] = byType("AWS::IAM::ManagedPolicy");
     const statements = (boundary![1].Properties.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement;
-    expect(statements.find((s) => s.Sid === "DenyExecIntoTasks")).toEqual({ Sid: "DenyExecIntoTasks", Effect: "Deny", Action: ["ecs:RunTask"], Resource: ["*"], Condition: { Bool: { "ecs:enable-execute-command": "true" } } });
+    expect(statements.find((s) => s.Sid === "DenyExecIntoTasks")).toEqual({ Sid: "DenyExecIntoTasks", Effect: "Deny", Action: ["ecs:RunTask"], Resource: ["*"], Condition: { StringEquals: { "ecs:enable-execute-command": "true" } } });
     const t = structuredClone(built.template) as CfnTemplate & { Resources: Record<string, Resource> };
     const doc = t.Resources.RoleBoundary!.Properties.PolicyDocument as { Statement: Array<Record<string, unknown>> };
     doc.Statement.push({ Sid: "Odd", Effect: "Deny", Action: "s3:*", Resource: "*", Condition: { StringLike: { "aws:username": "a*" } } });
     // Any other conditional Deny is counted as applying: the grants it could touch are reported (never silently passed).
     expect(boundaryViolations([{ stackName: CLOUD_RELEASE_ACTIONS_STACK_NAME, template: t }], scope).map((v) => v.reason)).toEqual(expect.arrayContaining(["denied by the boundary's Odd (conditional: counted as applying)"]));
+  });
+
+  it("every condition uses the operator family of its key's documented type (IAM Access Analyzer: ARN keys take Arn*, String keys String*, never Bool for a String key)", () => {
+    // Pinned from the Service Authorization Reference and confirmed by `aws accessanalyzer validate-policy` (STRING_LIKE_OPERATOR_WITH_ARN_CONDITION_KEYS on ecs:cluster, TYPE_MISMATCH on
+    // ecs:enable-execute-command, both found by the first read-only validation of this stack). A key not in this table fails the test: add it with its documented type.
+    const KEY_TYPES: Record<string, "Arn" | "String"> = {
+      "ecs:cluster": "Arn", "ecs:enable-execute-command": "String", "iam:PassedToService": "String", "kms:ViaService": "String", "aws:SourceAccount": "String", "aws:SourceArn": "Arn",
+    };
+    const OPERATORS = { Arn: /^(ForAnyValue:|ForAllValues:)?Arn(Equals|Like|NotEquals|NotLike)$/u, String: /^(ForAnyValue:|ForAllValues:)?String(Equals|Like|NotEquals|NotLike|EqualsIgnoreCase)$/u } as const;
+    const documents = [...byType("AWS::IAM::Policy"), ...byType("AWS::IAM::ManagedPolicy")].map(([id, r]) => [id, r.Properties.PolicyDocument as { Statement: PolicyStatement[] }] as const);
+    const trusts = byType("AWS::IAM::Role").map(([id, r]) => [id, r.Properties.AssumeRolePolicyDocument as { Statement: PolicyStatement[] }] as const);
+    let seen = 0;
+    for (const [id, document] of [...documents, ...trusts]) {
+      for (const statement of document.Statement) {
+        for (const [operator, keys] of Object.entries((statement.Condition ?? {}) as Record<string, Record<string, unknown>>)) {
+          for (const key of Object.keys(keys)) {
+            const type = KEY_TYPES[key];
+            expect(type, `${id} ${statement.Sid ?? ""}: ${key} has no documented type in this test`).toBeDefined();
+            // aws:SourceArn in the build roles' trust is an exact project ARN: StringEquals on it is the form AWS documents for the CodeBuild confused deputy condition and the analyzer accepts it.
+            if (key === "aws:SourceArn" && operator === "StringEquals") continue;
+            expect(operator, `${id} ${statement.Sid ?? ""}: ${key} is a ${type} key`).toMatch(OPERATORS[type!]);
+            seen += 1;
+          }
+        }
+      }
+    }
+    expect(seen).toBeGreaterThanOrEqual(8);
+    // The two named by the analyzer, exactly: ARN keys with ArnLike, the exec key with StringEquals "true" (a Bool operator is a TYPE_MISMATCH).
+    const boundary = documents.find(([id]) => id === "RoleBoundary")![1].Statement;
+    expect(boundary.filter((s) => s.Sid === "PriceFetchRun" || s.Sid === "PriceFetchReads").map((s) => Object.keys(s.Condition as object).map((operator) => [operator, templateText((s.Condition as Record<string, Record<string, unknown>>)[operator]!["ecs:cluster"])]))).toEqual(Array(2).fill([["ArnLike", `arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/rovara-cloud-production-gateway-*`]]));
+    expect(policyOf("production").Statement.filter((s) => s.Sid === "PriceFetchRun" || s.Sid === "PriceFetchReads").map((s) => Object.keys(s.Condition as object))).toEqual([["ArnLike"], ["ArnLike"]]);
+    expect(JSON.stringify(boundary)).not.toContain('"Bool"');
+    expect(JSON.stringify(policyOf("production"))).not.toContain('"Bool"');
   });
 
   it("M1: artifact transfers through S3 with the aws/s3 key are not denied, a direct key use still is", () => {
@@ -243,7 +276,7 @@ describe("what each role may do", () => {
     expect(casesOf("production").filter((c) => c.resource.includes("210987654321")).every((c) => c.resource === beta)).toBe(true);
     expect(resourcesOf("ecr:PutImage")).toEqual([`arn:aws:ecr:${REGION}:${ACCOUNT}:repository/rovara-cloud-production-gateway-images-*`]);
     expect(resourcesOf("ecs:RunTask")).toEqual([`arn:aws:ecs:${REGION}:${ACCOUNT}:task-definition/RovaraModelGatewayPriceFetchTask*:*`]);
-    expect(casesOf("production").find((c) => c.action === "ecs:RunTask")!.condition).toEqual({ StringLike: { "ecs:cluster": [`arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/rovara-cloud-production-gateway-*`] } });
+    expect(casesOf("production").find((c) => c.action === "ecs:RunTask")!.condition).toEqual({ ArnLike: { "ecs:cluster": [`arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/rovara-cloud-production-gateway-*`] } });
     // Exactly two roles may be passed, to ECS only: RunTask can override a task's role.
     expect(casesOf("production").filter((c) => c.action === "iam:PassRole").map((c) => c.resource)).toHaveLength(2);
     expect(casesOf("production").find((c) => c.action === "iam:PassRole")!.condition).toEqual({ StringEquals: { "iam:PassedToService": ["ecs-tasks.amazonaws.com"] } });
@@ -278,7 +311,7 @@ describe("what each role may do", () => {
     expect(denies("beta").map((s) => s.Sid)).toEqual(["DenyArtifactWritesOutsideOwnState", "DenyOrganizationAdminRole"]);
     expect(denies("beta")[1]).toEqual({ Sid: "DenyOrganizationAdminRole", Effect: "Deny", Action: "sts:AssumeRole", Resource: "arn:aws:iam::*:role/OrganizationAccountAccessRole" });
     expect(denies("production").map((s) => s.Sid)).toEqual(["DenyArtifactWritesOutsideOwnState", "DenyOrganizationAdminRole", "DenyExecIntoTasks"]);
-    expect(denies("production")[2]).toMatchObject({ Action: "ecs:RunTask", Condition: { Bool: { "ecs:enable-execute-command": "true" } } });
+    expect(denies("production")[2]).toMatchObject({ Action: "ecs:RunTask", Condition: { StringEquals: { "ecs:enable-execute-command": "true" } } });
   });
 
   it("the grants that name other accounts take them from parameters: no account is written in the template", () => {

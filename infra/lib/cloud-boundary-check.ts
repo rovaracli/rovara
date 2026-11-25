@@ -244,7 +244,7 @@ function keepShape(original: unknown, resolved: ResolvedCondition): Record<strin
 /**
  * Does a role statement's own condition keep the request inside what a boundary Allow's condition requires? (A boundary only caps: an Allow with a condition
  * covers a grant only when the grant is at least as narrow.) Only the operators Cloud's boundary uses are understood; any other in a boundary is an error,
- * never a guess. StringLike / StringEquals: every value the grant allows must match one the boundary allows. StringNotEquals: the grant must exclude every
+ * never a guess. StringLike / StringEquals (and ArnLike / ArnEquals, the operators of ARN-typed keys such as ecs:cluster, read the same way): every value the grant allows must match one the boundary allows. StringNotEquals: the grant must exclude every
  * value the boundary excludes. The meter's ForAllValues:StringLike and Null conditions must match exactly (no inferred containment).
  * A key the grant does not constrain does not satisfy a boundary that does.
  */
@@ -255,14 +255,14 @@ export function conditionWithin(own: ResolvedCondition | undefined, required: Re
       if (JSON.stringify(own?.[operator]) !== JSON.stringify(keys)) return false;
       continue;
     }
-    if (operator !== "StringLike" && operator !== "StringEquals" && operator !== "StringNotEquals") throw new Error(`the boundary condition operator ${operator} is not supported by this check`);
+    if (operator !== "StringLike" && operator !== "StringEquals" && operator !== "StringNotEquals" && operator !== "ArnLike" && operator !== "ArnEquals") throw new Error(`the boundary condition operator ${operator} is not supported by this check`);
     for (const [key, wanted] of Object.entries(keys)) {
       // Glob containment below is sound for `*`-only boundary patterns; a `?` in a boundary value is not handled yet (review L4-HARD 4): an error, never a guess.
-      if (operator === "StringLike" && wanted.some((w) => w.includes("?"))) throw new Error(`the boundary condition ${key} uses ? in a StringLike value, which this check does not support`);
+      if ((operator === "StringLike" || operator === "ArnLike") && wanted.some((w) => w.includes("?"))) throw new Error(`the boundary condition ${key} uses ? in a ${operator} value, which this check does not support`);
       const given = own?.[operator]?.[key];
       if (given === undefined) return false;
       if (operator === "StringNotEquals") { if (!wanted.every((w) => given.includes(w))) return false; }
-      else if (operator === "StringEquals") { if (!given.every((g) => wanted.includes(g))) return false; }
+      else if (operator === "StringEquals" || operator === "ArnEquals") { if (!given.every((g) => wanted.includes(g))) return false; }
       else if (!given.every((g) => wanted.some((w) => globMatch(w, g)))) return false;
     }
   }
@@ -351,11 +351,14 @@ export function boundaryViolations(stacks: readonly StackTemplate[], scope: Chec
     const allows = boundary.filter((b) => b.Effect === "Allow");
     const denies = boundary.filter((b) => b.Effect === "Deny");
     const allowed = allows.some((b) => (b.Action as string[]).some((a) => covers(a, c.action)) && (b.Resource as string[]).some((r) => coversResource(r, c.resource)) && conditionWithin(c.condition, b.Condition as ResolvedCondition | undefined));
-    // A Deny with a condition applies to a request only when the condition holds, which a static check cannot always know. A Bool Deny (ecs:enable-execute-command) is
-    // left out here (its text is pinned by a test). Any other conditional Deny is evaluated as if it applied: a case it could touch is reported, never passed; a Deny
+    // A Deny with a condition applies to a request only when the condition holds, which a static check cannot always know. The exec Deny (StringEquals on the String key
+    // ecs:enable-execute-command: a grant never sets that request key, the build passes none) is left out here (its text is pinned by a test). Any other conditional Deny is evaluated as if it applied: a case it could touch is reported, never passed; a Deny
     // that touches no case at all (the KMS deny outside S3: no role is granted any KMS action) costs nothing.
-    const bool = (b: Statement): boolean => b.Condition !== undefined && Object.keys(b.Condition as object).every((operator) => operator === "Bool");
-    const denied = denies.filter((b) => !bool(b)).find((b) => (b.Action as string[]).some((a) => overlaps(a, c.action, true)) && (b.Resource as string[]).some((r) => overlaps(r, c.resource, false)));
+    const execDeny = (b: Statement): boolean => {
+      const condition = b.Condition as Record<string, Record<string, unknown>> | undefined;
+      return condition !== undefined && Object.entries(condition).every(([operator, keys]) => operator === "StringEquals" && Object.keys(keys).every((key) => key === "ecs:enable-execute-command"));
+    };
+    const denied = denies.filter((b) => !execDeny(b)).find((b) => (b.Action as string[]).some((a) => overlaps(a, c.action, true)) && (b.Resource as string[]).some((r) => overlaps(r, c.resource, false)));
     if (!allowed) violations.push({ ...rest, reason: "not allowed by the boundary" });
     else if (denied !== undefined) violations.push({ ...rest, reason: `denied by the boundary's ${denied.Sid ?? "Deny"}${denied.Condition === undefined ? "" : " (conditional: counted as applying)"}` });
   }
