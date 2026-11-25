@@ -49,7 +49,7 @@ const chatFrames = (sent: Sent, family: Family): Buffer[] => {
 const hang = (): Promise<never> => new Promise<never>(() => undefined);
 
 /** `reasoning`: the call CAN reason without streaming it (a reasoning model, or a request that asks for thinking). */
-async function world(family: Family, durable = false, reasoning = false) {
+async function world(family: Family, durable = false, reasoning = false, modelOverride?: string) {
   const reached = { done: false };
   const forwarded: ProviderRequest[] = [];
   let frames: Buffer[] = [];
@@ -60,7 +60,7 @@ async function world(family: Family, durable = false, reasoning = false) {
     return { status: 200, body };
   };
   const MODEL: Record<Family, string> = { anthropic_key: "claude-sonnet-4-5", openrouter: "vendor/model", endpoint: "our-coder", bedrock_byo: "claude-haiku-4-5" };
-  const model = MODEL[family];
+  const model = modelOverride ?? MODEL[family];
   const price = { inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 };
   let token = mint({ mdl: [model] });
   let w: ReturnType<typeof setup>;
@@ -328,6 +328,10 @@ describe("mayReasonUnseen decides by code, from the request and the model", () =
     expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ thinking: { type: "enabled", budget_tokens: 1_024 } }))).toBe(true);
     expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ thinking: { type: "adaptive" } }))).toBe(true);
     expect(mayReasonUnseen("anthropic", "mystery-model", bytes({}))).toBe(true);
+    for (const name of ["claude-3-haiku-20240307", "claude-3-5-sonnet-20241022", "claude-3-7-sonnet-20250219", "claude-sonnet-4-5-20250929", "claude-opus-4-1", "claude-haiku-4-5"]) expect(mayReasonUnseen("anthropic", name, bytes({})), name).toBe(false);
+    // Claude 5.x think with NO `thinking` field (the thinking streams as empty text): every one of them, and anything new, keeps the hold.
+    for (const name of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2", "claude-sonnet-6", "claude-sonnet-4-5-latest", "claude-haiku-4-5x"]) { expect(mayReasonUnseen("anthropic", name, bytes({})), name).toBe(true); expect(mayReasonUnseen("bedrock", name, bytes({})), name).toBe(true); }
+    expect(mayReasonUnseen("bedrock", "us.anthropic.claude-sonnet-5-5-20260101-v1:0", bytes({}))).toBe(true);
     expect(mayReasonUnseen("bedrock", "claude-haiku-4-5", bytes({ messages: [] }))).toBe(false);
     expect(mayReasonUnseen("bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0", bytes({}))).toBe(false);
     expect(mayReasonUnseen("bedrock", "claude-haiku-4-5", bytes({ additionalModelRequestFields: { thinking: { type: "enabled" } } }))).toBe(true);
@@ -351,5 +355,16 @@ describe("mayReasonUnseen decides by code, from the request and the model", () =
     expect(mayReasonUnseen("gemini", "gemini-2.5-flash", bytes({ generationConfig: { thinkingConfig: { thinkingBudget: 1_024 } } }))).toBe(true);
     expect(mayReasonUnseen("anthropic", "claude-x", Buffer.from("not json"))).toBe(true);
     expect(mayReasonUnseen("somewhere", "claude-x", bytes({}))).toBe(true);
+  });
+});
+
+describe("a cut Claude 5.x call (it thinks with no `thinking` field)", () => {
+  it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2"])("%s with no usage read keeps the hold; an older listed id settles at an estimate", async (model) => {
+    const w = await world("anthropic_key", false, false, model);
+    const out = await w.cut({ kind: "text", text: TEXT });
+    expect(spent(out.rows).every((v) => v === out.held)).toBe(true);
+    expect(estimatedOf(out.rows).every((v) => v === out.held)).toBe(true);
+    const old = await (await world("anthropic_key", false, false, "claude-sonnet-4-5-20250929")).cut({ kind: "text", text: TEXT });
+    expect(spent(old.rows)[0]).toBeLessThan(old.held / 2);
   });
 });

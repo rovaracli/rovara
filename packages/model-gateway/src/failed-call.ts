@@ -112,7 +112,8 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
  * gpt-5, o-series, codex, gemini 2.5 and later) is treated as able to reason: the table fails safe, never under-counts.
  */
 const NON_REASONING = {
-  claude: /^(?:claude-|(?:[a-z]{2}\.)?anthropic\.claude-)/u,
+  /** Older Claude ids that do not think without a `thinking` field, by EXACT id (+ date and Bedrock version suffixes). Claude 5.x (opus, sonnet, haiku, fable) and every new id think with no field: not listed. */
+  claude: /^(?:(?:[a-z]{2}\.)?anthropic\.)?claude-(?:3-(?:haiku|sonnet|opus)|3-5-(?:haiku|sonnet)|3-7-sonnet|sonnet-4|opus-4|opus-4-1|sonnet-4-5|haiku-4-5|opus-4-5)(?:-\d{8}(?:-v\d+:\d+)?)?$/u,
   openai: /^(?:gpt-3\.5-turbo|gpt-4|gpt-4-turbo|gpt-4\.1|gpt-4\.1-mini|gpt-4\.1-nano|gpt-4\.5|gpt-4o|gpt-4o-mini|chatgpt-4o-latest)(?:-(?:preview|\d{4}(?:-\d{2}-\d{2})?|\d+k))?$/u,
   gemini: /^gemini-(?:1\.0-pro|1\.5-(?:pro|flash|flash-8b)|2\.0-(?:flash|flash-lite))(?:-(?:\d{3}|\d{2}-\d{2}|exp(?:-\d{2}-\d{2})?))?$/u,
   /** Gemini models whose thinking a budget of 0 turns off (never Pro, never an unlisted or *-latest name). */
