@@ -1,13 +1,14 @@
 // Step image, the real one (lane L6; BETA-CLOUD-PLAN 1.7; L2-STAGE-CLI-INTERFACE.md section 8). L2 owns the checks around this function (adoption never calls it,
 // production's result must equal beta's digest); this file owns the work:
-//   beta        build the gateway image once (linux/arm64, scripts/model-gateway-image.ts), push it under the immutable tag pipe-<exec8>-<sha9>, read the digest
-//               the tag resolves to;
+//   beta        name the image by its build-context hash (tag ctx-<64 hex>, computed by scripts/model-gateway-image.ts BEFORE any docker work); when that tag is
+//               already in the repository reuse its digest (no build, no push: an unchanged gateway keeps its digest, so the gateway change set is a no-op);
+//               otherwise build once (linux/arm64), push it under that immutable tag and read the digest the tag resolves to;
 //   production  never builds: `crane copy` the beta digest into the production repository, then assert the digest there is byte-for-byte beta's;
 //   supplied    a digest chosen by the operator (gateway rollback): it must already be in this environment's repository.
 // The repositories are IMMUTABLE, so every path is idempotent by digest: a tag that already holds the same digest is success, a tag that holds another is refused.
 import { loadConfig, stackName } from "../config.ts";
 import type { PipelineConfig } from "../config.ts";
-import { IMAGE_DIGEST, assertTag, findImage, imageTagFor, ownRepository, registryLogin, removeDir } from "../lib/ecr.ts";
+import { IMAGE_DIGEST, assertTag, contentTagFor, findImage, imageTagFor, ownRepository, registryLogin, removeDir } from "../lib/ecr.ts";
 import type { Repository } from "../lib/ecr.ts";
 import { loadSwitches, rowFor } from "../switches.ts";
 import type { SwitchesFile } from "../switches.ts";
@@ -25,19 +26,66 @@ async function useSupplied(input: ImageStepInput, repository: Repository, digest
   return { digest, source: "supplied", imageTag: found.tags[0] ?? "(untagged)", repository: repository.name };
 }
 
-async function buildAndPush(input: ImageStepInput, repository: Repository, tag: string): Promise<ImageStepResult> {
+/** The hash must come from a clean checkout of the manifest's Cloud sha: the candidate tree is reused when it already exists, and a hand-edited file in it would otherwise name the tag. */
+async function assertCleanCandidate(input: ImageStepInput): Promise<void> {
+  const { ports, dirs, manifest } = input;
+  const head = await ports.exec("git", ["rev-parse", "HEAD"], { cwd: dirs.cloud });
+  if (head.code !== 0 || head.stdout.trim() !== manifest.cloud.sha) throw new StageError("REFUSED", `the candidate tree is not at the manifest's Cloud commit ${manifest.cloud.sha.slice(0, 12)}: the gateway image tag is made from its files, so it is not used`);
+  const status = await ports.exec("git", ["status", "--porcelain", "--untracked-files=all", "--", "packages/model-gateway", "environments/model-gateway", "tsconfig.base.json", "scripts/model-gateway-image.ts"], { cwd: dirs.cloud });
+  if (status.code !== 0) throw new StageError("FAILED", `git status failed in the candidate tree (exit ${status.code})`);
+  if (status.stdout.trim() !== "") throw new StageError("REFUSED", "the candidate tree has changed or untracked files under the gateway's build inputs: the gateway image tag is made from its files, so it is not used");
+  // Ignored files are not listed above; one under the gateway source (src/dist, src/build, src/coverage) would still enter the context and the hash. The build output of
+  // the pipeline's own `tsc -b` lives outside src, so a normal run lists nothing here.
+  const ignored = await ports.exec("git", ["status", "--porcelain", "--ignored", "--untracked-files=all", "--", "packages/model-gateway/src"], { cwd: dirs.cloud });
+  if (ignored.code !== 0) throw new StageError("FAILED", `git status --ignored failed in the candidate tree (exit ${ignored.code})`);
+  if (ignored.stdout.trim() !== "") throw new StageError("REFUSED", "the candidate tree has ignored files under the gateway source: they would enter the image context, so the gateway image tag is not made from this tree");
+}
+
+/** Reads the `contextSha256` a model-gateway-image.ts command printed: a JSON line. `last` takes the final such line (the `context` command's answer), else the first one (`build` prints it before docker's own output). */
+function printedContextHash(stdout: string, which: "last" | "first"): string | null {
+  const lines = stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  for (const line of which === "last" ? lines.slice(-1) : lines) {
+    let hash: unknown;
+    try { hash = (JSON.parse(line) as { contextSha256?: unknown }).contextSha256; } catch { hash = undefined; }
+    if (typeof hash === "string") return hash;
+  }
+  return null;
+}
+
+/** The build-context hash of the gateway image this checkout would build. Asks scripts/model-gateway-image.ts (the one place the context hash is computed) to write the context and report its hash; no docker, no network. */
+async function gatewayContextHash(input: ImageStepInput): Promise<string> {
+  const { ports, dirs } = input;
+  await assertCleanCandidate(input);
+  const out = `${dirs.work}/gateway-context`;
+  await removeDir(ports, out);
+  try {
+    const ran = await ports.exec("npx", ["--no-install", "tsx", "scripts/model-gateway-image.ts", "context", "--out", out], { cwd: dirs.cloud });
+    if (ran.code !== 0) throw new StageError("FAILED", `the gateway image context could not be computed (exit ${ran.code}): ${tail(ran.stderr || ran.stdout)}`);
+    const hash = printedContextHash(ran.stdout, "last");
+    if (hash === null) throw new StageError("FAILED", "the gateway image context script printed no contextSha256");
+    return hash;
+  } finally {
+    await removeDir(ports, out);
+  }
+}
+
+async function buildAndPush(input: ImageStepInput, repository: Repository, tag: string, contextSha256: string): Promise<ImageStepResult> {
   const { ports, log, dirs, manifest } = input;
   const existing = await findImage(ports, repository.name, { tag });
   if (existing !== null) {
-    // The tag names this execution and this commit, so an earlier attempt of this same step pushed it: reuse its digest, never rebuild.
+    // The tag IS the build-context hash, so an image under it was built from this exact context (by an earlier run or an earlier attempt): reuse its digest, never rebuild or push.
     if (!IMAGE_DIGEST.test(existing.digest)) throw new StageError("FAILED", `the tag ${tag} resolves to something that is not a digest`);
-    log(`tag ${tag} is already in ${repository.name} (an earlier attempt of this execution pushed it): reusing ${existing.digest.slice(0, 19)}..., no rebuild`);
+    log(`tag ${tag} is already in ${repository.name} (same gateway build context, pushed ${existing.pushedAt ?? "at an unknown time"}): reusing ${existing.digest.slice(0, 19)}..., no build, no push`);
     return { digest: existing.digest, source: "built", imageTag: tag, repository: repository.name };
   }
   const local = `rovara-model-gateway:${tag}`;
   log(`build: linux/arm64 image ${local} from ${manifest.cloud.sha.slice(0, 12)}`);
   const built = await ports.exec("npx", ["--no-install", "tsx", "scripts/model-gateway-image.ts", "build", "--tag", local], { cwd: dirs.cloud });
   if (built.code !== 0) throw new StageError("FAILED", `the gateway image build exited ${built.code}: ${tail(built.stderr || built.stdout)}`);
+  // The tag was made from one context assembly and the build made its own: they must be the same context, or the tag would name an image built from something else.
+  const buildHash = printedContextHash(built.stdout, "first");
+  if (buildHash === null) throw new StageError("FAILED", "the gateway image build printed no context hash to check the tag against");
+  if (buildHash !== contextSha256) throw new StageError("REFUSED", `the build used context ${buildHash.slice(0, 12)}..., not ${contextSha256.slice(0, 12)}... the tag was made from: nothing is pushed`);
   const platform = await ports.exec("docker", ["image", "inspect", local, "--format", "{{.Os}}/{{.Architecture}}"]);
   if (platform.code !== 0 || platform.stdout.trim() !== "linux/arm64") throw new StageError("FAILED", `the built image is ${platform.stdout.trim() || "unreadable"}, not linux/arm64`);
   const configDir = `${dirs.work}/registry-auth-docker`;
@@ -89,7 +137,7 @@ async function copyFromBeta(input: ImageStepInput, config: PipelineConfig, setti
   if ((await findImage(ports, sourceName, { digest }, sourceAccount)) === null) throw new StageError("REFUSED", `beta's repository ${sourceName} does not hold ${digest.slice(0, 19)}... (or the production role cannot read it): nothing to copy`);
 
   const existing = await findImage(ports, target.name, { tag });
-  if (existing !== null && existing.digest !== digest) throw new StageError("REFUSED", `the tag ${tag} already exists in ${target.name} with ${existing.digest.slice(0, 19)}..., not beta's ${digest.slice(0, 19)}... (the repository is immutable): the gateway must be byte-identical to beta, so this is not used`);
+  if (existing !== null && existing.digest !== digest) throw new StageError("REFUSED", `the tag ${tag} already exists in ${target.name} with ${existing.digest.slice(0, 19)}..., not beta's ${digest.slice(0, 19)}... (the repository is immutable): the gateway must be byte-identical to beta, so this is not used (an administrator removes that old image from the production repository and the run is retried: see "The gateway image tag" in docs/rovara-cloud-install.md)`);
   if (existing !== null) {
     log(`tag ${tag} already holds ${digest.slice(0, 19)}... in ${target.name}: nothing to copy`);
     return { digest, source: "copied", imageTag: tag, repository: target.name };
@@ -121,6 +169,9 @@ export async function runImage(input: ImageStepInput, deps: ImageDeps = {}): Pro
   const config = deps.config ?? loadConfig();
   const repository = await ownRepository(input.ports, config, input.env);
   if (input.supplied !== null) return useSupplied(input, repository, input.supplied.digest);
-  const tag = assertTag(imageTagFor(input.manifest));
-  return input.env === "beta" ? buildAndPush(input, repository, tag) : copyFromBeta(input, config, deps.env ?? process.env, deps.switches ?? loadSwitches(), repository, tag);
+  if (input.env === "beta") {
+    const contextSha256 = await gatewayContextHash(input);
+    return buildAndPush(input, repository, assertTag(contentTagFor(contextSha256)), contextSha256);
+  }
+  return copyFromBeta(input, config, deps.env ?? process.env, deps.switches ?? loadSwitches(), repository, assertTag(imageTagFor(input.manifest)));
 }

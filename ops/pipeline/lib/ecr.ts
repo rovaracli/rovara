@@ -9,11 +9,13 @@ import type { Manifest, PipelineEnv, Ports } from "../types.ts";
 
 export const IMAGE_DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const TAG = /^[A-Za-z0-9._-]{1,128}$/u;
-const BUILT_TAG = /^pipe-[0-9a-f]{8}-[0-9a-f]{9}$/u;
+/** A tag this pipeline gave a gateway image: `ctx-<the 64 hex of the build-context hash>` (current) or `pipe-<exec8>-<sha9>` (older records, kept readable for rollback). */
+const BUILT_TAG = /^(?:ctx-[0-9a-f]{64}|pipe-[0-9a-f]{8}-[0-9a-f]{9})$/u;
+const CONTEXT_SHA256 = /^[0-9a-f]{64}$/u;
 const URI = /^([0-9]{12})\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com\/([a-z0-9][a-z0-9._/-]*)$/u;
 
 export interface Repository { uri: string; registry: string; name: string; account: string; region: string }
-export interface ImageRow { digest: string; tags: string[] }
+export interface ImageRow { digest: string; tags: string[]; /** When ECR says the image was pushed (ISO), null when it does not say. */ pushedAt: string | null }
 
 export function parseRepositoryUri(uri: string): Repository {
   const match = URI.exec(uri);
@@ -22,7 +24,20 @@ export function parseRepositoryUri(uri: string): Repository {
   return { uri, registry: uri.slice(0, uri.indexOf("/")), name: name!, account: account!, region: region! };
 }
 
-/** The immutable tag one execution gives its image: `pipe-<exec8>-<sha9>`. Production reuses beta's tag (same execution), recomputing only when the manifest has none. */
+/**
+ * The tag beta gives its image, by CONTENT: `ctx-<contextSha256>` (all 64 hex: 68 characters, under ECR's 128), the hash scripts/model-gateway-image.ts computes over the exact build context
+ * (Dockerfile with its base digest, lockfiles, package files, every source file). The same context always has the same tag, whatever execution or Cloud commit
+ * it runs in, so an unchanged gateway finds its tag and reuses its digest instead of being rebuilt.
+ */
+export function contentTagFor(contextSha256: string): string {
+  if (!CONTEXT_SHA256.test(contextSha256)) throw new StageError("FAILED", "the gateway image context hash is not 64 hex characters");
+  return `ctx-${contextSha256}`;
+}
+
+/**
+ * The tag production copies beta's image under: the tag beta recorded in the manifest (a `ctx-` or an older `pipe-` tag; nothing parses a Cloud sha out of it),
+ * or, only when the manifest has none, the older per-execution form `pipe-<exec8>-<sha9>`. Beta does not use this: it names its image by contentTagFor.
+ */
 export function imageTagFor(manifest: Readonly<Manifest>): string {
   const recorded = manifest.gateway.imageTag;
   if (recorded !== null && BUILT_TAG.test(recorded)) return recorded;
@@ -54,10 +69,10 @@ export async function findImage(ports: Ports, repositoryName: string, by: { tag:
   const id = "tag" in by ? `imageTag=${assertTag(by.tag)}` : `imageDigest=${by.digest}`;
   if ("digest" in by && !IMAGE_DIGEST.test(by.digest)) throw new StageError("REFUSED", "an image digest must look like sha256:<64 hex>");
   try {
-    const doc = (await ports.aws.json(["ecr", "describe-images", "--repository-name", repositoryName, "--image-ids", id, ...(registryId === undefined ? [] : ["--registry-id", registryId])])) as { imageDetails?: Array<{ imageDigest?: string; imageTags?: string[] }> } | null;
+    const doc = (await ports.aws.json(["ecr", "describe-images", "--repository-name", repositoryName, "--image-ids", id, ...(registryId === undefined ? [] : ["--registry-id", registryId])])) as { imageDetails?: Array<{ imageDigest?: string; imageTags?: string[]; imagePushedAt?: string }> } | null;
     const detail = doc?.imageDetails?.[0];
     if (detail === undefined || typeof detail.imageDigest !== "string") return null;
-    return { digest: detail.imageDigest, tags: Array.isArray(detail.imageTags) ? detail.imageTags.filter((t) => typeof t === "string") : [] };
+    return { digest: detail.imageDigest, tags: Array.isArray(detail.imageTags) ? detail.imageTags.filter((t) => typeof t === "string") : [], pushedAt: typeof detail.imagePushedAt === "string" ? detail.imagePushedAt : null };
   } catch (error) {
     if (notFound(error)) return null;
     throw error;

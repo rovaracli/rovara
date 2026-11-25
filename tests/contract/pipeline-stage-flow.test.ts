@@ -102,6 +102,20 @@ describe("pipeline stage CLI: beta, step by step", () => {
     expect(run.state.calls.filter((c) => c.startsWith("cfn delete"))).toEqual([]);
   });
 
+  it("a run whose gateway image is reused by content (same digest as the live stack, a ctx- tag) makes the gateway change set a no-op: nothing is executed for it, ImageDigest is unchanged, last-good keeps the digest", async () => {
+    const reused = (): Promise<ImageStepResult> => Promise.resolve({ digest: DIGEST_B, source: "built", imageTag: `ctx-${"a".repeat(64)}`, repository: "images" });
+    const run = newRun(betaWorld({ plan: { RovaraCloudApp: [CDK_METADATA], RovaraCloudWeb: [MODIFY_FUNCTION], RovaraModelGateway: null } }));
+    run.steps = { ...STEPS, image: (c, s) => imageStep(c, s, reused) };
+    run.gates = [integrity, pass("g2", "gateway-live"), pass("p1", "proof")];
+    for (const name of ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as StepName[]) await step(run, "beta", name);
+    const m = manifestOf(run.state);
+    expect(m.gateway).toMatchObject({ digest: DIGEST_B, source: "built", imageTag: `ctx-${"a".repeat(64)}` });
+    expect(run.state.calls.filter((c) => c.startsWith("cdk "))[1]).toMatch(new RegExp(`^cdk RovaraModelGateway ${NAME} .* params=rovara-cloud-beta-gateway:ImageDigest=${DIGEST_B}$`, "u"));
+    expect(m.stages.beta!.changeSets.find((cs) => cs.part === "gateway")).toMatchObject({ noChanges: true, changeSetId: null });
+    expect(executes(run.state)).toEqual([`cfn execute ${stackFor("beta", "app")} ${NAME}`, `cfn execute ${stackFor("beta", "web")} ${NAME}`]);
+    expect(parseLastGood(run.state.ssm["/rovara-cloud/beta/release/last-good"]!)).toMatchObject({ gateway: { digest: DIGEST_B }, previous: { gatewayDigest: DIGEST_B } });
+  });
+
   describe("a failed step tidies every change set this run created (the beta adoption incident left the web change set behind)", () => {
     const names = (state: FakeState): string[] => Object.keys(state.changeSets).sort();
     const failOnGateway: Gate = { name: "change-set-integrity", phases: ["change-sets"], run: (input) => Promise.resolve(input.changeSets.some((cs) => cs.part === "gateway") ? { result: "fail", failures: ["no"] } : { result: "pass" }) };
