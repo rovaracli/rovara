@@ -2,6 +2,8 @@
 // (also after a failure, so the build log and artifact say how far it got), prints the summary.
 import { StageError } from "../types.ts";
 import { checkAccount } from "./account.ts";
+import { stackName } from "../config.ts";
+import { readLiveCloudSha } from "./refs.ts";
 import type { GatePhase, Manifest, StageRecord } from "../types.ts";
 import type { StepContext } from "./context.ts";
 import { errorText } from "./context.ts";
@@ -63,6 +65,26 @@ function logEvent(ctx: StepContext, event: string, detail: string): void {
   fs.writeText(path, `${fs.exists(path) ? fs.readText(path) : ""}${line}\n`);
 }
 
+/**
+ * Production is skipped but Code is promoted: Code then runs next to the Cloud production already has. When that is an OLDER Cloud than the one Beta tested, say so in the stage record
+ * (read-only; a failed read says it could not look). Never a refusal: Cloud is being left alone on purpose.
+ */
+async function warnOlderProductionCloud(ctx: StepContext, manifest: Manifest, stage: StageRecord): Promise<void> {
+  if (manifest.code.release !== "run") return;
+  try {
+    const live = await readLiveCloudSha(ctx.ports, stackName(ctx.config, "production", "web"), stackName(ctx.config, "production", "gateway"));
+    if (live.sha === null) { stage.warnings.push("Code is promoted while production's Cloud cannot be compared with the one Beta tested: its live Cloud commit is unknown"); return; }
+    if (live.sha === manifest.cloud.sha) return;
+    let older = false;
+    try { older = await ctx.ports.git.isAncestor(live.sha, manifest.cloud.sha); } catch { /* unknown to git: not proven older */ }
+    if (older) {
+      const message = `Code is promoted next to an OLDER production Cloud (${live.sha.slice(0, 9)}) than the one Beta tested (${manifest.cloud.tag}, ${manifest.cloud.sha.slice(0, 9)}): production's Cloud was left alone (CLOUD_PROD off)`;
+      stage.warnings.push(message);
+      ctx.log(`WARNING: ${message}`);
+    }
+  } catch { stage.warnings.push("could not read production's live Cloud commit to compare it with the one Beta tested"); }
+}
+
 export async function runStep(ctx: StepContext, step: StepFunction): Promise<void> {
   const state: State = { manifest: readManifest(ctx) };
   const isFirst = ctx.env === "beta" && ctx.step === "preflight";
@@ -78,6 +100,7 @@ export async function runStep(ctx: StepContext, step: StepFunction): Promise<voi
       const stage = manifest.stages.production ?? newStageRecord("production", ctx.ports.clock.now(), ctx.inputs.dryRun);
       manifest.stages.production = stage;
       stage.skipped = "CLOUD_PROD=off";
+      await warnOlderProductionCloud(ctx, manifest, stage);
       ctx.log(`production ${ctx.step}: skipped (CLOUD_PROD is off)`);
       writeOutputs(ctx, state, false);
       logEvent(ctx, "skipped", "CLOUD_PROD=off");

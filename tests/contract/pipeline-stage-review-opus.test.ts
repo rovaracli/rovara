@@ -22,9 +22,27 @@ describe("review: cdk deploy --no-execute argument vector", () => {
     const dir = join(root, "cand");
     mkdirSync(dir);
     const p = createRealPorts({ config, env: "beta", region: "us-east-1", exec8: "1a2b3c4d", profile: "rovara-cloud-beta", cwd: root });
-    await p.cdk.deployNoExecute({ dir, stackIds: ["RovaraCloudApp", "RovaraCloudWeb"], changeSetName: "rovara-pipeline-1a2b3c4d", context: { rovaraCloudApp: "beta", odd: "a b'$(x)" }, parameters: { CodeUrl: "https://code.example.test" } });
+    await p.cdk.deployNoExecute({ dir, stacks: [{ stackId: "RovaraCloudApp", stackName: "rovara-cloud-beta-app", parameters: { CodeUrl: "https://code.example.test" } }, { stackId: "RovaraCloudWeb", stackName: "rovara-cloud-beta-web", parameters: { CodeUrl: "https://code.example.test" } }], changeSetName: "rovara-pipeline-1a2b3c4d", context: { rovaraCloudApp: "beta", odd: "a b'$(x)" } });
     const lines = readFileSync(logFile, "utf8").split("\n").filter((l) => l !== "");
     expect(lines[0]).toMatch(/^rovara-cloud-beta\|.*\/cand$/u);
-    expect(lines.slice(1)).toEqual(["[--no-install]", "[cdk]", "[deploy]", "[RovaraCloudApp]", "[RovaraCloudWeb]", "[--app]", "[node infra/dist/bin/agentx.js]", "[--no-execute]", "[--require-approval]", "[never]", "[--change-set-name]", "[rovara-pipeline-1a2b3c4d]", "[--progress]", "[events]", "[-c]", "[rovaraCloudApp=beta]", "[-c]", "[odd=a b'$(x)]", "[--parameters]", "[CodeUrl=https://code.example.test]"]);
+    expect(lines.slice(1)).toEqual(["[--no-install]", "[cdk]", "[deploy]", "[RovaraCloudApp]", "[RovaraCloudWeb]", "[--exclusively]", "[--app]", "[node infra/dist/bin/agentx.js]", "[--no-execute]", "[--require-approval]", "[never]", "[--change-set-name]", "[rovara-pipeline-1a2b3c4d]", "[--progress]", "[events]", "[-c]", "[rovaraCloudApp=beta]", "[-c]", "[odd=a b'$(x)]", "[--parameters]", "[rovara-cloud-beta-app:CodeUrl=https://code.example.test]", "[--parameters]", "[rovara-cloud-beta-web:CodeUrl=https://code.example.test]"]);
+  });
+
+  it("the gateway call selects ONLY the gateway stack (--exclusively) and prefixes ImageDigest with that stack's name", async () => {
+    const dir = join(root, "cand-gw");
+    mkdirSync(dir);
+    writeFileSync(logFile, "");
+    const p = createRealPorts({ config, env: "beta", region: "us-east-1", exec8: "1a2b3c4d", profile: "rovara-cloud-beta", cwd: root });
+    await p.cdk.deployNoExecute({ dir, stacks: [{ stackId: "RovaraModelGateway", stackName: "rovara-cloud-beta-gateway", parameters: { ImageDigest: "sha256:abc" } }], changeSetName: "rovara-pipeline-1a2b3c4d", context: { rovaraModelGateway: "beta" } });
+    const lines = readFileSync(logFile, "utf8").split("\n").filter((l) => l !== "");
+    expect(lines.slice(1)).toEqual(["[--no-install]", "[cdk]", "[deploy]", "[RovaraModelGateway]", "[--exclusively]", "[--app]", "[node infra/dist/bin/agentx.js]", "[--no-execute]", "[--require-approval]", "[never]", "[--change-set-name]", "[rovara-pipeline-1a2b3c4d]", "[--progress]", "[events]", "[-c]", "[rovaraModelGateway=beta]", "[--parameters]", "[rovara-cloud-beta-gateway:ImageDigest=sha256:abc]"]);
+  });
+
+  it("refuses a stack name or parameter name that cannot be prefixed (nothing runs)", async () => {
+    const p = createRealPorts({ config, env: "beta", region: "us-east-1", exec8: "1a2b3c4d", profile: "rovara-cloud-beta", cwd: root });
+    writeFileSync(logFile, "");
+    await expect(p.cdk.deployNoExecute({ dir: root, stacks: [{ stackId: "X", stackName: "a:b", parameters: {} }], changeSetName: "n", context: {} })).rejects.toMatchObject({ exitName: "USAGE" });
+    await expect(p.cdk.deployNoExecute({ dir: root, stacks: [{ stackId: "X", stackName: "a", parameters: { "k:v": "1" } }], changeSetName: "n", context: {} })).rejects.toMatchObject({ exitName: "USAGE" });
+    expect(readFileSync(logFile, "utf8")).toBe("");
   });
 });

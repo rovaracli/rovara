@@ -24,14 +24,25 @@ export interface PreviewArgs {
   /** The stacks of one cdk call, in order: the part, the stack name and the cdk stack id. */
   stacks: ReadonlyArray<{ part: StackPart; stack: string; stackId: string }>;
   context: Record<string, string>;
+  /** Handed to EACH stack of the call by name (every stack named here must declare all of them). */
   parameters: Record<string, string>;
   log: (line: string) => void;
 }
 
 /** Creates (never executes) one change set per stack and records it. A stack with no change set is `noChanges`. */
 export async function previewChangeSets(args: PreviewArgs): Promise<ChangeSetRecord[]> {
+  try {
+    return await previewChangeSetsInner(args);
+  } catch (error) {
+    // A preview that failed (cdk refused, a change set is missing or FAILED for a real reason) leaves nothing behind that a later run or a person could mistake for a usable one.
+    await discardChangeSets(args.ports, args.stacks.map((s) => s.stack), args.changeSetName, args.log);
+    throw error;
+  }
+}
+
+async function previewChangeSetsInner(args: PreviewArgs): Promise<ChangeSetRecord[]> {
   const { ports } = args;
-  await ports.cdk.deployNoExecute({ dir: args.dir, stackIds: args.stacks.map((s) => s.stackId), changeSetName: args.changeSetName, context: args.context, parameters: args.parameters });
+  await ports.cdk.deployNoExecute({ dir: args.dir, stacks: args.stacks.map((s) => ({ stackId: s.stackId, stackName: s.stack, parameters: args.parameters })), changeSetName: args.changeSetName, context: args.context });
   const records: ChangeSetRecord[] = [];
   for (const { part, stack } of args.stacks) {
     const found = await ports.cfn.describeChangeSet(stack, args.changeSetName);
@@ -111,5 +122,22 @@ export async function tidyChangeSets(ports: Ports, stacks: readonly string[], th
       }
       try { await ports.cfn.deleteChangeSet(stack, name); log(`tidied ${name} on ${stack}`); } catch { log(`could not delete ${name} on ${stack}`); }
     }
+  }
+}
+
+/**
+ * Deletes this run's change set (by name) on each stack, best effort and never throwing: the cleanup after a failed step. A change set that is executing or has executed
+ * is left alone (it is the stack's history, and CloudFormation refuses to delete one that is executing); one that is only AVAILABLE, FAILED or empty is deleted, because nothing
+ * will execute it now (the run is failing closed).
+ */
+export async function discardChangeSets(ports: Ports, stacks: readonly string[], name: string, log: (line: string) => void): Promise<void> {
+  for (const stack of stacks) {
+    try {
+      const found = await ports.cfn.describeChangeSet(stack, name);
+      if (found === null) continue;
+      if (found.executionStatus.startsWith("EXECUTE_")) { log(`${stack}: ${name} is ${found.executionStatus}; not deleted`); continue; }
+      await ports.cfn.deleteChangeSet(stack, name);
+      log(`${stack}: deleted the unexecuted change set ${name} (the step failed)`);
+    } catch { log(`${stack}: could not tidy the change set ${name} after the failure`); }
   }
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { countRows, executeRecorded, previewChangeSets, tidyChangeSets, verifyRecorded } from "../../ops/pipeline/lib/changesets.ts";
+import { StageError } from "../../ops/pipeline/types.ts";
+import { countRows, discardChangeSets, executeRecorded, previewChangeSets, tidyChangeSets, verifyRecorded } from "../../ops/pipeline/lib/changesets.ts";
 import { startReleaseCheck, baseUrlFromOutputs } from "../../ops/pipeline/lib/releasecheck.ts";
 import { canonicalSha256 } from "../../ops/pipeline/lib/hash.ts";
 import { CDK_METADATA, EXEC8, MODIFY_FUNCTION, liveStack, makePorts, newState, row, stackFor } from "./pipeline-stage-fakes.ts";
@@ -25,7 +26,7 @@ describe("pipeline stage CLI: change sets by name", () => {
     expect(records[1]!.counts).toEqual({ add: 1, modify: 1, remove: 0, replace: 0 });
     expect(records[1]!.templateSha256).not.toBeNull();
     expect(JSON.stringify(records)).not.toContain("Properties");
-    expect(state.calls.find((c) => c.startsWith("cdk "))).toBe("cdk RovaraCloudApp,RovaraCloudWeb rovara-pipeline-1a2b3c4d ctx=a params=CodeUrl=https://x.example.test");
+    expect(state.calls.find((c) => c.startsWith("cdk "))).toBe("cdk RovaraCloudApp,RovaraCloudWeb rovara-pipeline-1a2b3c4d ctx=a params=rovara-cloud-beta-app:CodeUrl=https://x.example.test,rovara-cloud-beta-web:CodeUrl=https://x.example.test");
   });
 
   it("records a stack cdk made no change set for as noChanges, and CloudFormation's own no-changes answer too", async () => {
@@ -48,6 +49,29 @@ describe("pipeline stage CLI: change sets by name", () => {
     const original = ports.cdk.deployNoExecute.bind(ports.cdk);
     ports.cdk.deployNoExecute = async (a) => { await original(a); state.changeSets[`${stackFor("beta", "app")}/${NAME}`]!.status = "FAILED"; state.changeSets[`${stackFor("beta", "app")}/${NAME}`]!.statusReason = "Parameter validation"; };
     await expect(previewChangeSets({ ports, dir: "/c", changeSetName: NAME, stacks, context: {}, parameters: {}, log: () => {} })).rejects.toMatchObject({ exitName: "CHANGE_SET_MISMATCH" });
+    expect(Object.keys(state.changeSets)).toEqual([]); // the failed preview left nothing behind
+  });
+
+  it("a cdk call that fails after making a change set (the incident: a dependency stack refused a parameter) deletes the change sets of its stacks, and the error stays", async () => {
+    const state = newState({ plan: { RovaraCloudApp: [MODIFY_FUNCTION], RovaraCloudWeb: [MODIFY_FUNCTION] } });
+    const ports = makePorts(state);
+    const original = ports.cdk.deployNoExecute.bind(ports.cdk);
+    ports.cdk.deployNoExecute = async (a) => { await original(a); throw new StageError("FAILED", "cdk deploy --no-execute failed (exit 1): Parameters: [ImageDigest] do not exist in the template"); };
+    await expect(previewChangeSets({ ports, dir: "/c", changeSetName: NAME, stacks, context: {}, parameters: {}, log: () => {} })).rejects.toThrow(/do not exist in the template/);
+    expect(Object.keys(state.changeSets)).toEqual([]);
+    expect(state.calls.filter((c) => c.startsWith("cfn delete")).sort()).toEqual([`cfn delete ${stackFor("beta", "app")} ${NAME}`, `cfn delete ${stackFor("beta", "web")} ${NAME}`]);
+  });
+
+  it("discarding leaves an executed change set, other names and absent ones alone, and never throws", async () => {
+    const state = newState();
+    const s = stackFor("beta", "web");
+    const cs = (name: string, executionStatus: string) => { state.changeSets[`${s}/${name}`] = { id: name, status: "CREATE_COMPLETE", executionStatus, statusReason: null, rows: [], template: "" }; };
+    cs(NAME, "EXECUTE_COMPLETE"); cs("rovara-pipeline-other0000", "AVAILABLE");
+    await discardChangeSets(makePorts(state), [s, stackFor("beta", "app")], NAME, () => {});
+    expect(Object.keys(state.changeSets).sort()).toEqual([`${s}/${NAME}`, `${s}/rovara-pipeline-other0000`]);
+    const ports = makePorts(state);
+    ports.cfn.describeChangeSet = () => Promise.reject(new Error("throttled"));
+    await expect(discardChangeSets(ports, [s], NAME, () => {})).resolves.toBeUndefined();
   });
 
   it("executes by name, in order, one stack at a time, and records the final status", async () => {

@@ -106,7 +106,7 @@ export function createRealPorts(args: RealPortsArgs): Ports {
         }
         return { id: String(doc.ChangeSetId), status: String(doc.Status), executionStatus: String(doc.ExecutionStatus), statusReason: typeof doc.StatusReason === "string" ? doc.StatusReason : null, rows };
       } catch (error) {
-        if (notThere(error, /ChangeSetNotFound/u)) return null;
+        if (notThere(error, /ChangeSetNotFound|Stack \[[^\]]*\] does not exist/u)) return null; // no such change set, or no such stack (so none)
         throw error;
       }
     },
@@ -167,8 +167,11 @@ export function createRealPorts(args: RealPortsArgs): Ports {
     cdk: {
       async deployNoExecute(a) {
         const context = Object.entries(a.context).flatMap(([k, v]) => ["-c", `${k}=${v}`]);
-        const parameters = Object.entries(a.parameters).flatMap(([k, v]) => ["--parameters", `${k}=${v}`]);
-        const r = await exec("npx", ["--no-install", "cdk", "deploy", ...a.stackIds, "--app", "node infra/dist/bin/agentx.js", "--no-execute", "--require-approval", "never", "--change-set-name", a.changeSetName, "--progress", "events", ...context, ...parameters], { cwd: a.dir });
+        // `--exclusively`: only the named stacks, never their dependency stacks (a dependency would be handed parameters it does not declare).
+        // Every parameter is `<stack name>:<Key>=<value>`: cdk matches the part before the colon with the stack's own name (not its construct id), and an unprefixed one goes to every stack.
+        for (const s of a.stacks) if (s.stackName === "" || s.stackName.includes(":") || Object.keys(s.parameters).some((k) => k === "" || k.includes(":"))) throw new StageError("USAGE", `cdk deploy: the stack name ${JSON.stringify(s.stackName)} or one of its parameter names is not usable in --parameters`);
+        const parameters = a.stacks.flatMap((s) => Object.entries(s.parameters).flatMap(([k, v]) => ["--parameters", `${s.stackName}:${k}=${v}`]));
+        const r = await exec("npx", ["--no-install", "cdk", "deploy", ...a.stacks.map((s) => s.stackId), "--exclusively", "--app", "node infra/dist/bin/agentx.js", "--no-execute", "--require-approval", "never", "--change-set-name", a.changeSetName, "--progress", "events", ...context, ...parameters], { cwd: a.dir });
         if (r.code !== 0) throw new StageError("FAILED", `cdk deploy --no-execute failed (exit ${r.code}): ${(r.stderr || r.stdout).split("\n").filter((l) => l !== "").slice(-4).join(" / ")}`);
       },
     },

@@ -4,7 +4,7 @@
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { dirname } from "node:path";
-import { loadConfig, loadGatePolicy, lastGoodParameter, stackName } from "./config.ts";
+import { loadConfig, loadGatePolicy, lastGoodParameter, releaseTagRegex, stackName } from "./config.ts";
 import type { PipelineConfig } from "./config.ts";
 import { createRealPorts } from "./ports.ts";
 import { codeUrlFor, contextArgs, loadSwitches, rowFor, SWITCHES_ENVIRONMENTS } from "./switches.ts";
@@ -42,7 +42,7 @@ const READ_ONLY_STEPS = ["ref", "summary", "last-good", "rollback-plan"] as cons
 type ReadOnlyStep = (typeof READ_ONLY_STEPS)[number];
 
 export const USAGE = `usage: node ops/pipeline/stage.ts <${SWITCHES_ENVIRONMENTS.join("|")}> <${[...Object.keys(RUN_STEPS), ...READ_ONLY_STEPS].join("|")}> [flags]
-flags (env var): --exec-id (EXEC_ID) --manifest (PIPELINE_MANIFEST) --out (PIPELINE_OUT, default out) --cloud-ref (CLOUD_REF)
+flags (env var): --exec-id (EXEC_ID) --manifest (PIPELINE_MANIFEST) --out (PIPELINE_OUT, default out) --cloud-ref (CLOUD_REF; from-trigger reads --cloud-source-commit / CLOUD_SOURCE_COMMIT)
   --code-release run|skip (CODE_RELEASE) --cloud-prod on|off (CLOUD_PROD) --code-sha (CODE_SHA) --code-live-sha (CODE_LIVE_SHA)
   --adopt (PIPELINE_ADOPT=1, or PIPELINE_MODE=adopt; PIPELINE_MODE=release is the default; PIPELINE_MODE=rollback declares a rollback) --gateway-digest sha256:... (GATEWAY_DIGEST) --dry-run (PIPELINE_DRY_RUN=1)
   --code-target <40-hex sha> (CODE_ROLLBACK_TARGET: hand-started runs and rollback-plan; a pipeline run gets it inside CODE_CTX)
@@ -51,7 +51,7 @@ other env: ROVARA_EXPECTED_DEPLOY_ACCOUNT (required: the account this stage must
   CODE_CTX (the Cloud Preflight action only: live:<sha>,target:<sha|none>,supersedes:<id|none>,supersedesSha:<sha|none>; set by the pipeline, parsed strictly), PIPELINE_SUPERSEDES (json; hand-started runs only)
 `;
 
-const VALUE_FLAGS = ["exec-id", "manifest", "out", "cloud-ref", "code-release", "cloud-prod", "code-sha", "code-live-sha", "gateway-digest", "expected-account", "target", "code-target"];
+const VALUE_FLAGS = ["exec-id", "manifest", "out", "cloud-ref", "cloud-source-commit", "code-release", "cloud-prod", "code-sha", "code-live-sha", "gateway-digest", "expected-account", "target", "code-target"];
 const BOOLEAN_FLAGS = ["adopt", "dry-run", "help"];
 
 export interface Parsed { env: PipelineEnv; step: StepName | ReadOnlyStep; flags: Record<string, string | true> }
@@ -136,6 +136,7 @@ export function buildInputs(flags: Record<string, string | true>, env: Record<st
   return {
     execId,
     cloudRef: pick("cloud-ref", "CLOUD_REF"),
+    cloudSourceCommit: pick("cloud-source-commit", "CLOUD_SOURCE_COMMIT"),
     codeRelease,
     cloudProd: cloudProd === "on",
     codeSha: sha(pick("code-sha", "CODE_SHA"), "CODE_SHA"),
@@ -180,6 +181,11 @@ export async function main(argv: readonly string[], envVars: Record<string, stri
     const inputs = buildInputs(parsed.flags, envVars, new Date());
     if (inputs.region === null) throw new StageError("REFUSED", "AWS_REGION is not set");
     if (inputs.region !== row.region) throw new StageError("REFUSED", `AWS_REGION is ${inputs.region}; ${parsed.env} is ${row.region} (switches.json)`);
+    // CLOUD_PROD=on deploys Cloud to production: it needs the release named outright. The default (from-trigger), an unset ref, or a tag found from a trigger is never enough,
+    // so a pipeline that still carries older defaults cannot reach production by accident. Refused here, before any port is made.
+    if (inputs.cloudProd && !(READ_ONLY_STEPS as readonly string[]).includes(parsed.step) && (inputs.cloudRef === null || !releaseTagRegex(config).test(inputs.cloudRef))) {
+      throw new StageError("REFUSED", `CLOUD_PROD=on needs CLOUD_REF set to a release tag (vX.Y.Z), and it is ${inputs.cloudRef ?? "not set"}: production deploys only a release named on purpose`);
+    }
     const exec8 = inputs.execId.slice(0, 8);
     const profile = envVars.ROVARA_PIPELINE_PROFILE !== undefined && envVars.ROVARA_PIPELINE_PROFILE !== "" ? envVars.ROVARA_PIPELINE_PROFILE : config.environments[parsed.env].profile;
     const ports = (deps.makePorts ?? ((a) => createRealPorts({ ...a, config, cwd: process.cwd() })))({ env: parsed.env, region: inputs.region, exec8, profile });
@@ -226,7 +232,7 @@ async function readOnly(step: ReadOnlyStep, ctx: StepContext, out: (line: string
     out(renderSummary(buildSummary(manifest, env, stage)).trimEnd());
     return EXIT.OK;
   }
-  const resolved = await resolveCloudRef(ports, config, inputs.cloudRef);
+  const resolved = await resolveCloudRef(ports, config, inputs.cloudRef, { sourceCommit: inputs.cloudSourceCommit, env });
   const live = await readLiveCloudSha(ports, stackName(config, env, "web"), stackName(config, env, "gateway"));
   const decision = await decideMode(ports, { requested: inputs.codeRelease, resolved, liveSha: live.sha, adopt: inputs.adopt, env, declared: inputs.declaredRollback, codeTarget: inputs.codeTarget });
   out(JSON.stringify({ env, cloud: resolved, liveSha: live.sha, mode: decision.mode, codeRelease: decision.codeRelease, codeLiveShaNeeded: decision.mode === "rollback", codeTarget: inputs.codeTarget, lastGoodParameter: lastGoodParameter(config, env), warnings: [...live.warnings, ...decision.warnings] }, null, 2));

@@ -136,9 +136,9 @@ export function makePorts(state: FakeState, env: PipelineEnv = "beta"): Ports {
     },
     cdk: {
       deployNoExecute: (a) => {
-        state.calls.push(`cdk ${a.stackIds.join(",")} ${a.changeSetName} ctx=${Object.keys(a.context).sort().join(",")} params=${Object.entries(a.parameters).map(([k, v]) => `${k}=${v}`).join(",")}`);
+        state.calls.push(`cdk ${a.stacks.map((s) => s.stackId).join(",")} ${a.changeSetName} ctx=${Object.keys(a.context).sort().join(",")} params=${a.stacks.flatMap((s) => Object.entries(s.parameters).map(([k, v]) => `${s.stackName}:${k}=${v}`)).join(",")}`);
         if (a.context.agentxAccount !== undefined) state.calls.push(`cdk-account ${a.context.agentxAccount}`);
-        for (const id of a.stackIds) {
+        for (const { stackId: id } of a.stacks) {
           const part = STACK_ID_PART[id]!;
           const stack = stackFor(env, part);
           const rows = state.plan[id];
@@ -180,7 +180,7 @@ export const CDK_METADATA: ChangeRow = row("Modify", "CDKMetadata", "AWS::CDK::M
 
 export function makeInputs(over: Partial<Inputs> = {}): Inputs {
   return {
-    execId: EXEC_ID, cloudRef: null, codeRelease: "run", cloudProd: false, codeSha: sha("c"), codeLiveSha: null, codeLiveFacts: {}, supersedes: null, codeTarget: null, declaredRollback: false, codeCtxGiven: true, adopt: false,
+    execId: EXEC_ID, cloudRef: null, cloudSourceCommit: null, codeRelease: "run", cloudProd: false, codeSha: sha("c"), codeLiveSha: null, codeLiveFacts: {}, supersedes: null, codeTarget: null, declaredRollback: false, codeCtxGiven: true, adopt: false,
     gatewayDigest: null, target: null, expectedAccount: FAKE_ACCOUNT, dryRun: false, region: "us-east-1", manifestPath: null, outDir: "out", workDir: "/work", ...over,
   };
 }

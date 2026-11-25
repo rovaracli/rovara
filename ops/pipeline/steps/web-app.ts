@@ -3,7 +3,7 @@
 import { changeSetNameFor, stackName } from "../config.ts";
 import { StageError } from "../types.ts";
 import type { StepContext } from "../lib/context.ts";
-import { executeRecorded, tidyChangeSets } from "../lib/changesets.ts";
+import { discardChangeSets, executeRecorded, tidyChangeSets } from "../lib/changesets.ts";
 import { stageOf } from "../lib/manifest.ts";
 import { baseUrlFromOutputs, startReleaseCheck } from "../lib/releasecheck.ts";
 import { requireManifest } from "../lib/run.ts";
@@ -23,6 +23,10 @@ export async function webAppStep(ctx: StepContext, state: State): Promise<void> 
   let executed;
   try {
     executed = await executeRecorded({ ports: ctx.ports, records: records as NonNullable<(typeof records)[number]>[], settleTimeoutSeconds: SETTLE_TIMEOUT_SECONDS, log: ctx.log });
+  } catch (error) {
+    // Fail closed AND clean: what was not executed is deleted (an executed or executing change set stays: the stack's history).
+    await discardChangeSets(ctx.ports, (["app", "web"] as const).map((part) => stackName(ctx.config, ctx.env, part)), changeSetNameFor(manifest.exec8), ctx.log);
+    throw error;
   } finally {
     if (poller !== null) {
       const result = await poller.stop();
