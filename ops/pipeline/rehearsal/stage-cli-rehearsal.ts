@@ -169,7 +169,7 @@ export async function rehearse(o: RehearseOptions): Promise<RehearseResult> {
   const passGate: Gate = { name: "rehearsal-pass", phases: ["change-sets"], run: () => Promise.resolve({ result: "pass" }) };
   const refusingGate: Gate = { name: "rehearsal-refuses", phases: ["change-sets"], run: () => Promise.resolve({ result: "fail", failures: ["the rehearsal refuses on purpose, to prove the failure path tidies"] }) };
   const inputsFor = (execId: string): Inputs => ({
-    execId, cloudRef: null, cloudSourceCommit: null, codeRelease: "skip", cloudProd: false, codeSha: null, codeLiveSha: null, codeLiveFacts: {}, supersedes: null, codeTarget: null, declaredRollback: false, codeCtxGiven: true, adopt: false,
+    execId, cloudRef: null, cloudSourceCommit: null, codeRelease: "skip", codeTrigger: null, cloudProd: false, codeSha: null, codeLiveSha: null, codeLiveFacts: {}, supersedes: null, codeTarget: null, declaredRollback: false, codeCtxGiven: true, adopt: false,
     gatewayDigest: null, target: null, dryRun: false, region: o.region, expectedAccount: o.proofAccount, manifestPath: null, outDir: o.outDir, workDir: o.workDir,
   });
   const ctxFor = (execId: string, gates: readonly Gate[], required: readonly string[]): StepContext => ({

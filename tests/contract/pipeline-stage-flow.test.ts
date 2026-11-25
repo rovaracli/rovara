@@ -799,7 +799,7 @@ describe("pipeline stage CLI: command line and exit codes", () => {
     expect(() => buildInputs({}, {}, new Date())).toThrow(/EXEC_ID is not set/);
     expect(() => buildInputs({}, { EXEC_ID: "bad id" }, new Date())).toThrow(/not a pipeline execution id/);
     expect(() => buildInputs({}, { ...baseEnv, ROVARA_EXPECTED_DEPLOY_ACCOUNT: "12345" }, new Date())).toThrow(/12-digit/);
-    expect(() => buildInputs({}, { ...baseEnv, CODE_RELEASE: "maybe" }, new Date())).toThrow(/run or skip/);
+    expect(() => buildInputs({}, { ...baseEnv, CODE_RELEASE: "maybe" }, new Date())).toThrow(/run, skip or from-trigger/);
     expect(() => buildInputs({}, { ...baseEnv, CODE_SHA: "abc" }, new Date())).toThrow(/40-hex/);
     expect(() => buildInputs({}, { ...baseEnv, CODE_LIVE_FACTS: "[" }, new Date())).toThrow(/not JSON/);
     expect(buildInputs({}, { EXEC_ID: "local-test1" }, new Date()).execId).toBe("local-test1");

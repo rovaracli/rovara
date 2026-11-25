@@ -36,9 +36,9 @@ const ctxValue = (over: { live?: string; target?: string | null; supersedes?: st
 
 describe("CODE_CTX: parsed strictly", () => {
   it("reads the four parts, with none for an absent target and supersession", () => {
-    expect(parseCodeCtx(ctxValue())).toEqual({ live: LIVE, target: null, supersedes: null });
-    expect(parseCodeCtx(ctxValue({ target: OLD, supersedes: WAITING, supersedesSha: MID }))).toEqual({ live: LIVE, target: OLD, supersedes: { executionId: WAITING, codeSha: MID } });
-    expect(parseCodeCtx(ctxValue({ supersedes: WAITING }))).toEqual({ live: LIVE, target: null, supersedes: { executionId: WAITING, codeSha: null } });
+    expect(parseCodeCtx(ctxValue())).toEqual({ live: LIVE, target: null, supersedes: null, trigger: null });
+    expect(parseCodeCtx(ctxValue({ target: OLD, supersedes: WAITING, supersedesSha: MID }))).toEqual({ live: LIVE, target: OLD, supersedes: { executionId: WAITING, codeSha: MID }, trigger: null });
+    expect(parseCodeCtx(ctxValue({ supersedes: WAITING }))).toEqual({ live: LIVE, target: null, supersedes: { executionId: WAITING, codeSha: null }, trigger: null });
   });
 
   it("refuses every malformed value (exit 3), never guessing a part", () => {

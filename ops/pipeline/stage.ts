@@ -13,6 +13,7 @@ import { EXIT, StageError } from "./types.ts";
 import type { Gate, PipelineEnv, Ports, StepName } from "./types.ts";
 import { accountSource } from "./lib/account.ts";
 import { parseCodeCtx } from "./lib/codectx.ts";
+import { CODE_RELEASE_FROM_TRIGGER, decideCodeRelease } from "./lib/coderelease.ts";
 import { errorText } from "./lib/context.ts";
 import type { Inputs, StepContext } from "./lib/context.ts";
 import { discoverGates } from "./lib/gates.ts";
@@ -43,12 +44,12 @@ type ReadOnlyStep = (typeof READ_ONLY_STEPS)[number];
 
 export const USAGE = `usage: node ops/pipeline/stage.ts <${SWITCHES_ENVIRONMENTS.join("|")}> <${[...Object.keys(RUN_STEPS), ...READ_ONLY_STEPS].join("|")}> [flags]
 flags (env var): --exec-id (EXEC_ID) --manifest (PIPELINE_MANIFEST) --out (PIPELINE_OUT, default out) --cloud-ref (CLOUD_REF; from-trigger reads --cloud-source-commit / CLOUD_SOURCE_COMMIT)
-  --code-release run|skip (CODE_RELEASE) --cloud-prod on|off (CLOUD_PROD) --code-sha (CODE_SHA) --code-live-sha (CODE_LIVE_SHA)
+  --code-release run|skip|from-trigger (CODE_RELEASE; from-trigger, the pipeline's default, is decided from which source started the run) --cloud-prod on|off (CLOUD_PROD) --code-sha (CODE_SHA) --code-live-sha (CODE_LIVE_SHA)
   --adopt (PIPELINE_ADOPT=1, or PIPELINE_MODE=adopt; PIPELINE_MODE=release is the default; PIPELINE_MODE=rollback declares a rollback) --gateway-digest sha256:... (GATEWAY_DIGEST) --dry-run (PIPELINE_DRY_RUN=1)
   --code-target <40-hex sha> (CODE_ROLLBACK_TARGET: hand-started runs and rollback-plan; a pipeline run gets it inside CODE_CTX)
   rollback-plan only: --target last-good|previous (default last-good); --code-target <sha> also plans a Code rollback (prints the variables)
 other env: ROVARA_EXPECTED_DEPLOY_ACCOUNT (required: the account this stage must run in; from a pipeline variable, never git), AWS_REGION, ROVARA_PIPELINE_PROFILE, PIPELINE_WORK, CODE_LIVE_FACTS (json),
-  CODE_CTX (the Cloud Preflight action only: live:<sha>,target:<sha|none>,supersedes:<id|none>,supersedesSha:<sha|none>; set by the pipeline, parsed strictly), PIPELINE_SUPERSEDES (json; hand-started runs only)
+  CODE_CTX (the Cloud Preflight action only: live:<sha>,target:<sha|none>,supersedes:<id|none>,supersedesSha:<sha|none>[,trigger:<cloud-tag@vX.Y.Z|code-push|manual|unknown>]; set by the pipeline, parsed strictly), PIPELINE_SUPERSEDES (json; hand-started runs only)
 `;
 
 const VALUE_FLAGS = ["exec-id", "manifest", "out", "cloud-ref", "cloud-source-commit", "code-release", "cloud-prod", "code-sha", "code-live-sha", "gateway-digest", "expected-account", "target", "code-target"];
@@ -95,7 +96,7 @@ export function buildInputs(flags: Record<string, string | true>, env: Record<st
   if (execId === null) throw new StageError("USAGE", "EXEC_ID is not set (the pipeline execution id; locally pass --exec-id local-<something>)");
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u.test(execId) && !/^local-[a-z0-9-]{1,32}$/u.test(execId)) throw new StageError("USAGE", "EXEC_ID is not a pipeline execution id");
   const codeRelease = pick("code-release", "CODE_RELEASE") ?? "run";
-  if (codeRelease !== "run" && codeRelease !== "skip") throw new StageError("USAGE", "CODE_RELEASE must be run or skip");
+  if (codeRelease !== "run" && codeRelease !== "skip" && codeRelease !== CODE_RELEASE_FROM_TRIGGER) throw new StageError("USAGE", `CODE_RELEASE must be run, skip or ${CODE_RELEASE_FROM_TRIGGER}`);
   const cloudProd = pick("cloud-prod", "CLOUD_PROD") ?? "off";
   if (cloudProd !== "on" && cloudProd !== "off") throw new StageError("USAGE", "CLOUD_PROD must be on or off");
   const sha = (value: string | null, what: string): string | null => {
@@ -139,6 +140,7 @@ export function buildInputs(flags: Record<string, string | true>, env: Record<st
     cloudRef: ((ref) => ref === LATEST ? null : ref)(pick("cloud-ref", "CLOUD_REF")),
     cloudSourceCommit: pick("cloud-source-commit", "CLOUD_SOURCE_COMMIT"),
     codeRelease,
+    codeTrigger: ctx === null ? null : ctx.trigger,
     cloudProd: cloudProd === "on",
     codeSha: sha(pick("code-sha", "CODE_SHA"), "CODE_SHA"),
     codeLiveSha: ctx === null ? handLive : ctx.live,
@@ -235,7 +237,8 @@ async function readOnly(step: ReadOnlyStep, ctx: StepContext, out: (line: string
   }
   const resolved = await resolveCloudRef(ports, config, inputs.cloudRef, { sourceCommit: inputs.cloudSourceCommit, env });
   const live = await readLiveCloudSha(ports, stackName(config, env, "web"), stackName(config, env, "gateway"));
-  const decision = await decideMode(ports, { requested: inputs.codeRelease, resolved, liveSha: live.sha, adopt: inputs.adopt, env, declared: inputs.declaredRollback, codeTarget: inputs.codeTarget });
+  const codeRelease = decideCodeRelease(inputs, resolved);
+  const decision = await decideMode(ports, { requested: codeRelease.request, resolved, liveSha: live.sha, adopt: inputs.adopt, env, declared: inputs.declaredRollback, codeTarget: inputs.codeTarget });
   out(JSON.stringify({ env, cloud: resolved, liveSha: live.sha, mode: decision.mode, codeRelease: decision.codeRelease, codeLiveShaNeeded: decision.mode === "rollback", codeTarget: inputs.codeTarget, lastGoodParameter: lastGoodParameter(config, env), warnings: [...live.warnings, ...decision.warnings] }, null, 2));
   return EXIT.OK;
 }
