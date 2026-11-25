@@ -4,12 +4,16 @@
 import { App, Aspects, Stack } from "aws-cdk-lib";
 import { Template } from "aws-cdk-lib/assertions";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
-import { RELEASE_ACTIONS_PART, RequireCloudBoundary, applyCloudBoundary, cloudBoundaryStatements, releaseActionsParameterStatements, CLOUD_STACK_PARTS } from "../../infra/lib/cloud-boundary.js";
+import {
+  ARTIFACT_KEY_NAME_CHARS, ARTIFACT_KEY_PIPELINE_CHARS, CLOUD_STATE_ARTIFACT_PREFIX, CLOUD_STATE_ARTIFACT_PREFIXES, RELEASE_ACTIONS_PART, RELEASE_PIPELINE_NAME, RequireCloudBoundary, applyCloudBoundary, artifactKeyPattern,
+  cloudBoundaryStatements, releaseActionsParameterStatements, CLOUD_STACK_PARTS,
+} from "../../infra/lib/cloud-boundary.js";
 import { boundaryViolations, globMatch, resolvedBoundaries, roleCases, type CfnTemplate, type StackTemplate } from "../../infra/lib/cloud-boundary-check.js";
 import {
   CLOUD_RELEASE_ACTIONS_CONTEXT_KEY, CLOUD_RELEASE_ACTIONS_OUTPUTS, CLOUD_RELEASE_ACTIONS_STACK_NAME, CLOUD_RELEASE_BUILD_ROLE_NAMES, CLOUD_RELEASE_EXPORTED_VARIABLES,
@@ -39,6 +43,21 @@ const roleId = (environment: ReleaseActionEnvironment) => byType("AWS::IAM::Role
 const project = (environment: ReleaseActionEnvironment) => byType("AWS::CodeBuild::Project").find(([, r]) => r.Properties.Name === CLOUD_RELEASE_PROJECT_NAMES[environment])![1].Properties;
 const casesOf = (environment: ReleaseActionEnvironment) => roleCases([built.stackTemplate], scope).filter((c) => c.role === roleId(environment));
 const actionsOf = (environment: ReleaseActionEnvironment) => [...new Set(casesOf(environment).map((c) => c.action))].sort();
+/** IAM's size count: every character of the document except whitespace (a managed policy 6,144, a role's inline policies together 10,240). */
+const iamSize = (document: unknown): number => JSON.stringify(document).replace(/\s/gu, "").length;
+const boundarySize = (env: string, region: string, bucket: string, partition = "aws"): number =>
+  iamSize({ Version: "2012-10-17", Statement: [...cloudBoundaryStatements({ ...scope, env, region, partition }, RELEASE_ACTIONS_PART), ...releaseActionsParameterStatements(partition, region, { artifactBucketName: bucket, betaAccountId: "210987654321" })] });
+const SAMPLE_BUCKET = "sample-release-pipeline-artifacts-bucket";
+/** The template's own text for a value built from Ref and Fn::Join: the bucket parameter, the partition and the account, as the checker's samples have them. */
+function templateText(value: unknown, bucket = SAMPLE_BUCKET): string {
+  if (typeof value === "string") return value;
+  const [[fn, arg]] = Object.entries(value as Record<string, unknown>) as [[string, unknown]];
+  if (fn === "Fn::Join") return (arg as [string, unknown[]])[1].map((part) => templateText(part, bucket)).join((arg as [string, unknown[]])[0]);
+  if (fn === "Ref") return ({ ArtifactBucketName: bucket, "AWS::Partition": "aws", "AWS::AccountId": ACCOUNT, "AWS::Region": REGION } as Record<string, string>)[arg as string] ?? `<${String(arg)}>`;
+  throw new Error(`cannot read ${JSON.stringify(value)}`);
+}
+type PolicyStatement = { Sid: string; Effect: string; Action: string | string[]; Resource?: unknown; NotResource?: unknown; Condition?: unknown };
+const policyOf = (environment: ReleaseActionEnvironment) => byType("AWS::IAM::Policy").find(([, p]) => JSON.stringify(p.Properties.Roles).includes(roleId(environment)))![1].Properties.PolicyDocument as { Statement: PolicyStatement[] };
 
 describe("the names the public pipeline imports", () => {
   it("are release- projects (its parameter pattern), equal to the defaults it ships with, and the fixed build role names the beta release role trusts", () => {
@@ -136,15 +155,48 @@ describe("every role is bounded, named and trusted narrowly", () => {
     ]) expect(boundaryViolations([widen(statement)], scope), JSON.stringify(statement)).toHaveLength(1);
   });
 
-  it("the boundary check understands the Bool deny it ignores, and refuses a conditional Deny it cannot read", () => {
+  it("the boundary check understands the exec deny it ignores, and refuses a conditional Deny it cannot read", () => {
     const [boundary] = byType("AWS::IAM::ManagedPolicy");
     const statements = (boundary![1].Properties.PolicyDocument as { Statement: Array<Record<string, unknown>> }).Statement;
-    expect(statements.find((s) => s.Sid === "DenyExecIntoTasks")).toEqual({ Sid: "DenyExecIntoTasks", Effect: "Deny", Action: ["ecs:RunTask"], Resource: ["*"], Condition: { Bool: { "ecs:enable-execute-command": "true" } } });
+    expect(statements.find((s) => s.Sid === "DenyExecIntoTasks")).toEqual({ Sid: "DenyExecIntoTasks", Effect: "Deny", Action: ["ecs:RunTask"], Resource: ["*"], Condition: { StringEquals: { "ecs:enable-execute-command": "true" } } });
     const t = structuredClone(built.template) as CfnTemplate & { Resources: Record<string, Resource> };
     const doc = t.Resources.RoleBoundary!.Properties.PolicyDocument as { Statement: Array<Record<string, unknown>> };
     doc.Statement.push({ Sid: "Odd", Effect: "Deny", Action: "s3:*", Resource: "*", Condition: { StringLike: { "aws:username": "a*" } } });
     // Any other conditional Deny is counted as applying: the grants it could touch are reported (never silently passed).
     expect(boundaryViolations([{ stackName: CLOUD_RELEASE_ACTIONS_STACK_NAME, template: t }], scope).map((v) => v.reason)).toEqual(expect.arrayContaining(["denied by the boundary's Odd (conditional: counted as applying)"]));
+  });
+
+  it("every condition uses the operator family of its key's documented type (IAM Access Analyzer: ARN keys take Arn*, String keys String*, never Bool for a String key)", () => {
+    // Pinned from the Service Authorization Reference and confirmed by `aws accessanalyzer validate-policy` (STRING_LIKE_OPERATOR_WITH_ARN_CONDITION_KEYS on ecs:cluster, TYPE_MISMATCH on
+    // ecs:enable-execute-command, both found by the first read-only validation of this stack). A key not in this table fails the test: add it with its documented type.
+    const KEY_TYPES: Record<string, "Arn" | "String"> = {
+      "ecs:cluster": "Arn", "ecs:enable-execute-command": "String", "iam:PassedToService": "String", "kms:ViaService": "String", "aws:SourceAccount": "String", "aws:SourceArn": "Arn",
+    };
+    const OPERATORS = { Arn: /^(ForAnyValue:|ForAllValues:)?Arn(Equals|Like|NotEquals|NotLike)$/u, String: /^(ForAnyValue:|ForAllValues:)?String(Equals|Like|NotEquals|NotLike|EqualsIgnoreCase)$/u } as const;
+    const documents = [...byType("AWS::IAM::Policy"), ...byType("AWS::IAM::ManagedPolicy")].map(([id, r]) => [id, r.Properties.PolicyDocument as { Statement: PolicyStatement[] }] as const);
+    const trusts = byType("AWS::IAM::Role").map(([id, r]) => [id, r.Properties.AssumeRolePolicyDocument as { Statement: PolicyStatement[] }] as const);
+    let seen = 0;
+    for (const [id, document] of [...documents, ...trusts]) {
+      for (const statement of document.Statement) {
+        for (const [operator, keys] of Object.entries((statement.Condition ?? {}) as Record<string, Record<string, unknown>>)) {
+          for (const key of Object.keys(keys)) {
+            const type = KEY_TYPES[key];
+            expect(type, `${id} ${statement.Sid ?? ""}: ${key} has no documented type in this test`).toBeDefined();
+            // aws:SourceArn in the build roles' trust is an exact project ARN: StringEquals on it is the form AWS documents for the CodeBuild confused deputy condition and the analyzer accepts it.
+            if (key === "aws:SourceArn" && operator === "StringEquals") continue;
+            expect(operator, `${id} ${statement.Sid ?? ""}: ${key} is a ${type} key`).toMatch(OPERATORS[type!]);
+            seen += 1;
+          }
+        }
+      }
+    }
+    expect(seen).toBeGreaterThanOrEqual(8);
+    // The two named by the analyzer, exactly: ARN keys with ArnLike, the exec key with StringEquals "true" (a Bool operator is a TYPE_MISMATCH).
+    const boundary = documents.find(([id]) => id === "RoleBoundary")![1].Statement;
+    expect(boundary.filter((s) => s.Sid === "PriceFetchRun" || s.Sid === "PriceFetchReads").map((s) => Object.keys(s.Condition as object).map((operator) => [operator, templateText((s.Condition as Record<string, Record<string, unknown>>)[operator]!["ecs:cluster"])]))).toEqual(Array(2).fill([["ArnLike", `arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/rovara-cloud-production-gateway-*`]]));
+    expect(policyOf("production").Statement.filter((s) => s.Sid === "PriceFetchRun" || s.Sid === "PriceFetchReads").map((s) => Object.keys(s.Condition as object))).toEqual([["ArnLike"], ["ArnLike"]]);
+    expect(JSON.stringify(boundary)).not.toContain('"Bool"');
+    expect(JSON.stringify(policyOf("production"))).not.toContain('"Bool"');
   });
 
   it("M1: artifact transfers through S3 with the aws/s3 key are not denied, a direct key use still is", () => {
@@ -173,10 +225,12 @@ describe("every role is bounded, named and trusted narrowly", () => {
 
   it("the boundary is exactly the part's statements plus the three that name the stack's parameters, and fits in a managed policy", () => {
     const resolved = resolvedBoundaries([built.stackTemplate], scope)[CLOUD_RELEASE_ACTIONS_STACK_NAME]!;
-    expect(resolved.Statement.slice(0, -3).length).toBe(cloudBoundaryStatements(scope, RELEASE_ACTIONS_PART).length);
+    expect(resolved.Statement.slice(0, -4).length).toBe(cloudBoundaryStatements(scope, RELEASE_ACTIONS_PART).length);
     expect(resolved.Statement.slice(0, cloudBoundaryStatements(scope, RELEASE_ACTIONS_PART).length)).toEqual(cloudBoundaryStatements(scope, RELEASE_ACTIONS_PART));
-    expect(resolved.Statement.slice(-3)).toEqual([
-      { Sid: "PipelineArtifacts", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:GetBucketAcl", "s3:GetBucketLocation"], Resource: ["arn:aws:s3:::sample-release-pipeline-artifacts-bucket", "arn:aws:s3:::sample-release-pipeline-artifacts-bucket/*"] },
+    expect(resolved.Statement.slice(-4)).toEqual([
+      { Sid: "PipelineArtifacts", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:GetBucketAcl", "s3:GetBucketLocation"], Resource: ["arn:aws:s3:::sample-release-pipeline-artifacts-bucket", "arn:aws:s3:::sample-release-pipeline-artifacts-bucket/*"] },
+      // PH-S3-PREFIXES: the cap on writes is the Cloud state family, never the whole bucket (the Source inputs and the Code release manifests live in it).
+      { Sid: "PipelineStateWrites", Effect: "Allow", Action: ["s3:PutObject", "s3:AbortMultipartUpload"], Resource: ["arn:aws:s3:::sample-release-pipeline-artifacts-bucket/AgentXProductionRele*/State*"] },
       { Sid: "AssumeBetaReleaseRole", Effect: "Allow", Action: ["sts:AssumeRole"], Resource: ["arn:aws:iam::210987654321:role/rovara-cloud-beta-release"] },
       { Sid: "PullBetaImage", Effect: "Allow", Action: ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:DescribeImages", "ecr:GetDownloadUrlForLayer"], Resource: [`arn:aws:ecr:${REGION}:210987654321:repository/rovara-cloud-beta-gateway-images-*`] },
     ]);
@@ -184,8 +238,9 @@ describe("every role is bounded, named and trusted narrowly", () => {
       "DenyIamChanges", "DenyAccountChanges", "DenyKeyManagement", "DenyAdminRoles", "DenyOrganizationAdminRole", "DenySecretValues", "DenyKeyUseOutsideS3", "DenyExecIntoTasks",
     ]);
     // The largest part (the limit is 6,144 characters without whitespace): room for a 63-character bucket name and the longest environment name and Region.
-    expect(JSON.stringify(resolved).length).toBeLessThan(6144 - 450);
-    expect(JSON.stringify({ Version: "2012-10-17", Statement: [...cloudBoundaryStatements({ ...scope, env: "abcdefghijklmn", region: "ap-southeast-3" }, RELEASE_ACTIONS_PART), ...releaseActionsParameterStatements("aws", "ap-southeast-3", { artifactBucketName: "b".repeat(63), betaAccountId: "210987654321" })] }).length).toBeLessThan(6144 - 100);
+    expect(JSON.stringify(resolved).length).toBeLessThan(6144 - 300);
+    // Measured at PH-S3-PREFIXES: 5,792 before, 5,997 after (with the abort on the own prefix) (longest environment name, ap-southeast-3, a 63-character bucket, partition aws). The bound is the limit less 150.
+    expect(boundarySize("abcdefghijklmn", "ap-southeast-3", "b".repeat(63))).toBeLessThan(6144 - 140);
   });
 
   it("is not one of the per-environment parts (its stack name has no environment) and only it takes its two inputs", () => {
@@ -202,7 +257,7 @@ describe("what each role may do", () => {
       "codeconnections:GetConnectionToken", "codeconnections:UseConnection", "codestar-connections:GetConnectionToken", "codestar-connections:UseConnection",
       "codebuild:BatchPutCodeCoverages", "codebuild:BatchPutTestCases", "codebuild:CreateReport", "codebuild:CreateReportGroup", "codebuild:UpdateReport",
       "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents",
-      "s3:GetBucketAcl", "s3:GetBucketLocation", "s3:GetObject", "s3:GetObjectVersion", "s3:PutObject",
+      "s3:AbortMultipartUpload", "s3:GetBucketAcl", "s3:GetBucketLocation", "s3:GetObject", "s3:GetObjectVersion", "s3:PutObject",
       "sts:AssumeRole",
     ].sort());
     const assumes = casesOf("beta").filter((c) => c.action === "sts:AssumeRole");
@@ -221,7 +276,7 @@ describe("what each role may do", () => {
     expect(casesOf("production").filter((c) => c.resource.includes("210987654321")).every((c) => c.resource === beta)).toBe(true);
     expect(resourcesOf("ecr:PutImage")).toEqual([`arn:aws:ecr:${REGION}:${ACCOUNT}:repository/rovara-cloud-production-gateway-images-*`]);
     expect(resourcesOf("ecs:RunTask")).toEqual([`arn:aws:ecs:${REGION}:${ACCOUNT}:task-definition/RovaraModelGatewayPriceFetchTask*:*`]);
-    expect(casesOf("production").find((c) => c.action === "ecs:RunTask")!.condition).toEqual({ StringLike: { "ecs:cluster": [`arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/rovara-cloud-production-gateway-*`] } });
+    expect(casesOf("production").find((c) => c.action === "ecs:RunTask")!.condition).toEqual({ ArnLike: { "ecs:cluster": [`arn:aws:ecs:${REGION}:${ACCOUNT}:cluster/rovara-cloud-production-gateway-*`] } });
     // Exactly two roles may be passed, to ECS only: RunTask can override a task's role.
     expect(casesOf("production").filter((c) => c.action === "iam:PassRole").map((c) => c.resource)).toHaveLength(2);
     expect(casesOf("production").find((c) => c.action === "iam:PassRole")!.condition).toEqual({ StringEquals: { "iam:PassedToService": ["ecs-tasks.amazonaws.com"] } });
@@ -253,9 +308,10 @@ describe("what each role may do", () => {
       const [, policy] = byType("AWS::IAM::Policy").find(([, p]) => JSON.stringify(p.Properties.Roles).includes(roleId(environment)))!;
       return (policy.Properties.PolicyDocument as { Statement: Array<{ Effect: string; Sid: string; Action: string | string[]; Resource: unknown; Condition?: unknown }> }).Statement.filter((s) => s.Effect === "Deny");
     };
-    expect(denies("beta")).toEqual([{ Sid: "DenyOrganizationAdminRole", Effect: "Deny", Action: "sts:AssumeRole", Resource: "arn:aws:iam::*:role/OrganizationAccountAccessRole" }]);
-    expect(denies("production").map((s) => s.Sid)).toEqual(["DenyOrganizationAdminRole", "DenyExecIntoTasks"]);
-    expect(denies("production")[1]).toMatchObject({ Action: "ecs:RunTask", Condition: { Bool: { "ecs:enable-execute-command": "true" } } });
+    expect(denies("beta").map((s) => s.Sid)).toEqual(["DenyArtifactWritesOutsideOwnState", "DenyOrganizationAdminRole"]);
+    expect(denies("beta")[1]).toEqual({ Sid: "DenyOrganizationAdminRole", Effect: "Deny", Action: "sts:AssumeRole", Resource: "arn:aws:iam::*:role/OrganizationAccountAccessRole" });
+    expect(denies("production").map((s) => s.Sid)).toEqual(["DenyArtifactWritesOutsideOwnState", "DenyOrganizationAdminRole", "DenyExecIntoTasks"]);
+    expect(denies("production")[2]).toMatchObject({ Action: "ecs:RunTask", Condition: { StringEquals: { "ecs:enable-execute-command": "true" } } });
   });
 
   it("the grants that name other accounts take them from parameters: no account is written in the template", () => {
@@ -357,10 +413,10 @@ describe("the projects", () => {
     expect(first.err).toBe("");
     expect(first.out).toContain("NODE ops/pipeline/stage.ts beta preflight manifest=none");
     expect(first.out).toContain("RELEASE=skip TAG=v1.2.3 MODE=[]");
-    const next = runBuild("beta", { STAGE_ENV: "beta", STAGE_STEP: "image", PIPELINE_STATE_ARTIFACT: "BetaPreflightState", CODEBUILD_SRC_DIR_BetaPreflightState: state });
+    const next = runBuild("beta", { STAGE_ENV: "beta", STAGE_STEP: "image", PIPELINE_STATE_ARTIFACT: "StateBetaPreflight", CODEBUILD_SRC_DIR_StateBetaPreflight: state });
     expect(next.out).toContain(`NODE ops/pipeline/stage.ts beta image manifest=${state}/manifest.json`);
     expect(next.out).toContain("RELEASE= TAG= MODE=[]");
-    for (const step of CLOUD_RELEASE_STEPS) expect(runBuild("production", { STAGE_ENV: "production", STAGE_STEP: step, PIPELINE_STATE_ARTIFACT: "BetaCloudProofState", CODEBUILD_SRC_DIR_BetaCloudProofState: state }).status, step).toBe(0);
+    for (const step of CLOUD_RELEASE_STEPS) expect(runBuild("production", { STAGE_ENV: "production", STAGE_STEP: step, PIPELINE_STATE_ARTIFACT: "StateBetaCloudProof", CODEBUILD_SRC_DIR_StateBetaCloudProof: state }).status, step).toBe(0);
   });
 
   it("never uses eval on the state name (indirect expansion after the check)", () => {
@@ -379,7 +435,7 @@ describe("the projects", () => {
     expect(first.status).toBe(0);
     expect(first.out).toContain(`code=${first.dir}/code-clone `);
     for (const step of CLOUD_RELEASE_STEPS.filter((name) => name !== "preflight")) {
-      const run = runBuild("production", { STAGE_ENV: "production", STAGE_STEP: step, PIPELINE_STATE_ARTIFACT: "BetaCloudProofState", CODEBUILD_SRC_DIR_BetaCloudProofState: state });
+      const run = runBuild("production", { STAGE_ENV: "production", STAGE_STEP: step, PIPELINE_STATE_ARTIFACT: "StateBetaCloudProof", CODEBUILD_SRC_DIR_StateBetaCloudProof: state });
       expect(run.out, step).toContain(`code=${run.dir}/code-clone `);
     }
     expect(releaseActionBuildCommands("beta").join("\n")).toContain('code_ref="CODEBUILD_SRC_DIR_Source"');
@@ -390,7 +446,7 @@ describe("the projects", () => {
     writeFileSync(join(state, "manifest.json"), "{}");
     for (const environment of ["beta", "production"] as const) {
       for (const step of CLOUD_RELEASE_CODE_CLONE_STEPS) {
-        const env = { STAGE_ENV: environment, STAGE_STEP: step, ROVARA_CODE_REPO: "/hand/set", ...(step === "preflight" && environment === "beta" ? {} : { PIPELINE_STATE_ARTIFACT: "BetaCloudProofState", CODEBUILD_SRC_DIR_BetaCloudProofState: state }) };
+        const env = { STAGE_ENV: environment, STAGE_STEP: step, ROVARA_CODE_REPO: "/hand/set", ...(step === "preflight" && environment === "beta" ? {} : { PIPELINE_STATE_ARTIFACT: "StateBetaCloudProof", CODEBUILD_SRC_DIR_StateBetaCloudProof: state }) };
         const run = runBuild(environment, env, { codeClone: false });
         expect(run.status, `${environment} ${step}`).not.toBe(0);
         expect(run.err).toMatch(/no Code clone: the Source input directory is missing/u);
@@ -401,7 +457,7 @@ describe("the projects", () => {
       }
     }
     // a step that needs no Code clone still runs without one
-    expect(runBuild("beta", { STAGE_ENV: "beta", STAGE_STEP: "image", PIPELINE_STATE_ARTIFACT: "BetaPreflightState", CODEBUILD_SRC_DIR_BetaPreflightState: state }, { codeClone: false }).status).toBe(0);
+    expect(runBuild("beta", { STAGE_ENV: "beta", STAGE_STEP: "image", PIPELINE_STATE_ARTIFACT: "StateBetaPreflight", CODEBUILD_SRC_DIR_StateBetaPreflight: state }, { codeClone: false }).status).toBe(0);
   });
 
   it("grants no CodePipeline right at all: nothing in this stack can reopen the promotion gate (only the public Preflight closes it)", () => {
@@ -412,7 +468,7 @@ describe("the projects", () => {
   it("the Production Preflight first prints beta's promotion summary from the beta state, then runs its own preflight", () => {
     const state = mkdtempSync(join(tmpdir(), "state-"));
     writeFileSync(join(state, "manifest.json"), "{}");
-    const run = runBuild("production", { STAGE_ENV: "production", STAGE_STEP: "preflight", PIPELINE_STATE_ARTIFACT: "BetaCloudProofState", CODEBUILD_SRC_DIR_BetaCloudProofState: state });
+    const run = runBuild("production", { STAGE_ENV: "production", STAGE_STEP: "preflight", PIPELINE_STATE_ARTIFACT: "StateBetaCloudProof", CODEBUILD_SRC_DIR_StateBetaCloudProof: state });
     const lines = run.out.split("\n").filter((l) => l.startsWith("NODE"));
     expect(lines.map((l) => l.replace(/ adopt=.*$/u, ""))).toEqual([`NODE ops/pipeline/stage.ts beta summary manifest=${state}/manifest.json`, `NODE ops/pipeline/stage.ts production preflight manifest=${state}/manifest.json`]);
     // Beta's own preflight prints no summary first, and no other step does.
@@ -457,5 +513,158 @@ describe("the stack in the app", () => {
     expect(() => buildAgentXApp({ [CLOUD_RELEASE_ACTIONS_CONTEXT_KEY]: "" })).toThrow(/must name the environment/u);
     expect(() => buildAgentXApp({ [CLOUD_RELEASE_ACTIONS_CONTEXT_KEY]: 3 })).toThrow(/must name the environment/u);
     expect(() => synthesize("Not Valid")).toThrow();
+  });
+});
+
+// PH-S3-PREFIXES: every build role writes only its own environment's state artifacts into the pipeline's (unversioned) artifact bucket.
+describe("PH-S3-PREFIXES: what each role may write into the artifact bucket", () => {
+  const CLOUD_ACTIONS = ["Preflight", "CloudImage", "CloudGateway", "GatewayCheck", "CloudWebApp", "CloudProof"];
+  // The artifact names of the public pipeline (Rovara Code's release-pipeline.ts: the two sources, the two Code release outputs, and one Cloud state per action and environment).
+  const STATES = { beta: CLOUD_ACTIONS.map((a) => `StateBeta${a}`), production: CLOUD_ACTIONS.map((a) => `StateProd${a}`) };
+  const OTHERS = ["Source", "CloudSource", "ReleaseManifest", "BetaReleaseManifest"];
+  /** The object keys CodePipeline may give an artifact, whatever it truncates: whole names, or the pipeline cut to 20 and the artifact to 10 (or to 20) characters. */
+  const keys = (artifact: string): string[] => {
+    const pipelines = [RELEASE_PIPELINE_NAME, RELEASE_PIPELINE_NAME.slice(0, ARTIFACT_KEY_PIPELINE_CHARS)];
+    const names = [artifact, artifact.slice(0, ARTIFACT_KEY_NAME_CHARS), artifact.slice(0, 20)];
+    return pipelines.flatMap((p) => names.map((n) => `${p}/${n}/AbCdEf1`));
+  };
+  const objectArn = (key: string) => `arn:aws:s3:::${SAMPLE_BUCKET}/${key}`;
+  /** The effective write permission of a role on an object, as IAM evaluates the template's own statements: an Allow of s3:PutObject and no matching Deny. */
+  const canPut = (environment: ReleaseActionEnvironment, key: string, action = "s3:PutObject"): boolean => {
+    const matches = (pattern: string) => globMatch(pattern, objectArn(key));
+    const covers = (s: PolicyStatement) => (Array.isArray(s.Action) ? s.Action : [s.Action]).some((a) => globMatch(a.toLowerCase(), action.toLowerCase()));
+    const list = (v: unknown) => (Array.isArray(v) ? v : [v]).map((x) => templateText(x));
+    const statements = policyOf(environment).Statement;
+    const allowed = statements.some((s) => s.Effect === "Allow" && covers(s) && s.Resource !== undefined && list(s.Resource).some(matches));
+    const denied = statements.some((s) => s.Effect === "Deny" && covers(s) && ((s.NotResource !== undefined && !list(s.NotResource).some(matches)) || (s.Resource !== undefined && list(s.Resource).some(matches))));
+    return allowed && !denied;
+  };
+
+  it("the whole cross-repo contract has one digest, the same literal as Rovara Code's release-pipeline-s3-prefixes test (a name or a number moved on one side only fails the other side's copy)", () => {
+    const contract = {
+      pipeline: RELEASE_PIPELINE_NAME, pipelineChars: ARTIFACT_KEY_PIPELINE_CHARS, nameChars: ARTIFACT_KEY_NAME_CHARS, prefixes: CLOUD_STATE_ARTIFACT_PREFIXES,
+      states: [...STATES.beta, ...STATES.production], others: OTHERS,
+    };
+    expect(createHash("sha256").update(JSON.stringify(contract)).digest("hex")).toBe("13bbe6708cf2c691c5d698e6cdb6f27f2f3e87bb3362599fd1d919ad209d0493");
+  });
+
+  it("derives the key patterns from the pipeline's layout: pipeline cut to 20 characters (ending in *), a prefix of at most 10 characters", () => {
+    expect(RELEASE_PIPELINE_NAME).toBe("AgentXProductionRelease");
+    expect(CLOUD_STATE_ARTIFACT_PREFIXES).toEqual({ beta: "StateBeta", production: "StateProd" });
+    expect(artifactKeyPattern("arn:aws:s3:::b", CLOUD_STATE_ARTIFACT_PREFIXES.beta)).toBe("arn:aws:s3:::b/AgentXProductionRele*/StateBeta*");
+    expect(artifactKeyPattern("arn:aws:s3:::b", CLOUD_STATE_ARTIFACT_PREFIX)).toBe("arn:aws:s3:::b/AgentXProductionRele*/State*");
+    for (const prefix of ["", "ElevenChars", "a/b", "a*", "a b"]) expect(() => artifactKeyPattern("arn:aws:s3:::b", prefix), prefix).toThrow(/not an artifact prefix/u);
+    // Every environment prefix is inside the family and inside the 10 characters CodePipeline keeps of a name; no other artifact starts with the family.
+    for (const prefix of Object.values(CLOUD_STATE_ARTIFACT_PREFIXES)) { expect(prefix.startsWith(CLOUD_STATE_ARTIFACT_PREFIX)).toBe(true); expect(prefix.length).toBeLessThanOrEqual(ARTIFACT_KEY_NAME_CHARS); }
+    expect(OTHERS.filter((name) => name.startsWith(CLOUD_STATE_ARTIFACT_PREFIX))).toEqual([]);
+    expect([...STATES.beta, ...STATES.production].filter((name) => !name.startsWith(CLOUD_STATE_ARTIFACT_PREFIX))).toEqual([]);
+  });
+
+  it("each role's PutObject (and abort) is exactly one resource: its own environment's state prefix", () => {
+    const putResources = (environment: ReleaseActionEnvironment) => casesOf(environment).filter((c) => c.action === "s3:PutObject").map((c) => c.resource);
+    expect(putResources("beta")).toEqual([`arn:aws:s3:::${SAMPLE_BUCKET}/AgentXProductionRele*/StateBeta*`]);
+    expect(putResources("production")).toEqual([`arn:aws:s3:::${SAMPLE_BUCKET}/AgentXProductionRele*/StateProd*`]);
+    for (const environment of ["beta", "production"] as const) {
+      // No role action reaches an object beyond a read, and nothing deletes, aborts or sets an ACL or tag on one.
+      expect(actionsOf(environment).filter((a) => a.startsWith("s3:")).sort()).toEqual(["s3:AbortMultipartUpload", "s3:GetBucketAcl", "s3:GetBucketLocation", "s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]);
+      for (const resource of putResources(environment)) { expect(resource.endsWith("/*")).toBe(false); expect(resource).not.toMatch(/Source|Manifest/u); }
+    }
+  });
+
+  it("the explicit Deny is NotResource of the role's own prefix: PutObject*, DeleteObject* and an abort, on everything else in the account", () => {
+    for (const environment of ["beta", "production"] as const) {
+      const deny = policyOf(environment).Statement.find((s) => s.Sid === "DenyArtifactWritesOutsideOwnState")!;
+      expect(deny.Effect).toBe("Deny");
+      expect(deny.Action).toEqual(["s3:PutObject*", "s3:DeleteObject*", "s3:AbortMultipartUpload"]);
+      expect(deny.Resource).toBeUndefined();
+      expect(templateText(deny.NotResource)).toBe(`arn:aws:s3:::${SAMPLE_BUCKET}/AgentXProductionRele*/${CLOUD_STATE_ARTIFACT_PREFIXES[environment]}*`);
+      // The Deny names exactly what the Allow names.
+      const allow = policyOf(environment).Statement.find((s) => s.Sid === "PipelineStateWrites")!;
+      expect(templateText(allow.Resource)).toBe(templateText(deny.NotResource));
+    }
+  });
+
+  it("evaluated as IAM does, over every key CodePipeline may give each artifact: a role writes its own states and nothing else (not Source, CloudSource, a Code manifest, or the other environment)", () => {
+    for (const environment of ["beta", "production"] as const) {
+      const other = environment === "beta" ? "production" : "beta";
+      for (const artifact of STATES[environment]) for (const key of keys(artifact)) expect(canPut(environment, key), `${environment} ${key}`).toBe(true);
+      for (const artifact of [...OTHERS, ...STATES[other]]) for (const key of keys(artifact)) expect(canPut(environment, key), `${environment} ${key}`).toBe(false);
+      // Not a delete, an ACL or a tag either. A multipart upload it started may be aborted on its own prefix (a failed large upload leaves no stranded parts), and nowhere else.
+      for (const artifact of STATES[environment]) for (const action of ["s3:DeleteObject", "s3:PutObjectAcl", "s3:PutObjectTagging"]) for (const key of keys(artifact)) expect(canPut(environment, key, action), `${environment} ${action} ${key}`).toBe(false);
+      for (const key of STATES[environment].flatMap(keys)) expect(canPut(environment, key, "s3:AbortMultipartUpload"), `abort ${key}`).toBe(true);
+      for (const key of [...OTHERS, ...STATES[other]].flatMap(keys)) expect(canPut(environment, key, "s3:AbortMultipartUpload"), `abort ${key}`).toBe(false);
+      expect(templateText(policyOf(environment).Statement.find((s) => s.Sid === "PipelineStateWrites")!.Resource)).not.toMatch(/\/(Beta|Prod)\*$/u);
+    }
+  });
+
+  it("the boundary caps writes at the state family: it admits all twelve state artifacts and none of Source, CloudSource or a Code manifest, and both roles' grants lie inside it", () => {
+    const [boundary] = byType("AWS::IAM::ManagedPolicy");
+    const statements = (boundary![1].Properties.PolicyDocument as { Statement: Array<{ Sid: string; Effect: string; Action: string[]; Resource: unknown[] }> }).Statement;
+    const writes = statements.filter((s) => s.Effect === "Allow" && s.Action.some((a) => globMatch(a, "s3:PutObject")));
+    expect(writes.map((s) => s.Sid)).toEqual(["PipelineStateWrites"]);
+    const pattern = templateText(writes[0]!.Resource[0]);
+    expect(writes[0]!.Resource).toHaveLength(1);
+    for (const artifact of [...STATES.beta, ...STATES.production]) for (const key of keys(artifact)) expect(globMatch(pattern, objectArn(key)), key).toBe(true);
+    for (const artifact of OTHERS) for (const key of keys(artifact)) expect(globMatch(pattern, objectArn(key)), key).toBe(false);
+    // No Allow of the boundary reaches an object for any other write action, and the whole-bucket statement holds reads only.
+    const bucketWide = statements.find((s) => s.Sid === "PipelineArtifacts")!;
+    expect(bucketWide.Action).toEqual(["s3:GetObject", "s3:GetObjectVersion", "s3:GetBucketAcl", "s3:GetBucketLocation"]);
+    expect(boundaryViolations([built.stackTemplate], scope)).toEqual([]);
+  });
+
+  it("the check refuses a grant that widens a role's write to the whole bucket, to a Source key or to a delete", () => {
+    const widen = (statement: Record<string, unknown>): StackTemplate => {
+      const t = structuredClone(built.template) as CfnTemplate & { Resources: Record<string, Resource> };
+      const policy = Object.values(t.Resources).find((r) => r.Type === "AWS::IAM::Policy" && JSON.stringify(r.Properties.Roles).includes("BetaBuildRole"))!;
+      (policy.Properties.PolicyDocument as { Statement: unknown[] }).Statement.push(statement);
+      return { stackName: CLOUD_RELEASE_ACTIONS_STACK_NAME, template: t };
+    };
+    const bucket = `arn:aws:s3:::${SAMPLE_BUCKET}`;
+    for (const statement of [
+      { Effect: "Allow", Action: "s3:PutObject", Resource: `${bucket}/*` },
+      { Effect: "Allow", Action: "s3:PutObject", Resource: `${bucket}/AgentXProductionRele*/Source/*` },
+      { Effect: "Allow", Action: "s3:PutObject", Resource: `${bucket}/AgentXProductionRele*/Beta*` },
+      { Effect: "Allow", Action: "s3:DeleteObject", Resource: `${bucket}/AgentXProductionRele*/StateBeta*` },
+      { Effect: "Allow", Action: "s3:AbortMultipartUpload", Resource: `${bucket}/AgentXProductionRele*/Source/*` },
+      { Effect: "Allow", Action: "s3:PutObjectAcl", Resource: `${bucket}/AgentXProductionRele*/StateBeta*` },
+    ]) expect(boundaryViolations([widen(statement)], scope), JSON.stringify(statement)).toHaveLength(1);
+  });
+
+  it("the check reads a role's own Deny with NotResource, refuses it anywhere else (an Allow, or the boundary), and still refuses NotAction", () => {
+    const withStatement = (where: "role" | "boundary", statement: Record<string, unknown>): StackTemplate => {
+      const t = structuredClone(built.template) as CfnTemplate & { Resources: Record<string, Resource> };
+      const target = where === "boundary" ? t.Resources.RoleBoundary! : Object.values(t.Resources).find((r) => r.Type === "AWS::IAM::Policy" && JSON.stringify(r.Properties.Roles).includes("BetaBuildRole"))!;
+      (target.Properties.PolicyDocument as { Statement: unknown[] }).Statement.push(statement);
+      return { stackName: CLOUD_RELEASE_ACTIONS_STACK_NAME, template: t };
+    };
+    expect(() => boundaryViolations([withStatement("role", { Effect: "Deny", Action: "s3:PutObject*", NotResource: "arn:aws:s3:::x/y" })], scope)).not.toThrow();
+    expect(() => boundaryViolations([withStatement("role", { Effect: "Allow", Action: "s3:GetObject", NotResource: "arn:aws:s3:::x/y" })], scope)).toThrow(/NotAction\/NotResource/u);
+    expect(() => boundaryViolations([withStatement("role", { Effect: "Deny", NotAction: "s3:GetObject", Resource: "*" })], scope)).toThrow(/NotAction\/NotResource/u);
+    expect(() => boundaryViolations([withStatement("boundary", { Effect: "Deny", Action: "s3:PutObject*", NotResource: "arn:aws:s3:::x/y" })], scope)).toThrow(/NotAction\/NotResource/u);
+  });
+
+  it("policy sizes stay inside every limit with the longest names: the boundary (6,144) and each role's inline policy (10,240)", () => {
+    const worst = { env: "abcdefghijklmn", region: "ap-southeast-3", bucket: "b".repeat(63) };
+    const size = boundarySize(worst.env, worst.region, worst.bucket);
+    expect(size).toBeLessThan(6144);
+    // The largest the boundary may be before this stack's next statement needs the four Resource:* denies merged first (the master plan's gate).
+    expect(size).toBeLessThanOrEqual(6144 - 140);
+    // Each role's own policy, every Ref and Join resolved with the 63-character bucket and generous stand-ins for the other parameters and ARNs.
+    const resolve = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(resolve);
+      if (value === null || typeof value !== "object") return value;
+      const entries = Object.entries(value as Record<string, unknown>);
+      if (entries.length === 1) {
+        const [fn, arg] = entries[0]!;
+        if (fn === "Fn::Join") return (arg as [string, unknown[]])[1].map(resolve).join((arg as [string, unknown[]])[0]);
+        if (fn === "Ref") return ({ ArtifactBucketName: worst.bucket, "AWS::Partition": "aws", "AWS::AccountId": ACCOUNT, "AWS::Region": worst.region } as Record<string, string>)[arg as string] ?? "r".repeat(120);
+        if (fn === "Fn::GetAtt") return "g".repeat(120);
+      }
+      return Object.fromEntries(entries.map(([k, v]) => [k, resolve(v)]));
+    };
+    for (const environment of ["beta", "production"] as const) {
+      // Measured at PH-S3-PREFIXES (stand-ins as above): beta 2,178, production 5,368, against 10,240.
+      expect(iamSize(resolve(policyOf(environment))), environment).toBeLessThan(10240 - 2000);
+    }
   });
 });

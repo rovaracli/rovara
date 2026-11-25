@@ -15,6 +15,7 @@ import {
   CDK_BOOTSTRAP_ASSUMED_ROLES,
   CDK_BOOTSTRAP_QUALIFIER,
   CLOUD_BETA_RELEASE_ROLE_NAME,
+  CLOUD_STATE_ARTIFACT_PREFIXES,
   CLOUD_RELEASE_PROJECT_PREFIX,
   BETA_GATEWAY_IMAGES_PREFIX,
   PRICE_FETCH_TASK_FAMILY,
@@ -22,6 +23,7 @@ import {
   RELEASE_ACTIONS_PART,
   RELEASE_IMAGE_REPOSITORY_ACTIONS,
   applyCloudBoundary,
+  artifactKeyPattern,
   cloudPartRolePath,
   keepRoleAtRoot,
   releaseActionsDenies,
@@ -251,8 +253,16 @@ export class CloudReleaseActionsStack extends Stack {
       }));
       role.addToPolicy(new iam.PolicyStatement({
         sid: "PipelineArtifacts",
-        actions: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:GetBucketAcl", "s3:GetBucketLocation"],
+        actions: ["s3:GetObject", "s3:GetObjectVersion", "s3:GetBucketAcl", "s3:GetBucketLocation"],
         resources: [`arn:${this.partition}:s3:::${artifactBucket.valueAsString}`, `arn:${this.partition}:s3:::${artifactBucket.valueAsString}/*`],
+      }));
+      // Writes: this environment's own state artifacts and nothing else (PH-S3-PREFIXES). The bucket is not versioned, and the Source and CloudSource artifacts this build is handed are the
+      // ones the Production stage reads later: a beta build must not be able to overwrite them, nor the other environment's state, nor a Code release manifest. The explicit Deny holds even
+      // if a later change widens the Allow (NotResource: every object but the role's own prefix, so a new artifact is refused by default).
+      const ownState = artifactKeyPattern(`arn:${this.partition}:s3:::${artifactBucket.valueAsString}`, CLOUD_STATE_ARTIFACT_PREFIXES[environment]);
+      role.addToPolicy(new iam.PolicyStatement({ sid: "PipelineStateWrites", actions: ["s3:PutObject", "s3:AbortMultipartUpload"], resources: [ownState] }));
+      role.addToPolicy(new iam.PolicyStatement({
+        sid: "DenyArtifactWritesOutsideOwnState", effect: iam.Effect.DENY, actions: ["s3:PutObject*", "s3:DeleteObject*", "s3:AbortMultipartUpload"], notResources: [ownState],
       }));
       // The management account's Administrator path: no role of this stack may take it, whatever else is ever granted (BETA-RELEASE-ROLE-PREP.md 2.5).
       role.addToPolicy(new iam.PolicyStatement({
@@ -289,7 +299,7 @@ export class CloudReleaseActionsStack extends Stack {
       sid: "PriceFetchRun",
       actions: ["ecs:RunTask"],
       resources: [`arn:${this.partition}:ecs:${this.region}:${this.account}:task-definition/${PRICE_FETCH_TASK_FAMILY}*:*`],
-      conditions: { StringLike: { "ecs:cluster": clusterPattern } },
+      conditions: { ArnLike: { "ecs:cluster": clusterPattern } },
     }));
     // Exactly the schedule's two roles: RunTask can override a task's role, so a path would let the build run the price fetch image as the serving role.
     productionRole.addToPolicy(new iam.PolicyStatement({
@@ -302,7 +312,7 @@ export class CloudReleaseActionsStack extends Stack {
       sid: "PriceFetchReads",
       actions: ["ecs:DescribeTasks", "ecs:ListTasks", "ecs:DescribeServices", "ecs:ListServices"],
       resources: ["*"],
-      conditions: { StringLike: { "ecs:cluster": clusterPattern } },
+      conditions: { ArnLike: { "ecs:cluster": clusterPattern } },
     }));
     productionRole.addToPolicy(new iam.PolicyStatement({ sid: "TaskDefinitionRead", actions: ["ecs:DescribeTaskDefinition"], resources: ["*"] }));
     productionRole.addToPolicy(new iam.PolicyStatement({ sid: "PriceScheduleRead", actions: ["events:ListTargetsByRule"], resources: [`arn:${this.partition}:events:${this.region}:${this.account}:rule/*`] }));

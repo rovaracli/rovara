@@ -137,7 +137,11 @@ describe("Bedrock external ids: one scheme, and the boundary ceiling is exactly 
     expect(conditionWithin(undefined, undefined)).toBe(true);
     expect(conditionWithin({ StringNotEquals: { k: ["x", "y"] } }, { StringNotEquals: { k: ["x"] } })).toBe(true);
     expect(conditionWithin({ StringNotEquals: { k: ["y"] } }, { StringNotEquals: { k: ["x"] } })).toBe(false);
-    expect(() => conditionWithin({}, { ArnLike: { k: ["x"] } })).toThrow(/not supported/);
+    // An operator the check does not understand still refuses. ArnLike / ArnEquals are understood since PH-S3 (ARN-typed keys such as ecs:cluster) and read like StringLike / StringEquals.
+    expect(() => conditionWithin({}, { NumericLessThan: { k: ["1"] } })).toThrow(/not supported/);
+    expect(conditionWithin({ ArnLike: { k: ["arn:aws:ecs:*:*:cluster/a-*"] } }, { ArnLike: { k: ["arn:aws:ecs:*:*:cluster/a-*"] } })).toBe(true);
+    expect(conditionWithin({ ArnLike: { k: ["arn:aws:ecs:*:*:cluster/*"] } }, { ArnLike: { k: ["arn:aws:ecs:*:*:cluster/a-*"] } })).toBe(false);
+    expect(() => conditionWithin({ ArnLike: { k: ["a-b"] } }, { ArnLike: { k: ["a?b"] } })).toThrow(/uses \? in a ArnLike value/);
     expect(() => conditionWithin({ StringLike: { k: ["a-b"] } }, { StringLike: { k: ["a?b"] } })).toThrow(/uses \? in a StringLike value/);
   });
 

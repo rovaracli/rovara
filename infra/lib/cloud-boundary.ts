@@ -113,6 +113,29 @@ export function byoCustomerAssumeConditions(account: string): { StringLike: Reco
 export const GATEWAY_PROVIDER_SECRET_LOGICAL_IDS = ["ProviderKeyanthropic"] as const;
 
 /**
+ * The single release pipeline's artifact bucket layout, as far as this stack's grants depend on it (PH-S3-PREFIXES). CodePipeline stores an artifact at
+ * `<pipeline name, first 20 characters>/<artifact name, first 10 characters>/<id>`; the pipeline lives in Rovara Code, so its name and its artifact names are a contract with
+ * it (Code's release-pipeline.ts pins the same values, and a test there holds them). Nothing here reads a real run: the patterns below stay right for any truncation at or
+ * beyond those lengths and for none at all (a name longer than its limit is cut to the limit and ends in `*`), and a shorter truncation fails closed (the write is refused
+ * and the first beta run shows it). An artifact's prefix is at most ARTIFACT_KEY_NAME_CHARS long, so it is never cut: a prefix is whole in its own folder.
+ *
+ * The Cloud steps' state artifacts are named `State<Beta|Prod><Action>` (Code's cloudStateArtifactName), so that ONE short prefix tells an environment's state from every other
+ * artifact in the bucket: `Source`, `CloudSource`, `ReleaseManifest` and `BetaReleaseManifest` (a bare `Beta*` would match the last; nothing here is that wide).
+ */
+export const RELEASE_PIPELINE_NAME = "AgentXProductionRelease";
+export const ARTIFACT_KEY_PIPELINE_CHARS = 20;
+export const ARTIFACT_KEY_NAME_CHARS = 10;
+/** Every Cloud state artifact starts with this; each environment's own starts with its own prefix. The boundary caps writes at the first, the roles hold the second. */
+export const CLOUD_STATE_ARTIFACT_PREFIX = "State";
+export const CLOUD_STATE_ARTIFACT_PREFIXES: Readonly<Record<"beta" | "production", string>> = Object.freeze({ beta: "StateBeta", production: "StateProd" });
+/** The S3 resource pattern for every object under one artifact prefix of the pipeline (`<bucket ARN>/<pipeline>/<prefix>*`). */
+export function artifactKeyPattern(bucketArn: string, artifactPrefix: string): string {
+  if (artifactPrefix.length === 0 || artifactPrefix.length > ARTIFACT_KEY_NAME_CHARS || /[^A-Za-z0-9_-]/u.test(artifactPrefix)) throw new Error(`${artifactPrefix}: not an artifact prefix (1 to ${ARTIFACT_KEY_NAME_CHARS} characters of A-Z a-z 0-9 _ -)`);
+  const pipeline = RELEASE_PIPELINE_NAME.length > ARTIFACT_KEY_PIPELINE_CHARS ? `${RELEASE_PIPELINE_NAME.slice(0, ARTIFACT_KEY_PIPELINE_CHARS)}*` : RELEASE_PIPELINE_NAME;
+  return `${bucketArn}/${pipeline}/${artifactPrefix}*`;
+}
+
+/**
  * What the release actions' boundary needs from the stack's own parameters (names a stack cannot know at synth time): the single release pipeline's artifact
  * bucket (CodePipeline hands every artifact over through it) and the beta account (the beta release role's address). Strings or tokens, never read.
  */
@@ -141,9 +164,15 @@ export const PRICE_FETCH_TASK_FAMILY = "RovaraModelGatewayPriceFetchTask";
 export function releaseActionsParameterStatements(partition: string, region: string, inputs: ReleaseActionsBoundaryInputs): BoundaryStatement[] {
   return [
     {
-      // CodeBuild reads each input artifact and writes the output through the pipeline's bucket (S3-managed encryption, so no key).
-      Sid: "PipelineArtifacts", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:GetBucketAcl", "s3:GetBucketLocation"],
+      // CodeBuild reads each input artifact through the pipeline's bucket (S3-managed encryption, so no key).
+      Sid: "PipelineArtifacts", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:GetBucketAcl", "s3:GetBucketLocation"],
       Resource: [`arn:${partition}:s3:::${inputs.artifactBucketName}`, `arn:${partition}:s3:::${inputs.artifactBucketName}/*`],
+    },
+    {
+      // ... and writes its output: only a Cloud state artifact (never Source, CloudSource or a Code release manifest, which a later stage reads). The roles hold one environment's
+      // prefix each; the cap is the family. No Deny here: the boundary is nearly full (see the size test), and an Allow this narrow already refuses everything else.
+      Sid: "PipelineStateWrites", Effect: "Allow", Action: ["s3:PutObject", "s3:AbortMultipartUpload"],
+      Resource: [artifactKeyPattern(`arn:${partition}:s3:::${inputs.artifactBucketName}`, CLOUD_STATE_ARTIFACT_PREFIX)],
     },
     {
       // The beta build role's one grant: the beta release role, through which every beta write happens.
@@ -280,7 +309,7 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
         // The one-off price fetch: the schedule's own task definition, in the gateway's cluster. No overrides, no tags (the build passes none).
         Sid: "PriceFetchRun", Effect: "Allow", Action: ["ecs:RunTask"],
         Resource: [`arn:${p}:ecs:${r}:${a}:task-definition/${PRICE_FETCH_TASK_FAMILY}*`],
-        Condition: { StringLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
+        Condition: { ArnLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
       },
       {
         // Only to ECS tasks. (A task's role can be overridden at RunTask: the identity policy names the two exact roles, which a boundary by path cannot.)
@@ -289,7 +318,7 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
       },
       {
         Sid: "PriceFetchReads", Effect: "Allow", Action: ["ecs:DescribeTasks", "ecs:ListTasks", "ecs:DescribeServices", "ecs:ListServices"], Resource: ["*"],
-        Condition: { StringLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
+        Condition: { ArnLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
       },
       { Sid: "TaskDefinitionRead", Effect: "Allow", Action: ["ecs:DescribeTaskDefinition"], Resource: ["*"] },
       { Sid: "PriceScheduleRead", Effect: "Allow", Action: ["events:ListTargetsByRule"], Resource: [`arn:${p}:events:${r}:${a}:rule/*`] },
@@ -326,7 +355,7 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
 /**
  * The release actions' extra Deny statements (BETA-RELEASE-ROLE-PREP.md 2.3 and 2.5), which hold even if a later change widens an Allow: no role may assume the organization's
  * management-account Administrator path (any account), read a secret's value, or use a key other than through S3 (SSM here is plain String records; the artifact objects use the aws/s3 key), or
- * run a task with an interactive shell. The last carries a condition, which the boundary check cannot evaluate: a test pins it instead (cloud-release-actions.test.ts).
+ * run a task with an interactive shell. The last carries a condition (StringEquals on ecs:enable-execute-command, a String key), which the boundary check cannot evaluate: a test pins it instead (cloud-release-actions.test.ts).
  */
 export function releaseActionsDenies(): BoundaryStatement[] {
   return [
@@ -335,7 +364,7 @@ export function releaseActionsDenies(): BoundaryStatement[] {
     // Key use is denied everywhere except through S3: the pipeline's artifacts (read and written by CodePipeline and by the projects' own output) are encrypted with the
     // AWS-managed aws/s3 key, and S3 calls KMS as the requesting role. A direct Decrypt of any key (a customer-managed key a key policy happens to name this role on) stays denied.
     { Sid: "DenyKeyUseOutsideS3", Effect: "Deny", Action: ["kms:Decrypt", "kms:GenerateDataKey*"], Resource: ["*"], Condition: { StringNotLike: { "kms:ViaService": "s3.*.amazonaws.com" } } },
-    { Sid: "DenyExecIntoTasks", Effect: "Deny", Action: ["ecs:RunTask"], Resource: ["*"], Condition: { Bool: { "ecs:enable-execute-command": "true" } } },
+    { Sid: "DenyExecIntoTasks", Effect: "Deny", Action: ["ecs:RunTask"], Resource: ["*"], Condition: { StringEquals: { "ecs:enable-execute-command": "true" } } },
   ];
 }
 
