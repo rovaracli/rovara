@@ -50,7 +50,7 @@ describe("where it lives", () => {
   });
   it("status does not vanish when the checklist reaches 100%: the tab still says where setup stands", async () => {
     const f = mountSetupTab({ run: { ...ready, canManage: true }, row: approvedRow() });
-    expect((await card()).getByRole("heading").textContent).toBe("Setup is done. payments can run tasks.");
+    expect((await card()).getByRole("heading").textContent).toBe("Setup approved. Tasks in payments use this setup.");
     expect(screen.getByTestId("setup-run")).toBeTruthy();
     f.close();
   });
@@ -426,12 +426,15 @@ describe("this run, the extras and the limits", () => {
     expect(within(failed).getByRole("button", { name: "Read again" })).toBeTruthy();
     g.close();
   });
-  it("while a run goes, Help Rovara along (optional) holds the two expert boxes in one fold", async () => {
+  it("while a run goes, Help Rovara along (optional) holds the steer box only: no Run a command box is drawn", async () => {
     const f = mountSetupTab({ run: { status: "running", basedOnRevision: 3, canManage: true, startedAt: "2026-11-24T10:00:00.000Z", sessionId: "ses_aaaaaaaaaaaaaaaaaaaa" }, row: failedRow({ state: "running", status: "running" }) });
     const help = await screen.findByTestId("run-help");
     expect(within(help).getByText("Help Rovara along (optional)")).toBeTruthy();
     expect(within(help).getByLabelText("Tell Rovara something about this project")).toBeTruthy();
-    expect(within(help).getByLabelText("Run a command yourself")).toBeTruthy();
+    expect(within(help).queryByLabelText("Run a command yourself")).toBeNull();
+    expect(within(help).queryByRole("button", { name: "Run command" })).toBeNull();
+    expect(screen.queryByText("Run a command yourself")).toBeNull();
+    expect(f.request.mock.calls.some(([r]) => r.path.endsWith("/setup-agent/command"))).toBe(false);
     f.close();
   });
   it("Also for this project: Optional, Setup is complete without these; the rows say one line each", async () => {

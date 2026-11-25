@@ -57,7 +57,7 @@ export const CARD = Object.freeze({
   review: { title: (p: string) => `Rovara found how to set up ${p}. Review it.`, body: (found: string | undefined, tests: string | undefined, took: string | undefined) => [found, tests, took].filter((one): one is string => one !== undefined).join(" ") },
   checking: { title: "Rovara is checking the setup on a second machine", body: "It runs the setup from nothing to make sure it works every time. This can take a few minutes. Nothing is needed from you." },
   approve: { title: "The setup works. Approve it to finish.", body: (p: string) => `It passed on a second machine. Approving makes it the setup every task in ${p} uses.` },
-  verified: { title: (p: string) => `Setup is done. ${p} can run tasks.`, body: (when: string | undefined, took: string | undefined) => [when === undefined ? undefined : `Approved ${when}.`, took].filter((one): one is string => one !== undefined).join(" ") },
+  verified: { title: (p: string) => `Setup approved. Tasks in ${p} use this setup.`, body: (when: string | undefined, took: string | undefined) => [when === undefined ? undefined : `Approved ${when}.`, took].filter((one): one is string => one !== undefined).join(" ") },
   newer: { title: "A newer setup is waiting for your review", body: "The setup in use still works." },
   newerChecking: { title: "A newer setup is being checked on a second machine", body: "The setup in use still works. Nothing is needed from you." },
   failed: { title: (step: string | undefined) => step === undefined ? "Setup failed" : "Setup failed at:", safe: (p: string) => `Nothing in ${p} was changed.`, todo: "Fix the cause, then run setup again." },
@@ -151,7 +151,6 @@ export const RUN = Object.freeze({
   flagged: "Downloads and runs code (ran only on the separate machine)", couldntReach: "Couldn't reach:", output: "Output",
   help: "Help Rovara along (optional)",
   steerLabel: "Tell Rovara something about this project", steerHint: "For example, which command builds it. This guides Rovara; it can't change the limits or the allowed addresses.", steerSend: "Send to Rovara", steerSent: "Sent. Rovara reads it before its next step.",
-  commandLabel: "Run a command yourself", commandHint: "One line, no secrets. It runs on the same separate machine, and Rovara sees the result.", commandRun: "Run command", commandQueued: "Queued. It shows in the list when it has run.",
   started: (when: string) => `Started ${when}`,
 });
 

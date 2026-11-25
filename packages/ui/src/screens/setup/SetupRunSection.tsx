@@ -7,7 +7,7 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { ConfirmCard } from "./ConfirmCard.js";
 import { SetupApprovalCard } from "./SetupApprovalCard.js";
 import { PartialProposal } from "./PartialProposal.js";
-import { CommandBox, SteerBox } from "./RunControls.js";
+import { SteerBox } from "./RunControls.js";
 import { RunJournal } from "./RunJournal.js";
 import { APPROVAL_WORDS, STOP_WORDS } from "./words.js";
 import { SETUP_LOCKS } from "./limits-text.js";
@@ -15,8 +15,7 @@ import { setupAgentKey, setupAgentRefetch } from "./SetupReview.js";
 import { useHostsStopWords } from "./useHostsStopWords.js";
 
 /**
- * Setup with a run (SH15, behind the `su` switch): Rovara runs the project's own commands in a throw-away sandbox, the page shows what it ran and which addresses it asked for, a maintainer can steer it or run a
- * command, and "Use this setup" proposes what worked. With the switch off the server answers "not found" and this shows nothing at all.
+ * Setup with a run (SH15, behind the `su` switch): Rovara runs the project's own commands in a throw-away sandbox, the page shows what it ran and which addresses it asked for, a maintainer can steer it, and "Use this setup" proposes what worked. With the switch off the server answers "not found" and this shows nothing at all.
  */
 export default function SetupRunSection({ project, settingsRevision, onDecided }: { project: string; settingsRevision: number; /** A candidate was approved (the project's settings changed): the page reads the project again. */ onDecided?: () => void }) {
   const api = useSetupAgentApi();
@@ -59,7 +58,6 @@ export default function SetupRunSection({ project, settingsRevision, onDecided }
     {running && <Button variant="danger" busy={busy === "stop"} onClick={() => { void act("stop"); }}>Stop</Button>}
     {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
     {running && view.sessionId !== undefined && <SteerBox sessionId={view.sessionId} />}
-    {running && <CommandBox project={project} onRan={() => { void client.invalidateQueries({ queryKey: ["onboard", "setup-journal", project] }); }} />}
     {view.status !== "none" && <RunJournal project={project} running={running} />}
     {view.status === "failed" && view.stop === "stopped_by_person" && view.proposal !== undefined && view.stoppedBy !== undefined && <PartialProposal view={{ ...view, proposal: view.proposal, stoppedBy: view.stoppedBy }} />}
     {decided !== undefined && apply === undefined && <p role="status" data-testid="setup-decided">{APPROVAL_WORDS[decided]}</p>}
