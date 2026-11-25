@@ -20,7 +20,18 @@ The task token authorizes admission only: its `exp` does not stop an admitted ca
 
 ## Stream and key-cache behavior (Round 2 fix)
 
-An ended-task record is keyed by issuer, company and task. Admission checks it, then streaming rechecks it before each chunk and every second while idle. A failed check aborts the stream under the same total call deadline. Ended notices, disconnects and deadlines still stop the transport; a post-send abort settles the full hold under the existing fault rule. No notice endpoint is introduced.
+An ended-task record is keyed by issuer, company and task. Admission checks it, then streaming rechecks it before each chunk and every second while idle. A failed check aborts the stream under the same total call deadline. Ended notices, disconnects and deadlines still stop the transport; a post-send abort settles the full hold under the existing fault rule.
+
+The record is written by Code's task-ended notice (`task-ended-notice.ts`; before it, nothing wrote the record, so no task counted as ended):
+
+| Request | Body | Answer |
+|---|---|---|
+| `POST /v1/service/task-ended`, `authorization: Bearer <service token>` (`typ rovara-service+jwt`, `aud "rovara-model-gateway-task-ended"`, `cid` = the company that owns the task, signed by the install's task key) | exactly `{"company","task"}` | `200` exactly `{"company","task","ended":true}`, the first notice and every repeat alike |
+
+- Keyed `CO#[iss,cid]` / `ENDED#<task>` in the markers table, written once by a put that only applies where no row exists: a repeat notice changes nothing (not even the expiry) and nothing un-ends a task. The row carries `expiresAt` (DynamoDB TTL), seven days after the notice; a task token lives 900 seconds and a call at most one hour, so no call of an ended task can outlive it.
+- A body naming another company than the token's `cid` is `403` (fixed words), logged as `task_ended_notice` outcome `refused` reason `company_mismatch` (no ids), and writes nothing. The record is in the notifying company's partition, so a notice can only end that company's tasks. The gateway holds no table of tasks: an unknown task is recorded too (a task closed before its first call must stop that call).
+- `401` unsigned (another audience, a task token, `x-api-key`), `400` body not exactly the contract or a task id that is not one, `413`, `405`, `429`, and `503` when the row cannot be written (the sender sends the notice again). Nothing from the request is echoed or logged.
+- Calls already admitted are not exempt: the stream recheck above stops them at their next chunk (or within a second when idle), and they settle once under the existing aborted-call rule. Learning and answers calls (`stopsWithTask: false`) and the product hold release are not stopped by the record.
 
 Provider HTTP 429 and 529 heads are explicit rejections before output is received. They use the existing not-sent/rejected accounting outcome: **zero input and zero output**, `estimated: false`. The response body is neither consumed nor forwarded; the client gets the fixed provider error. Other non-2xx heads and faults after an accepted response retain the existing full-hold rule.
 
@@ -62,7 +73,7 @@ Use exactly one egress alternative. Rounded totals: **$54–$67/month with publi
 
 ## Not built
 
-Infra/deployment/TLS/IAM, DynamoDB adapter, company provider-key store, live model-limit table, production price/correction wiring, product-AI/F1-d route, OpenAI routes, Bedrock, Vertex, signed task-ended notices/sender, budget settings, application integration and a hold reaper. No dependencies or lockfile changes, no AWS, and no changes to Cloud's existing server or Code engine. The R3c lane report records its early DNS test-harness incident and subsequent fixes.
+Infra/deployment/TLS/IAM, DynamoDB adapter, company provider-key store, live model-limit table, production price/correction wiring, product-AI/F1-d route, OpenAI routes, Bedrock, Vertex, the task-ended sender in Code (the notice receiver is built, see above), budget settings, application integration and a hold reaper. No dependencies or lockfile changes, no AWS, and no changes to Cloud's existing server or Code engine. The R3c lane report records its early DNS test-harness incident and subsequent fixes.
 
 ## R3c: live prices and correction (review required before use)
 
