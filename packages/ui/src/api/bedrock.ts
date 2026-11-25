@@ -1,6 +1,7 @@
 import { z } from "zod";
 const time = z.number().int().nonnegative().max(8_640_000_000_000_000);
-const model = z.object({ name: z.string(), id: z.string(), state: z.enum(["ready", "not_enabled", "refused", "not_found", "no_quota", "unavailable"]) });
+// A model state this page does not know yet (the words are added over time) is read as text and shown in generic words, never a failed read.
+const model = z.object({ name: z.string(), id: z.string(), state: z.string() });
 export const bedrockView = z.object({ revision: z.number().int().nonnegative(), canChange: z.boolean(),
  connection: z.object({ connected: z.boolean(), connectedAt: time, updatedAt: time, refusedAt: time.optional(), roleArn: z.string(), region: z.string(), allowGlobal: z.boolean(), checkedAt: time, models: z.array(model), productModels: z.array(z.object({ id: z.string(), state: z.string() })), notEnabledSteps: z.string().optional(), quotaSteps: z.string().optional() }).nullable(),
  removedUntil: time.nullable(), usage: z.string() });

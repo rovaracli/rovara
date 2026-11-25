@@ -10,6 +10,7 @@
 //   PUT    /org/bedrock                    {requestId, expectedRevision, roleArn, region, models, allowGlobal}: test and save
 //   DELETE /org/bedrock                    {requestId, expectedRevision}: remove (7-day recovery window in the store)
 //   POST   /org/bedrock/recover            {requestId, expectedRevision}: undo a removal inside that window (same role, same claim)
+//   POST   /org/bedrock/check              {requestId, expectedRevision}: run the connection test again for the SAVED connection (Check again)
 //
 // Who: company admins only (Code's access check made now), reads included. A change goes through the
 // app's signed-write path. Each saved change is audited. The agents use the connection only when the admin also picks "your own
@@ -44,6 +45,11 @@ const PRODUCT_MODEL_ID = /^(?:(?:us|eu|apac|jp|au|ca)\.)?[a-z][a-z0-9-]{1,30}\.[
 const PRODUCT_MODELS_MAX = 8;
 const BODY_BYTES_MAX = 4_096;
 const MODELS_MAX = 8;
+/** "Check again" asks AWS (the customer's account) at most once per this long per company: a button can't be used to hammer it. */
+export const BEDROCK_CHECK_GAP_MS = 30_000;
+const MAX_TRACKED_COMPANIES = 5_000;
+/** When each company's last "Check again" reached AWS, per store (this process): a try that failed counts too. The saved checkedAt covers the other processes; the gateway's per-company limit (service-call.ts BEDROCK_CHECK_COMPANY_PER_MINUTE) covers every container and PUT /org/bedrock. */
+const lastTry = new WeakMap<object, Map<string, number>>();
 const ok = (body: unknown): RouteAnswer => ({ status: 200, body });
 const refusal = (status: number, code: string, message: string): RouteAnswer => ({ status, body: { error: { code, message } } });
 /** Shown when a model is picked but not enabled yet in the company's AWS account. */
@@ -62,6 +68,7 @@ export const BEDROCK_WORDS = Object.freeze({
   refused: refusal(400, "CONFIG_INVALID", "AWS refused Rovara for this role. Check the role ARN, and that the role was created with the setup command, then test again."),
   inUse: refusal(409, "CONFLICT", "This AWS role is already connected to another Rovara company. Create a role for this company with the setup command."),
   unavailable: refusal(503, "RUNTIME_UNAVAILABLE", "The Bedrock connection is unavailable right now. Nothing was saved. Try again."),
+  tooSoon: refusal(429, "RATE_LIMITED", "Bedrock was checked a moment ago. Wait about 30 seconds, then check again."),
 });
 /** The store's codes in this page's words (the project routes use them too). */
 export const BEDROCK_ANSWERS: Partial<Record<ProductAiErrorCode | "aws_too_open" | "aws_refused" | "role_in_use", RouteAnswer>> = {
@@ -195,6 +202,37 @@ async function putBedrock(context: RouteContext): Promise<RouteAnswer> {
   return ok(view(v));
 }
 
+/**
+ * Check again: the connection test for the SAVED connection, and the new states and time saved. Same permission as connecting (admin(): a
+ * company owner or admin, never an install administrator flag), same signed write path (requestId and expectedRevision), at most one run per
+ * BEDROCK_CHECK_GAP_MS per company. Nothing about the connection changes.
+ */
+async function checkBedrock(context: RouteContext): Promise<RouteAnswer> {
+  const who = await admin(context);
+  if ("status" in who) return who;
+  if (Buffer.byteLength(JSON.stringify(context.body) ?? "", "utf8") > BODY_BYTES_MAX) return BEDROCK_WORDS.tooLarge;
+  const body = record(context.body);
+  if (body === undefined || !exactly(body, ["requestId", "expectedRevision"]) || typeof body.requestId !== "string" || !UUID.test(body.requestId) || !whole(body.expectedRevision)) return BEDROCK_WORDS.invalid;
+  const backend = context.productAi!;
+  const current = await guarded(() => backend.store.view(backend.issuer, who.companyId, BEDROCK_OWNER));
+  if ("status" in current) return current;
+  const source = current.sources.find((s) => s.sourceId === BEDROCK_SOURCE_ID && s.provider === "bedrock" && s.hasKey && s.bedrock !== undefined);
+  if (source === undefined) return BEDROCK_WORDS.notFound;
+  const at = context.now().getTime();
+  const tries = lastTry.get(backend.store) ?? new Map<string, number>(); lastTry.set(backend.store, tries);
+  const last = Math.max(source.bedrock!.checkedAt, tries.get(who.companyId) ?? 0);
+  if (at - last < BEDROCK_CHECK_GAP_MS) return BEDROCK_WORDS.tooSoon;
+  while (tries.size >= MAX_TRACKED_COMPANIES) { const oldest = tries.keys().next(); if (oldest.done === true) break; tries.delete(oldest.value); }
+  const before = tries.get(who.companyId);
+  tries.set(who.companyId, at);
+  const v = await guarded(() => backend.store.recheckBedrock({ iss: backend.issuer, cid: who.companyId, owner: BEDROCK_OWNER, requestId: body.requestId as string, expectedRevision: body.expectedRevision as number, actor: { id: who.developerId, role: "company_admin" }, sourceId: BEDROCK_SOURCE_ID }));
+  // The 30 seconds are spent only once the store took the change as far as AWS: a stale revision (two tabs) or a connection that vanished never reached it.
+  if (v === BEDROCK_WORDS.stale || v === BEDROCK_WORDS.notFound || v === BEDROCK_WORDS.invalid) { if (before === undefined) tries.delete(who.companyId); else tries.set(who.companyId, before); }
+  if ("status" in v) return v;
+  await audited(context, who, "agent_ai.bedrock.checked");
+  return ok(view(v));
+}
+
 async function removeBedrock(context: RouteContext): Promise<RouteAnswer> {
   const who = await admin(context);
   if ("status" in who) return who;
@@ -239,4 +277,5 @@ export const BEDROCK_BYO_ROUTES: Route[] = [
   { method: "PUT", path: /^\/org\/bedrock$/u, answer: putBedrock },
   { method: "DELETE", path: /^\/org\/bedrock$/u, answer: removeBedrock },
   { method: "POST", path: /^\/org\/bedrock\/recover$/u, answer: recoverBedrock },
+  { method: "POST", path: /^\/org\/bedrock\/check$/u, answer: checkBedrock },
 ];

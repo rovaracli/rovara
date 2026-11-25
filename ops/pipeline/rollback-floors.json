@@ -31,6 +31,24 @@
       "sha": "debd9aa1bebc550ecf10a0eb8d35d22f0f96a68c",
       "when": "Code train 27 is live in the environment",
       "reason": "Cloud never goes below v0.13.19 once Code train 27 is live"
+    },
+    {
+      "group": "web",
+      "tag": "BEDROCK-BYO-CHECK-FIXES",
+      "when": "the Cloud release with BEDROCK-BYO-CHECK-FIXES is merged: set sha to its merge commit and move this row to floors.web (the web Lambda builds the store from the same package)",
+      "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
+    },
+    {
+      "group": "gateway",
+      "tag": "BEDROCK-BYO-CHECK-FIXES",
+      "when": "the Cloud release with BEDROCK-BYO-CHECK-FIXES is merged: set sha to the Cloud commit whose gateway source carries it and move this row to floors.gateway (the gateway process reads the same documents)",
+      "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
+    },
+    {
+      "group": "code",
+      "tag": "BEDROCK-BYO-CHECK-FIXES",
+      "when": "the Code release with BEDROCK-BYO-CHECK-FIXES is merged: set sha to its merge commit and move this row to floors.code (Code's gateway copy reads the same documents)",
+      "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
     }
   ]
 }

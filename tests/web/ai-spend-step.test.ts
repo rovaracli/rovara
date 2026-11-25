@@ -170,6 +170,7 @@ describe("the company step, AI and spending", () => {
    expect(screen.getByTestId("ai-spend-rovara").querySelector<HTMLInputElement>("input")!.checked).toBe(true);
    fireEvent.click(screen.getByText("Connect company AI"));
    const card = within(screen.getByRole("region", { name: "Your own Bedrock" }));
+   fireEvent.change(await card.findByLabelText("Bedrock region"), { target: { value: "us-west-2" } });
    fireEvent.click(await card.findByRole("button", { name: "Load Bedrock models" }));
    fireEvent.click(await card.findByLabelText("claude-haiku-4-5"));
    fireEvent.change(card.getByLabelText("Bedrock role ARN"), { target: { value: roleArn } });

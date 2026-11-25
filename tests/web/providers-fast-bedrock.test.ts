@@ -84,7 +84,7 @@ it("shows the server's returned connection rather than the requested draft", asy
   if (r.path === "/v1/app/org/bedrock") return { status: 200, body: r.method === "PUT" ? connectedBedrock : emptyBedrock };
   return undefined;
  } });
- try { const card = await form(); fireEvent.click(await within(card).findByRole("button", { name: "Load Bedrock models" })); fireEvent.click(await within(card).findByLabelText("claude-haiku-4-5")); fireEvent.change(within(card).getByLabelText("Bedrock role ARN"), { target: { value: "arn:aws:iam::999999999999:role/RovaraBedrockInvoke-requested" } }); fireEvent.click(within(card).getByRole("button", { name: "Check and save Bedrock" })); await within(card).findByText(connectedBedrock.connection.roleArn); expect(within(card).queryByText(/Connection saved/u)).toBeNull(); } finally { f.close(); localStorage.clear(); }
+ try { const card = await form(); fireEvent.change(await within(card).findByLabelText("Bedrock region"), { target: { value: "us-west-2" } }); fireEvent.click(await within(card).findByRole("button", { name: "Load Bedrock models" })); fireEvent.click(await within(card).findByLabelText("claude-haiku-4-5")); fireEvent.change(within(card).getByLabelText("Bedrock role ARN"), { target: { value: "arn:aws:iam::999999999999:role/RovaraBedrockInvoke-requested" } }); fireEvent.click(within(card).getByRole("button", { name: "Check and save Bedrock" })); await within(card).findByText(connectedBedrock.connection.roleArn); expect(within(card).queryByText(/Connection saved/u)).toBeNull(); } finally { f.close(); localStorage.clear(); }
 });
 
 for (const status of [202, 408, 429, 500]) it(`keeps an ambiguous ${status} removal locked after checking an unchanged revision`, async () => {
@@ -154,6 +154,7 @@ for (const method of ['PUT', 'DELETE', 'POST'] as const) it.each([
  try {
   const card = await form();
   if (method === 'PUT') {
+   fireEvent.change(await within(card).findByLabelText('Bedrock region'), { target: { value: 'us-west-2' } });
    fireEvent.click(await within(card).findByRole('button', { name: 'Load Bedrock models' }));
    fireEvent.click(await within(card).findByLabelText('claude-haiku-4-5'));
    fireEvent.change(within(card).getByLabelText('Bedrock role ARN'), { target: { value: 'arn:aws:iam::123456789012:role/RovaraBedrockInvoke-fixture' } });

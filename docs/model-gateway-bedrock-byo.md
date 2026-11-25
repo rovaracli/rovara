@@ -55,11 +55,30 @@ Slice 1 is agents; slice 2 (the product route, below) is the customer's tests. L
   the call path it is the fixed 503, never shown as "AWS refused".
 - Two canaries must be refused: the real session name with a canary company's external id, and a canary session name with the
   real external id. If either works, the role is **too open** and nothing is saved.
-- Each picked model gets one **$0 check**: an InvokeModel with `max_tokens: 0`, which IAM authorises and Bedrock rejects as
-  invalid. `ValidationException` means ready; `AccessDeniedException` with Bedrock's model-access words means **not enabled yet**
+- Each picked model gets one **check that generates nothing**: an InvokeModel with `max_tokens: 0`. **Verified live on 2026-11-25** (the owner's call in their own
+  Bedrock account, Region us-east-1, profile `us.anthropic.claude-haiku-4-5-20251001-v1:0`): AWS answers HTTP 200 with
+  `{"type":"message","content":[],"stop_reason":"max_tokens","usage":{"input_tokens":8,"output_tokens":0}}` (0 output tokens; about 8 input tokens billed). That exact
+  answer is the test fixture (`tests/fixtures/model-gateway-bedrock/invoke-max-tokens-0-haiku-4-5.json`). Any Messages response (`type` "message" with a `content` list, whatever its
+  `stop_reason`) counts as **ready**: only Haiku 4.5's `max_tokens` stop was seen live, and another Claude model that stops otherwise must not read "check again" forever; a `ValidationException` (HTTP 400) is still read as ready (IAM and model access passed before validation);
+  `AccessDeniedException` with Bedrock's model-access words means **not enabled yet**
   (Settings shows the steps: open the model once in the Bedrock console as an AWS admin with Marketplace rights; for Anthropic
   models before Claude Opus 4.7, submit the use-case form); any other AccessDenied means the role may not call that model; an
-  unknown id is not found. A model the test did not answer is shown as unavailable, never as ready.
+  unknown id is not found. For a non-Claude model the same check goes through Converse (`maxTokens: 0`) or, for Titan embeddings, an empty input; their 2xx answers
+  (`stopReason`, `embedding`) are read as ready but were not seen live.
+- **AWS did not answer** (`no_answer`): a 5xx, a failed or timed-out call (5 seconds), a 2xx that is not a Messages answer, or any other status (401, 408, 413, 424 and so on are
+  not asked again). A 5xx or failed call is asked once more (the check changes nothing and bills about 8 input tokens), only while a whole 5-second ask still fits in the probe's
+  22-second budget (Cloud waits 25); if it is still so, the model is `no_answer`, shown as "AWS did not answer, check again". It says nothing about the model
+  and is never shown as "unavailable" (a model state). Readers that do not know the word show generic words, and a stored document that holds a state word this release
+  does not know is still read (the word reads as `no_answer`). **Releases before `no_answer` reject the whole company document** that holds it (settings, the agents'
+  own-Bedrock calls and every project that links to it), so ops/pipeline/rollback-floors.json holds pending floors for the web, gateway and Code groups: the controller sets
+  their shas when this merges and moves them into `floors`.
+- Every model check logs one line (`bedrock_model_check`: company id, model id, attempt, HTTP status, Bedrock's error type, the result): never AWS's message words, an account
+  id or an ARN. The company id is Rovara's own `org_*` id, so a line can be tied to a company. A 5xx or failed first ask logs "retry" and then the second ask.
+- **Check again** (`POST /org/bedrock/check`, a company owner or admin like connecting, audited as `agent_ai.bedrock.checked`) runs this test again for the saved
+  connection and saves the new states and time, without touching the key or the role claim. Limits: the route allows one run per 30 seconds
+  per company (from the saved time and this process's last try; a stale revision or a vanished connection does not spend it), and the gateway's check handler allows each
+  company one probe at a time and 6 a minute (`BEDROCK_CHECK_COMPANY_PER_MINUTE`), for Check again and for connect and rotate alike, so one company can't use up the task-wide room
+  or its own AWS account for others. Over the gateway limit, Cloud says "unavailable, nothing was saved" for that company only. A good re-check also clears a call-time refusal marker.
 - A **throttle** (HTTP 429, or Bedrock's `ThrottlingException` / `ServiceQuotaExceededException` named first by the transport) on that check is **no_quota**:
   a model whose tokens-per-minute quota in the account is 0 throttles every call, even this one. Settings shows "not usable right now (AWS quota is 0 or used
   up)" and what to do (choose another model, or ask AWS to raise the quota in Service Quotas, then test again). It never stops a connection, and a busy account
@@ -93,9 +112,10 @@ Slice 1 is agents; slice 2 (the product route, below) is the customer's tests. L
 
 ## Not verified yet (owner checks)
 
-- That Bedrock checks model access BEFORE it validates `max_tokens` (the $0 check's order). If not, a "ready" model may still
-  answer "not enabled yet" on its first real call (free, and shown in those words). DEC 238 Q9 allows a test call under $0.001 if
-  the $0 check proves unreliable.
+- That Bedrock checks model access BEFORE it answers the `max_tokens: 0` check, for a model that is NOT enabled in the account. Seen live only for an enabled
+  Claude profile (HTTP 200). A not-enabled model is classified from its 403 words (unit-tested, not yet seen live). If Bedrock answered 200 there too, a "ready"
+  model could still answer "not enabled yet" on its first real call (free, shown in those words).
+- The 2xx answers of the Converse and Titan embedding checks (non-Claude models): the shapes read as ready were taken from AWS's documentation, not from a live call.
 - That `sts:ExternalId` is evaluated in the broker's identity policy (AWS documents it for trust policies). If not, calls fail
   closed; the fix is to drop that condition (the customer's trust policy still requires the external id).
 - Whether global profiles are priced above the Regional rows for the newest Claude models (global is off by default).

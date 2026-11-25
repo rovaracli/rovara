@@ -251,7 +251,8 @@ describe("recording a Cloud action", () => {
 
   it("knows exactly the Cloud actions the plan names, each recordable, and refuses any other action", async () => {
     expect([...CLOUD_AUDIT_ACTIONS].sort()).toEqual([
-      "agent_ai.bedrock.connected", "agent_ai.bedrock.recovered", "agent_ai.bedrock.removed", "agent_ai.bedrock.rotated",
+      // "agent_ai.bedrock.checked" was added on purpose (BEDROCK-BYO-CHECK-FIXES): Check again makes calls into the customer's AWS account, so the company audit says who ran it.
+      "agent_ai.bedrock.checked", "agent_ai.bedrock.connected", "agent_ai.bedrock.recovered", "agent_ai.bedrock.removed", "agent_ai.bedrock.rotated",
       "agent_ai.endpoint.connected", "agent_ai.endpoint.removed", "agent_ai.endpoint.rotated",
       "agent_ai.source.changed",
       "company.budget.changed", "company.invite.created", "company.invite.revoked", "company.rules.changed", "company.rules.proposed", "company.rules.withdrawn", "company.signin_client.changed",
