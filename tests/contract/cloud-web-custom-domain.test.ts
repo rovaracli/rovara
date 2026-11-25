@@ -46,9 +46,9 @@ describe("Cloud web: its own name (CustomDomainName)", () => {
     for (const good of ["", "app.rovara.dev", "a-b.c1.example.io"]) expect(name.test(good), good).toBe(true);
     for (const bad of ["https://app.rovara.dev", "app.rovara.dev/", "App.Rovara.com", "app", "app.rovara.dev.", "-x.rovara.com", "app.rovara.dev:443"]) expect(name.test(bad), bad).toBe(false);
     const certificate = new RegExp(String(t.Parameters[CLOUD_CUSTOM_CERTIFICATE_PARAMETER]!.AllowedPattern), "u");
-    expect(certificate.test("arn:aws:acm:us-east-1:944937319445:certificate/980ddf3f-b004-4f3b-ae97-3a478e8d93a1")).toBe(true);
+    expect(certificate.test("arn:aws:acm:us-east-1:123456789012:certificate/980ddf3f-b004-4f3b-ae97-3a478e8d93a1")).toBe(true);
     expect(certificate.test("")).toBe(true);
-    expect(certificate.test("arn:aws:acm:us-west-2:944937319445:certificate/980ddf3f-b004-4f3b-ae97-3a478e8d93a1")).toBe(false);
+    expect(certificate.test("arn:aws:acm:us-west-2:123456789012:certificate/980ddf3f-b004-4f3b-ae97-3a478e8d93a1")).toBe(false);
   });
 
   it("answers the name with the certificate when set, CloudFront's own certificate otherwise", () => {

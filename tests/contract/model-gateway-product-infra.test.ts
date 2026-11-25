@@ -181,7 +181,7 @@ function decide(statements: readonly PolicyStatementJson[], action: string, reso
   if (statements.some((s) => s.Effect === "Deny" && hit(s) && denyApplies(s))) return "denied";
   return statements.some((s) => s.Effect === "Allow" && hit(s)) ? "allowed" : "implicit";
 }
-const scope = { env: "staging", partition: "aws", region: "us-west-2", account: "944937319445", artifactBucketArn: "arn:aws:s3:::agentx-staging-artifacts", pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation" };
+const scope = { env: "staging", partition: "aws", region: "us-west-2", account: "123456789012", artifactBucketArn: "arn:aws:s3:::agentx-staging-artifacts", pullThroughPrefix: "agentx-staging", cloudFormationRoleName: "agentx-staging-cloudformation" };
 const role = serviceRoleStatements(scope); const boundary = defaultBoundaryStatements(scope);
 const effective = (action: string, resource: string, context: Record<string, string | undefined> = {}) => {
   const a = decide(role, action, resource, context); const b = decide(boundary, action, resource, context);
@@ -197,17 +197,17 @@ const PRODUCT_DEPLOY_ACTIONS = {
 
 describe("deploy role and permission boundary (offline simulation; the live one is a staging row)", () => {
   it("allows every new DynamoDB, KMS and ECS action through both the agentx deploy role and its default boundary", () => {
-    const tableArn = "arn:aws:dynamodb:us-west-2:944937319445:table/rovara-cloud-staging-gateway-ProductKeys-ABC";
+    const tableArn = "arn:aws:dynamodb:us-west-2:123456789012:table/rovara-cloud-staging-gateway-ProductKeys-ABC";
     for (const action of PRODUCT_DEPLOY_ACTIONS.tables) expect([action, effective(action, tableArn)]).toEqual([action, "allowed"]);
-    for (const action of PRODUCT_DEPLOY_ACTIONS.keys) expect([action, effective(action, action === "kms:CreateKey" ? "*" : "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-000000000000")]).toEqual([action, "allowed"]);
+    for (const action of PRODUCT_DEPLOY_ACTIONS.keys) expect([action, effective(action, action === "kms:CreateKey" ? "*" : "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-000000000000")]).toEqual([action, "allowed"]);
     for (const action of PRODUCT_DEPLOY_ACTIONS.service.filter((a) => a.startsWith("ecs:"))) expect([action, effective(action, "*")]).toEqual([action, "allowed"]);
   });
   it("records the known gap: the gateway's roles (root path, no permission boundary) are refused to the agentx deploy role", () => {
     // Every role in the gateway stack (the serving and price roles before this change, the Vertex role now) is CDK-named at the
     // root path with no boundary: the agentx deploy role may only manage this environment's path-scoped, boundary-carrying
     // roles. So the gateway stack deploys with the CDK bootstrap execution role (docs/model-gateway-product-ai.md "Deployed").
-    const vertexRole = "arn:aws:iam::944937319445:role/rovara-cloud-staging-gateway-VertexFederationRole-ABC";
+    const vertexRole = "arn:aws:iam::123456789012:role/rovara-cloud-staging-gateway-VertexFederationRole-ABC";
     expect(effective("iam:CreateRole", vertexRole)).not.toBe("allowed");
-    expect(effective("iam:PutRolePolicy", "arn:aws:iam::944937319445:role/rovara-cloud-staging-gateway-ServeTaskRole-ABC")).not.toBe("allowed");
+    expect(effective("iam:PutRolePolicy", "arn:aws:iam::123456789012:role/rovara-cloud-staging-gateway-ServeTaskRole-ABC")).not.toBe("allowed");
   });
 });

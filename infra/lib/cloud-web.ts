@@ -26,6 +26,7 @@ import type { Construct } from "constructs";
 import { join, resolve } from "node:path";
 import { PRODUCTION_SOURCE_KINDS_REFUSAL, RESOURCE_PREFIX, environmentSettingsPrefix, productionSourceKindsAllowed } from "@agentx/contracts";
 import { applyCloudBoundary } from "./cloud-boundary.js";
+import { addDeployedCloudSha } from "./deployed-cloud-sha.js";
 import { CLOUD_APP_CALLBACK_PATH, CLOUD_APP_CLIENT_ID, CLOUD_APP_SCOPES, signInKey } from "./cloud-app.js";
 
 /**
@@ -422,6 +423,7 @@ export class CloudWebStack extends Stack {
     new CfnOutput(this, "TableName", { value: table.tableName });
     new CfnOutput(this, "CompanyTableName", { value: companies.tableName });
     if (props.productAi === true) new CfnOutput(this, "ServerRoleArn", { value: server.role!.roleArn, description: "The model gateway stack's CloudSettingsRoleArn: this role seals product keys" });
+    addDeployedCloudSha(this);
     // Last, so the template keeps its section order; the aspect puts it on every role at synth (cloud-boundary.ts).
     applyCloudBoundary(this, env, "web", meterTableArn);
   }

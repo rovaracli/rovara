@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "about": "The protected-resource list of the Cloud pipeline's `protected` gate (L3; BETA-CLOUD-PLAN section 4, C9). A change set that Removes, or Replaces (Replacement True or Conditional), a resource listed here fails the gate. `parts` is per stack part: logical id -> its resource type (a test synthesizes the real stacks and fails when an id is missing or has another type, so a renamed construct can never silently drop out). Beyond the list, `statefulTypes` is a backstop: a Remove or Replacement of ANY resource of those types fails, listed or not, so a new or renamed stateful resource is protected before anyone remembers to list it. `dataRewrites` names, per resource type, the properties whose in-place change rewrites or drops data (a secret's GenerateSecretString regenerates the hand-put value, a table's Replicas removal drops a copy, a key's KeySpec/KeyUsage): a Modify of a listed or stateful resource that changes one fails, judged from the change set's property details (names only); a row of those types that carries NO details fails closed (an empty details list counts as present). AttributeDefinitions is not listed: a new index changes it in place without data loss, and a KeySchema change already shows as a replacement. `imageRows` are the only rows an image-only gateway change may touch (plus the CDK metadata line). Logical ids only, no values.",
+  "parts": {
+    "web": {
+      "State1C20CC9A": "AWS::DynamoDB::GlobalTable",
+      "CompaniesAF68172A": "AWS::DynamoDB::GlobalTable",
+      "Assets9A31D427": "AWS::S3::Bucket",
+      "Distribution830FAC52": "AWS::CloudFront::Distribution",
+      "SignInKey10D719B2": "AWS::KMS::Key",
+      "ServerServiceRole3DA1B1D6": "AWS::IAM::Role"
+    },
+    "app": {
+      "CodeClientSecretE7B5CF94": "AWS::SecretsManager::Secret"
+    },
+    "gateway": {
+      "MeterFF56B2C9": "AWS::DynamoDB::GlobalTable",
+      "LedgerB7379752": "AWS::DynamoDB::GlobalTable",
+      "Markers641E0E25": "AWS::DynamoDB::GlobalTable",
+      "PricesEF2AB66A": "AWS::DynamoDB::GlobalTable",
+      "ProductKeys518BAD1E": "AWS::DynamoDB::GlobalTable",
+      "ProductMeterD13BFAA7": "AWS::DynamoDB::GlobalTable",
+      "ProductLedgerE242E3E7": "AWS::DynamoDB::GlobalTable",
+      "ProductMarkersE6119A3F": "AWS::DynamoDB::GlobalTable",
+      "LearningMeter3B321F5B": "AWS::DynamoDB::GlobalTable",
+      "LearningLedger85795E70": "AWS::DynamoDB::GlobalTable",
+      "LearningMarkers0B684C98": "AWS::DynamoDB::GlobalTable",
+      "AnswersMeter11B0BE67": "AWS::DynamoDB::GlobalTable",
+      "AnswersLedger35A363A9": "AWS::DynamoDB::GlobalTable",
+      "AnswersMarkers1E8A3C91": "AWS::DynamoDB::GlobalTable",
+      "EvalStages4B49C2F8": "AWS::DynamoDB::GlobalTable",
+      "ProviderKeysKey3EF4ADE0": "AWS::KMS::Key",
+      "ProductKeysKey3D2EA306": "AWS::KMS::Key",
+      "ProductKeysMacKey82416FCB": "AWS::KMS::Key",
+      "BedrockExternalIdKey85A8D0A1": "AWS::KMS::Key",
+      "ProviderKeyanthropic": "AWS::SecretsManager::Secret",
+      "LoadBalancerBE9EEC3A": "AWS::ElasticLoadBalancingV2::LoadBalancer",
+      "LoadBalancerHttps0C5C99D2": "AWS::ElasticLoadBalancingV2::Listener",
+      "Vpc8378EB38": "AWS::EC2::VPC",
+      "VertexFederationRoleF5D9F2D9": "AWS::IAM::Role",
+      "BedrockBrokerRoleEF230DEA": "AWS::IAM::Role"
+    },
+    "gatewayImages": {
+      "Images2D38C313": "AWS::ECR::Repository"
+    }
+  },
+  "statefulTypes": [
+    "AWS::DynamoDB::GlobalTable",
+    "AWS::DynamoDB::Table",
+    "AWS::KMS::Key",
+    "AWS::S3::Bucket",
+    "AWS::SecretsManager::Secret",
+    "AWS::ECR::Repository",
+    "AWS::CloudFront::Distribution",
+    "AWS::ElasticLoadBalancingV2::LoadBalancer",
+    "AWS::EC2::VPC"
+  ],
+  "dataRewrites": {
+    "AWS::SecretsManager::Secret": ["GenerateSecretString", "SecretString"],
+    "AWS::DynamoDB::GlobalTable": ["Replicas", "KeySchema"],
+    "AWS::KMS::Key": ["KeySpec", "KeyUsage", "Origin", "MultiRegion", "CustomerMasterKeySpec"]
+  },
+  "imageRows": [
+    { "resourceType": "AWS::ECS::TaskDefinition", "logicalIdPattern": "^ServeTask[0-9A-F]{8}$" },
+    { "resourceType": "AWS::ECS::TaskDefinition", "logicalIdPattern": "^PriceFetchTask[0-9A-F]{8}$" },
+    { "resourceType": "AWS::ECS::Service", "logicalIdPattern": "^Service[0-9A-F]{8}$" },
+    { "resourceType": "AWS::Events::Rule", "logicalIdPattern": "^PriceFetchSchedule[0-9A-F]{8}$" },
+    { "resourceType": "AWS::IAM::Policy", "logicalIdPattern": "^PriceFetchTaskEventsRoleDefaultPolicy[0-9A-F]{8}$" }
+  ],
+  "imageOnlyPaths": ["infra", "packages/contracts", "ops/pipeline/switches.json", "package-lock.json"]
+}

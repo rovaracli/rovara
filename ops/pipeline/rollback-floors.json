@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "about": "Rollback floors (BETA-CLOUD-PLAN 5). A Cloud ref must equal or descend from every sha under floors, or the rollback-floor gate refuses it with that floor's reason. Read from the pipeline tree, never from the candidate. A new floor is one reviewed edit here. Pending rows are NOT enforced: they name the condition after which the controller moves them into floors.",
+  "floors": {
+    "web": [
+      {
+        "sha": "fbe943520414def8b15b1cdb5b28eff48eec4fc6",
+        "reason": "web train 11: while Code is at 0.5.49 or newer it sends timeoutSeconds and price-band tokens that earlier Cloud trains do not accept"
+      }
+    ],
+    "gateway": [
+      {
+        "sha": "465e372f105b7d413db71259eaa020b499a3796c",
+        "reason": "gateway source of image 2cc25438 (price bands, quota-aware routing, failed-call settle): older gateway code has no price bands and wrongly handles stored no_quota records"
+      }
+    ]
+  },
+  "gatewayDigests": {
+    "belowFloor": [
+      {
+        "digest": "sha256:68af1b9e9f2639e55f627f3604c829b6926f48be90cc06e37fd8bed923724292",
+        "reason": "image 68af1b9e has no price bands; allowed only while Code is back on the release without them and no stored AI-source record has no_quota (a hand decision, not a pipeline one)"
+      }
+    ]
+  },
+  "pending": [
+    {
+      "group": "web",
+      "tag": "v0.13.19",
+      "sha": "debd9aa1bebc550ecf10a0eb8d35d22f0f96a68c",
+      "when": "Code train 27 is live in the environment",
+      "reason": "Cloud never goes below v0.13.19 once Code train 27 is live"
+    }
+  ]
+}

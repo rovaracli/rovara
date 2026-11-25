@@ -61,23 +61,31 @@ export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<CloudPipe
   // Rovara-cloud#308: a company's own OpenAI key for its agents. Production's and beta's gateways were deployed by hand with the same
   // -c rovaraAiSourceKinds=openai on 2026-11-24 (the two must match).
   production: Object.freeze({ productAi: true as const, aiSourceKinds: "openai" }),
-  // Rovara-cloud#269, #273: beta, on beta Code (account 233082642592). Its gateway is gateway.beta.rovara.dev, and its web stack was
+  // Rovara-cloud#269, #273: beta, on beta Code (its own account). Its gateway is gateway.beta.rovara.dev, and its web stack was
   // switched on by hand with that gateway's ProductKeys* parameters, ModelGatewayUrl and GatewayMeterTableName, as production's was.
   beta: Object.freeze({ productAi: true as const, aiSourceKinds: "openai" }),
 });
 /**
  * Rovara-cloud#269: an environment whose Cloud lives in another account. Its pipeline runs in the account that holds the GitHub
- * connection (as Rovara Code's beta release does) and deploys into this account through its CDK bootstrap roles, which must trust the
- * pipeline's account (`cdk bootstrap --trust <pipeline account> --trust-for-lookup <pipeline account>` there). Absent: its own account.
+ * connection (as Rovara Code's beta release does) and deploys into that account through its CDK bootstrap roles, which must trust the
+ * pipeline's account (`cdk bootstrap --trust <pipeline account> --trust-for-lookup <pipeline account>` there).
+ * No account id is committed (the repository has a public copy): these names only say WHICH environments deploy elsewhere; the account is given
+ * when the pipeline stack is deployed by hand (`-c agentxAccount=<account>`, DEPLOY_ACCOUNT_CONTEXT_KEY). The single release pipeline's stage CLI
+ * (ops/pipeline/stage.ts) resolves and checks the account at run time instead.
  */
-export const CLOUD_PIPELINE_DEPLOY_ACCOUNTS: Readonly<Record<string, string>> = Object.freeze({
-  beta: "233082642592",
-});
-/** The account the environment's pipeline deploys into, or undefined for the pipeline's own. */
-export function pipelineDeployAccount(env: string, accounts: Readonly<Record<string, string>> = CLOUD_PIPELINE_DEPLOY_ACCOUNTS): string | undefined {
-  const account = Object.hasOwn(accounts, env) ? accounts[env] : undefined;
-  if (account !== undefined && !/^[0-9]{12}$/u.test(account)) throw new Error(`the deploy account for ${env} must be 12 digits`);
-  return account;
+export const CLOUD_PIPELINE_SEPARATE_ACCOUNT_ENVS: readonly string[] = Object.freeze(["beta"]);
+/**
+ * The account the environment's pipeline deploys into, or undefined for the pipeline's own. `supplied` is the `-c agentxAccount` value: required for
+ * an environment in CLOUD_PIPELINE_SEPARATE_ACCOUNT_ENVS, refused for any other.
+ */
+export function pipelineDeployAccount(env: string, supplied?: unknown, separate: readonly string[] = CLOUD_PIPELINE_SEPARATE_ACCOUNT_ENVS): string | undefined {
+  if (!separate.includes(env)) {
+    if (supplied !== undefined) throw new Error(`${env} deploys into the pipeline's own account: do not pass ${DEPLOY_ACCOUNT_CONTEXT_KEY}`);
+    return undefined;
+  }
+  if (supplied === undefined) throw new Error(`${env} deploys into another account: pass -c ${DEPLOY_ACCOUNT_CONTEXT_KEY}=<that account> when you deploy the pipeline stack by hand (the account is not in git)`);
+  if (typeof supplied !== "string" || !/^[0-9]{12}$/u.test(supplied)) throw new Error(`${DEPLOY_ACCOUNT_CONTEXT_KEY} for ${env} must be a 12-digit AWS account id`);
+  return supplied;
 }
 /** The cdk context naming the account the Cloud stacks deploy into (app.ts). */
 export const DEPLOY_ACCOUNT_CONTEXT_KEY = "agentxAccount";
@@ -172,7 +180,7 @@ export class CloudReleasePipelineStack extends Stack {
     const env = props.environmentName;
     // Validates the name (at most 14 characters, the environment-name rules) at synth.
     environmentSettingsPrefix(env);
-    const deployAccount = pipelineDeployAccount(env);
+    const deployAccount = pipelineDeployAccount(env, this.node.tryGetContext(DEPLOY_ACCOUNT_CONTEXT_KEY) as unknown);
     // Where cdk deploy goes: the deploy account's bootstrap roles, or this account's.
     const target = deployAccount ?? this.account;
 

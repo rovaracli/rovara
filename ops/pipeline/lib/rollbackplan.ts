@@ -1,0 +1,81 @@
+// The rollback plan (L9): which release to go back to and the exact variables of the pipeline run that does it. Read-only: SSM (last-good), git and the stacks' outputs.
+// A rollback is an ordinary pipeline run with CLOUD_REF set to an older tag (BETA-CLOUD-PLAN 5): L2 detects it, forces CODE_RELEASE=skip and pins Code to what is live,
+// the rollback-floor gate refuses a ref below a floor, and the image step takes the recorded gateway digest. This command only names those inputs and checks them first.
+// Rule 9: the target is the record the operator names (default: last-good). It never falls back to another record, and an unreadable record is an error, not "none".
+import { stackName } from "../config.ts";
+import type { PipelineConfig } from "../config.ts";
+import { StageError } from "../types.ts";
+import type { LastGoodRecord, PipelineEnv, Ports } from "../types.ts";
+import { judgeDigest, judgeRef, loadFloors } from "./floors.ts";
+import { readLastGood } from "./lastgood.ts";
+import { readLiveCloudSha, resolveCloudRef, tagOfSha } from "./refs.ts";
+
+export type PlanTarget = "last-good" | "previous";
+
+interface Target { tag: string; sha: string; digest: string | null; what: string }
+
+const refuse = (message: string): StageError => new StageError("ROLLBACK_REFUSED", message);
+
+function chooseTarget(record: LastGoodRecord, which: PlanTarget): Target {
+  const recorded = `recorded ${record.recordedAt} by execution ${record.executionId.slice(0, 8)}, mode ${record.mode}`;
+  if (which === "last-good") return { tag: record.cloud.tag, sha: record.cloud.sha, digest: record.gateway.digest, what: `last-good, ${recorded}` };
+  // The record that last-good replaced. After a rollback run that record is the release that was rolled away from, so it is never offered as a target.
+  if (record.mode === "rollback") throw refuse(`last-good was written by a rollback run, so its previous record is the release that was rolled away from: not a rollback target (name a tag with CLOUD_REF instead)`);
+  if (record.previous === null) throw refuse("last-good has no previous record to go back to");
+  if (record.previous.gatewayDigest === null) throw refuse(`the previous record (${record.previous.cloudTag}) has no gateway digest: a rollback run needs the digest that ran with it`);
+  return { tag: record.previous.cloudTag, sha: record.previous.cloudSha, digest: record.previous.gatewayDigest, what: `previous of the last-good ${recorded}` };
+}
+
+export interface PlanArgs { ports: Ports; config: PipelineConfig; env: PipelineEnv; which: PlanTarget; codeLiveSha: string | null; pipelineDir: string }
+
+export async function planRollback(args: PlanArgs): Promise<string[]> {
+  const { ports, config, env } = args;
+  const record = await readLastGood(ports, config, env);
+  if (record === null) throw refuse(`${env} has no last-good record: there is nothing recorded to go back to. Name a release tag yourself with CLOUD_REF (the floors still apply)`);
+  const target = chooseTarget(record, args.which);
+  if (target.digest === null) throw refuse("the target has no recorded gateway digest");
+  // The tag must still be the recorded commit and be on the trunk (resolveCloudRef refuses a missing or off-trunk tag with exit 40).
+  const resolved = await resolveCloudRef(ports, config, target.tag);
+  if (resolved.sha !== target.sha) throw refuse(`${target.tag} now points at ${resolved.sha.slice(0, 12)} but was recorded at ${target.sha.slice(0, 12)}: release tags must not move`);
+  const warnings: string[] = [];
+  const live = await readLiveCloudSha(ports, stackName(config, env, "web"), stackName(config, env, "gateway"));
+  warnings.push(...live.warnings);
+  if (live.sha === target.sha) throw refuse(`${target.tag} is already what ${env} runs${args.which === "last-good" ? " (a passed release is last-good): use --target previous to go one release further back" : ""}`);
+  if (live.sha !== null) {
+    let older: boolean;
+    try { older = await ports.git.isAncestor(target.sha, live.sha); } catch { warnings.push(`the live Cloud sha ${live.sha.slice(0, 12)} is not in this repository, so the run cannot be proven a rollback`); older = true; }
+    if (!older) throw refuse(`${target.tag} is not older than what ${env} runs (${live.sha.slice(0, 12)}): that is a release, not a rollback`);
+  }
+  const floors = loadFloorsOrRefuse(ports, args.pipelineDir);
+  const verdict = await judgeRef(ports, floors, { tag: target.tag, sha: target.sha });
+  const failures = [...verdict.failures, ...judgeDigest(floors, target.digest)];
+  if (failures.length > 0) throw refuse(`the rollback floor refuses ${target.tag}: ${failures.join("; ")}`);
+  if (record.proofSkipped !== undefined && record.proofSkipped.length > 0) warnings.push(`the target was recorded without proof from: ${record.proofSkipped.join(", ")}`);
+  const liveTag = live.sha === null ? null : await tagOfSha(ports, config, live.sha);
+  const lines = [
+    `ROLLBACK PLAN ${env}  (read-only: nothing was changed)`,
+    `  Live   : ${live.sha === null ? "unknown" : `${liveTag ?? "no release tag"} ${live.sha.slice(0, 12)}`}`,
+    `  Target : ${target.tag} ${target.sha.slice(0, 12)}  (${target.what})`,
+    `  Gateway: ${target.digest}`,
+    `  Floors : ${floors.floors.length} checked, none below`,
+    "  Run the pipeline with these variables (beta first, then production, each with its own CODE_LIVE_SHA):",
+    `    CLOUD_REF=${target.tag}`,
+    "    CODE_RELEASE=skip",
+    `    GATEWAY_DIGEST=${target.digest}`,
+    `    CODE_LIVE_SHA=${args.codeLiveSha ?? `<the Code sha live in ${env}>`}`,
+    "  NOTE   : Code is skipped and pinned to the sha live in this environment; approving this run never promotes unreviewed Code",
+  ];
+  for (const warning of warnings) lines.push(`  WARN   : ${warning}`);
+  return lines;
+}
+
+function loadFloorsOrRefuse(ports: Ports, pipelineDir: string): ReturnType<typeof loadFloors> {
+  try { return loadFloors(ports, pipelineDir); } catch (error) { throw refuse(error instanceof Error ? error.message : String(error)); }
+}
+
+/** The gateway digests this environment's last-good record names: the current one and the one it replaced (the digests `rollback-plan` prints). */
+export async function recordedGatewayDigests(ports: Ports, config: PipelineConfig, env: PipelineEnv): Promise<string[]> {
+  const record = await readLastGood(ports, config, env);
+  if (record === null) return [];
+  return [record.gateway.digest, ...(record.previous?.gatewayDigest != null ? [record.previous.gatewayDigest] : [])];
+}

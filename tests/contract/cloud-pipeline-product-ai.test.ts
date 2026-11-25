@@ -11,7 +11,7 @@ import { PRODUCTION_SOURCE_KINDS_REFUSAL } from "../../packages/contracts/src/mo
 import { MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
 
 const deployCommand = (environmentName: string) => {
-  const template = Template.fromStack(new CloudReleasePipelineStack(new App(), "RovaraCloudPipeline", { environmentName, env: { region: "us-east-1" } }));
+  const template = Template.fromStack(new CloudReleasePipelineStack(new App({ context: environmentName === "beta" ? { agentxAccount: "123456789012" } : {} }), "RovaraCloudPipeline", { environmentName, env: { region: "us-east-1" } }));
   const project = Object.values(template.findResources("AWS::CodeBuild::Project")).map((each) => each.Properties as { Name: string; Source: { BuildSpec: string | { "Fn::Join": [string, unknown[]] } } }).find((each) => each.Name === `rovara-cloud-${environmentName}-deploy`)!;
   const source = project.Source.BuildSpec;
   const text = typeof source === "string" ? source : source["Fn::Join"][1].map((part) => (typeof part === "string" ? part : "<token>")).join("");

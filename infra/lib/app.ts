@@ -2,6 +2,7 @@ import { App, Aspects, Tags } from "aws-cdk-lib";
 import { ENVIRONMENT_TAG_KEY, RESOURCE_PREFIX, parseSourceKindsSwitch } from "@agentx/contracts";
 import { CLOUD_PIPELINE_CONTEXT_KEY, CloudReleasePipelineStack, DEPLOY_ACCOUNT_CONTEXT_KEY } from "./cloud-release-pipeline.js";
 import { CLOUD_APP_CONTEXT_KEY, CloudAppStack, cloudAppStackName } from "./cloud-app.js";
+import { CLOUD_RELEASE_ACTIONS_CONTEXT_KEY, CLOUD_RELEASE_ACTIONS_STACK_NAME, CloudReleaseActionsStack } from "./cloud-release-actions.js";
 import { CloudWebStack, cloudWebStackName } from "./cloud-web.js";
 import { RequireCloudBoundary } from "./cloud-boundary.js";
 import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_OFFERED_PRICES_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, MODEL_GATEWAY_PROVIDER_SECRET_NAMES_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_DISABLED_CONTEXT_KEY, MODEL_GATEWAY_ROVARA_AI_EXEMPT_CONTEXT_KEY, ModelGatewayImagesStack, ModelGatewayStack, modelGatewayImagesStackName, modelGatewayStackName, providerSecretNamesMode } from "./model-gateway.js";
@@ -11,6 +12,8 @@ import { MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL
  *  - `-c rovaraCloudApp=<environment>`: Rovara Cloud on an existing Rovara Code install: Cloud on CloudFront, Lambda and DynamoDB
  *    (cloud-web.ts), and its first address, which redirects there (cloud-app.ts, #11);
  *  - `-c rovaraCloudPipeline=<environment>`: the release pipeline that deploys those (cloud-release-pipeline.ts);
+ *  - `-c rovaraCloudReleaseActions=<environment>`: the single release pipeline's private actions stack (cloud-release-actions.ts): the CodeBuild projects and roles
+ *    that run its Cloud steps. One stack in the release account; the value is the environment that account runs (production). Deployed once by hand.
  *  - `-c rovaraModelGateway=<environment>`: the model gateway and its image repository (model-gateway.ts). The release pipeline
  *    never makes or deploys these. `-c rovaraModelGatewayProviderSecretNames=fixed` keeps an already-deployed environment's fixed
  *    provider secret names (default: CloudFormation generates them).
@@ -68,6 +71,19 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     });
     return app;
   }
+  // The single release pipeline's Cloud actions (L1b): deployed once by hand, before the public pipeline names its projects.
+  const releaseActionsEnv = app.node.tryGetContext(CLOUD_RELEASE_ACTIONS_CONTEXT_KEY) as unknown;
+  if (releaseActionsEnv !== undefined) {
+    if (typeof releaseActionsEnv !== "string" || releaseActionsEnv === "") throw new Error(`${CLOUD_RELEASE_ACTIONS_CONTEXT_KEY} must name the environment the release account runs, for example production`);
+    const actions = new CloudReleaseActionsStack(app, "RovaraCloudReleaseActions", {
+      description: `Rovara Cloud release actions: the CodeBuild projects and roles that run the single release pipeline's Cloud steps for ${releaseActionsEnv} and beta`,
+      stackName: CLOUD_RELEASE_ACTIONS_STACK_NAME,
+      env: { region: deploymentRegion ?? "us-east-1" },
+      environmentName: releaseActionsEnv,
+    });
+    Tags.of(actions).add(ENVIRONMENT_TAG_KEY, releaseActionsEnv);
+    return app;
+  }
   // The model gateway (migration plan v3.2, 7.4): its image repository first, then the service that runs an image from it.
   const gatewayEnv = app.node.tryGetContext(MODEL_GATEWAY_CONTEXT_KEY) as unknown;
   if (gatewayEnv !== undefined) {
@@ -96,7 +112,7 @@ export function buildAgentXApp(context: Record<string, unknown> = {}): App {
     Tags.of(gateway).add(ENVIRONMENT_TAG_KEY, gatewayEnv);
     return app;
   }
-  throw new Error(`Name the stack to make: -c ${CLOUD_APP_CONTEXT_KEY}=<environment> (Rovara Cloud), -c ${CLOUD_PIPELINE_CONTEXT_KEY}=<environment> (its release pipeline) or -c ${MODEL_GATEWAY_CONTEXT_KEY}=<environment> (the model gateway)`);
+  throw new Error(`Name the stack to make: -c ${CLOUD_APP_CONTEXT_KEY}=<environment> (Rovara Cloud), -c ${CLOUD_PIPELINE_CONTEXT_KEY}=<environment> (its release pipeline), -c ${CLOUD_RELEASE_ACTIONS_CONTEXT_KEY}=<environment> (the single release pipeline's actions) or -c ${MODEL_GATEWAY_CONTEXT_KEY}=<environment> (the model gateway)`);
 }
 
 /**

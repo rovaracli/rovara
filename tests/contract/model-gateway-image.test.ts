@@ -194,7 +194,7 @@ describe("the toolchain the image build installs", () => {
 
 describe("the build script", () => {
   it("never pushes and never takes a registry address", () => {
-    for (const tag of ["944937319445.dkr.ecr.us-west-2.amazonaws.com/gateway:x", "registry.example.com/gateway:x", "UPPER:x", "name", "name:", "name:a b"]) expect(() => dockerBuildArguments("/ctx", tag), tag).toThrow(ImageContextError);
+    for (const tag of ["123456789012.dkr.ecr.us-west-2.amazonaws.com/gateway:x", "registry.example.com/gateway:x", "UPPER:x", "name", "name:", "name:a b"]) expect(() => dockerBuildArguments("/ctx", tag), tag).toThrow(ImageContextError);
     const args = dockerBuildArguments("/ctx", "rovara-model-gateway:abc123");
     expect(args).toContain("--load");
     expect(args).not.toContain("--push");

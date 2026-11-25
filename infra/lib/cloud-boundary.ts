@@ -35,9 +35,20 @@ export function cloudPartRolePath(env: string, part: CloudStackPart): string {
   return `${cloudRolePath(env)}${part}/`;
 }
 
-/** What a Cloud stack is: the suffix of its stack name, rovara-cloud-<env>-<part>. */
-export type CloudStackPart = "web" | "app" | "pipeline" | "gateway-images" | "gateway";
+/**
+ * What a Cloud stack is: the suffix of its stack name, rovara-cloud-<env>-<part>. The one exception is "release-actions": the single release
+ * pipeline's private actions stack (cloud-release-actions.ts, stack name rovara-cloud-release-actions), which is not per environment: it lives in the
+ * release account, holds the CodeBuild project and role of every environment's Cloud steps, and is bounded as the environment that account runs.
+ */
+export type CloudStackPart = "web" | "app" | "pipeline" | "gateway-images" | "gateway" | "release-actions";
+/** The parts of a per-environment stack (stack name rovara-cloud-<env>-<part>); "release-actions" is left out on purpose, it has no environment in its name. */
 export const CLOUD_STACK_PARTS: readonly CloudStackPart[] = ["web", "app", "pipeline", "gateway-images", "gateway"];
+/** The one stack that is not per environment (CloudStackPart). */
+export const RELEASE_ACTIONS_PART: CloudStackPart = "release-actions";
+/** The beta account's release role (L7, BETA-RELEASE-ROLE-PREP.md): the only role the beta build role may assume. (The production build role assumes nothing in beta: see PULL_BETA_IMAGE_ACTIONS.) */
+export const CLOUD_BETA_RELEASE_ROLE_NAME = "rovara-cloud-beta-release";
+/** The name prefix of the release actions' CodeBuild projects (the legacy runtime boundary denies release-*; the public pipeline's parameter pattern requires it). */
+export const CLOUD_RELEASE_PROJECT_PREFIX = "release-cloud-";
 
 /**
  * The parts whose roles live under cloudRolePath. A role's path can't change in place (CloudFormation replaces the role), so the stacks
@@ -100,6 +111,52 @@ export function byoCustomerAssumeConditions(account: string): { StringLike: Reco
  * by that prefix.
  */
 export const GATEWAY_PROVIDER_SECRET_LOGICAL_IDS = ["ProviderKeyanthropic"] as const;
+
+/**
+ * What the release actions' boundary needs from the stack's own parameters (names a stack cannot know at synth time): the single release pipeline's artifact
+ * bucket (CodePipeline hands every artifact over through it) and the beta account (the beta release role's address). Strings or tokens, never read.
+ */
+export interface ReleaseActionsBoundaryInputs {
+  readonly artifactBucketName: string;
+  readonly betaAccountId: string;
+}
+
+/** The actions on the gateway image repository the release steps use: push, pull and read, never a lifecycle, scanning, tag or delete action (the repository is protected). */
+export const RELEASE_IMAGE_REPOSITORY_ACTIONS = [
+  "ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:CompleteLayerUpload", "ecr:DescribeImages", "ecr:GetDownloadUrlForLayer",
+  "ecr:InitiateLayerUpload", "ecr:ListImages", "ecr:PutImage", "ecr:UploadLayerPart",
+] as const;
+/**
+ * What the production build role may do to beta's gateway image repository, with its OWN credentials (controller decision 2026-11-24: a read-only repository policy in beta
+ * names the role; the beta release role's trust is not widened): pull and describe, never a push or a delete. The same four actions are in the repository policy
+ * (cloud-release-actions.ts betaGatewayPullPolicy).
+ */
+export const PULL_BETA_IMAGE_ACTIONS = ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:DescribeImages", "ecr:GetDownloadUrlForLayer"] as const;
+/** The beta gateway image repository's name prefix in the beta account (its images stack: rovara-cloud-beta-gateway-images, repository generated under it). */
+export const BETA_GATEWAY_IMAGES_PREFIX = `${RESOURCE_PREFIX}-beta-gateway-images-`;
+/** The one-off price fetch's task definition family (the gateway stack's PriceFetchTask construct id; the stack name is not part of it). */
+export const PRICE_FETCH_TASK_FAMILY = "RovaraModelGatewayPriceFetchTask";
+
+/** The statements of the release actions' boundary that name the stack's own parameters; appended after the part's own (like the web stack's meter reads). */
+export function releaseActionsParameterStatements(partition: string, region: string, inputs: ReleaseActionsBoundaryInputs): BoundaryStatement[] {
+  return [
+    {
+      // CodeBuild reads each input artifact and writes the output through the pipeline's bucket (S3-managed encryption, so no key).
+      Sid: "PipelineArtifacts", Effect: "Allow", Action: ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject", "s3:GetBucketAcl", "s3:GetBucketLocation"],
+      Resource: [`arn:${partition}:s3:::${inputs.artifactBucketName}`, `arn:${partition}:s3:::${inputs.artifactBucketName}/*`],
+    },
+    {
+      // The beta build role's one grant: the beta release role, through which every beta write happens.
+      Sid: "AssumeBetaReleaseRole", Effect: "Allow", Action: ["sts:AssumeRole"],
+      Resource: [`arn:${partition}:iam::${inputs.betaAccountId}:role/${CLOUD_BETA_RELEASE_ROLE_NAME}`],
+    },
+    {
+      // Production only: pull beta's gateway image for the promotion (the repository's own policy in beta must name the production build role too).
+      Sid: "PullBetaImage", Effect: "Allow", Action: [...PULL_BETA_IMAGE_ACTIONS],
+      Resource: [`arn:${partition}:ecr:${region}:${inputs.betaAccountId}:repository/${BETA_GATEWAY_IMAGES_PREFIX}*`],
+    },
+  ];
+}
 
 /** The boundary of one part of one environment. Pure: tests and the controller's simulation call it with plain strings. */
 export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPart): BoundaryStatement[] {
@@ -195,6 +252,59 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
         Condition: byoCustomerAssumeConditions(a),
       },
     ],
+    // The single release pipeline's Cloud steps (cloud-release-actions.ts): one project and one role per environment, in the release account. The ceiling is the union of what
+    // the two roles' own policies grant (the beta role's own policy is far narrower: it may assume the beta release role and nothing else); everything in the release
+    // account is this environment's, everything in beta is reached through the beta release role. The pipeline's artifact bucket and the beta account are the
+    // stack's parameters, so those two statements come from releaseActionsParameterStatements.
+    "release-actions": [
+      // The stack's own group, and the default group CodeBuild names for each project (CDK's project policy covers it too).
+      logs([`${RESOURCE_PREFIX}-release-actions-*`, `/aws/codebuild/${CLOUD_RELEASE_PROJECT_PREFIX}*`]),
+      {
+        Sid: "BuildReports", Effect: "Allow", Action: ["codebuild:CreateReportGroup", "codebuild:CreateReport", "codebuild:UpdateReport", "codebuild:BatchPutTestCases", "codebuild:BatchPutCodeCoverages"],
+        Resource: [`arn:${p}:codebuild:${r}:${a}:report-group/${CLOUD_RELEASE_PROJECT_PREFIX}*`],
+      },
+      {
+        // Both source actions are full clones: the build clones through each connection.
+        Sid: "PipelineSource", Effect: "Allow",
+        Action: ["codeconnections:UseConnection", "codeconnections:GetConnectionToken", "codestar-connections:UseConnection", "codestar-connections:GetConnectionToken"],
+        Resource: [`arn:${p}:codeconnections:*:${a}:connection/*`, `arn:${p}:codestar-connections:*:${a}:connection/*`],
+      },
+      {
+        // cdk deploy and every CloudFormation call of the stage CLI go through the account's bootstrap roles, never the CloudFormation execution role.
+        Sid: "AssumeBootstrapRoles", Effect: "Allow", Action: ["sts:AssumeRole"],
+        Resource: CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:${p}:iam::${a}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-${role}-${a}-${r}`),
+      },
+      { Sid: "ImageToken", Effect: "Allow", Action: ["ecr:GetAuthorizationToken"], Resource: ["*"] },
+      { Sid: "ImageRepository", Effect: "Allow", Action: [...RELEASE_IMAGE_REPOSITORY_ACTIONS], Resource: [`arn:${p}:ecr:${r}:${a}:repository/${stack("gateway-images")}-*`] },
+      {
+        // The one-off price fetch: the schedule's own task definition, in the gateway's cluster. No overrides, no tags (the build passes none).
+        Sid: "PriceFetchRun", Effect: "Allow", Action: ["ecs:RunTask"],
+        Resource: [`arn:${p}:ecs:${r}:${a}:task-definition/${PRICE_FETCH_TASK_FAMILY}*`],
+        Condition: { StringLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
+      },
+      {
+        // Only to ECS tasks. (A task's role can be overridden at RunTask: the identity policy names the two exact roles, which a boundary by path cannot.)
+        Sid: "PriceFetchPassRoles", Effect: "Allow", Action: ["iam:PassRole"], Resource: [rolesOf("gateway")],
+        Condition: { StringEquals: { "iam:PassedToService": "ecs-tasks.amazonaws.com" } },
+      },
+      {
+        Sid: "PriceFetchReads", Effect: "Allow", Action: ["ecs:DescribeTasks", "ecs:ListTasks", "ecs:DescribeServices", "ecs:ListServices"], Resource: ["*"],
+        Condition: { StringLike: { "ecs:cluster": `arn:${p}:ecs:${r}:${a}:cluster/${stack("gateway")}-*` } },
+      },
+      { Sid: "TaskDefinitionRead", Effect: "Allow", Action: ["ecs:DescribeTaskDefinition"], Resource: ["*"] },
+      { Sid: "PriceScheduleRead", Effect: "Allow", Action: ["events:ListTargetsByRule"], Resource: [`arn:${p}:events:${r}:${a}:rule/*`] },
+      {
+        Sid: "PriceFetchLogs", Effect: "Allow", Action: ["logs:DescribeLogStreams", "logs:GetLogEvents", "logs:FilterLogEvents"],
+        Resource: [`arn:${p}:logs:${r}:${a}:log-group:${stack("gateway")}-PriceFetchLogs*`],
+      },
+      {
+        // The last-good record and the stage's other release records: write only under release/ (the plan's SSM prefix), read the backfill record.
+        Sid: "ReleaseRecords", Effect: "Allow", Action: ["ssm:GetParameter", "ssm:GetParameters", "ssm:PutParameter"],
+        Resource: [`arn:${p}:ssm:${r}:${a}:parameter${path}release/*`],
+      },
+      { Sid: "ReleaseChecksRead", Effect: "Allow", Action: ["ssm:GetParameter", "ssm:GetParameters"], Resource: [`arn:${p}:ssm:${r}:${a}:parameter${path}release-checks/*`] },
+      { Sid: "CertificateRead", Effect: "Allow", Action: ["acm:DescribeCertificate"], Resource: [`arn:${p}:acm:${r}:${a}:certificate/*`] },
+    ],
   };
   return [
     ...allows[part],
@@ -209,6 +319,23 @@ export function cloudBoundaryStatements(scope: BoundaryScope, part: CloudStackPa
     // The bootstrap's CloudFormation execution role is the account's administrator: no Cloud role may reach it. (A customer's Bedrock
     // role in this account is refused by the broker's own policy, aws:ResourceAccount: a Deny here would also cover other accounts.)
     { Sid: "DenyAdminRoles", Effect: "Deny", Action: ["sts:AssumeRole", "iam:PassRole"], Resource: [`arn:${p}:iam::${a}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-cfn-exec-role-*`] },
+    ...(part === "release-actions" ? releaseActionsDenies() : []),
+  ];
+}
+
+/**
+ * The release actions' extra Deny statements (BETA-RELEASE-ROLE-PREP.md 2.3 and 2.5), which hold even if a later change widens an Allow: no role may assume the organization's
+ * management-account Administrator path (any account), read a secret's value, or use a key other than through S3 (SSM here is plain String records; the artifact objects use the aws/s3 key), or
+ * run a task with an interactive shell. The last carries a condition, which the boundary check cannot evaluate: a test pins it instead (cloud-release-actions.test.ts).
+ */
+export function releaseActionsDenies(): BoundaryStatement[] {
+  return [
+    { Sid: "DenyOrganizationAdminRole", Effect: "Deny", Action: ["sts:AssumeRole"], Resource: ["arn:aws:iam::*:role/OrganizationAccountAccessRole"] },
+    { Sid: "DenySecretValues", Effect: "Deny", Action: ["secretsmanager:GetSecretValue", "secretsmanager:BatchGetSecretValue"], Resource: ["*"] },
+    // Key use is denied everywhere except through S3: the pipeline's artifacts (read and written by CodePipeline and by the projects' own output) are encrypted with the
+    // AWS-managed aws/s3 key, and S3 calls KMS as the requesting role. A direct Decrypt of any key (a customer-managed key a key policy happens to name this role on) stays denied.
+    { Sid: "DenyKeyUseOutsideS3", Effect: "Deny", Action: ["kms:Decrypt", "kms:GenerateDataKey*"], Resource: ["*"], Condition: { StringNotLike: { "kms:ViaService": "s3.*.amazonaws.com" } } },
+    { Sid: "DenyExecIntoTasks", Effect: "Deny", Action: ["ecs:RunTask"], Resource: ["*"], Condition: { Bool: { "ecs:enable-execute-command": "true" } } },
   ];
 }
 
@@ -258,8 +385,9 @@ const bounded = new WeakMap<Stack, iam.CfnManagedPolicy>();
  * actions above already fit). Called once, last, by each Cloud stack's constructor; a second call throws. The gateway's boundary is retained:
  * its Bedrock broker role is retained, and a policy still in use as a role's boundary can't be deleted.
  */
-export function applyCloudBoundary(stack: Stack, env: string, part: CloudStackPart, gatewayMeterTableArn?: string, deployAccount?: string): iam.CfnManagedPolicy {
+export function applyCloudBoundary(stack: Stack, env: string, part: CloudStackPart, gatewayMeterTableArn?: string, deployAccount?: string, releaseActions?: ReleaseActionsBoundaryInputs): iam.CfnManagedPolicy {
   if (deployAccount !== undefined && part !== "pipeline") throw new Error("only the pipeline deploys into another account");
+  if ((part === "release-actions") !== (releaseActions !== undefined)) throw new Error("only the release actions have a bucket and a beta account, and they need both");
   if (bounded.has(stack)) throw new Error(`${stack.node.path} already has its boundary`);
   // Only the web stack's approved meter reads extend the boundary, on the same exact ARN and company keys as its identity policy.
   const meterReads = part === "web" && gatewayMeterTableArn !== undefined ? [new iam.PolicyStatement({
@@ -269,7 +397,7 @@ export function applyCloudBoundary(stack: Stack, env: string, part: CloudStackPa
   const policy = new iam.CfnManagedPolicy(stack, BOUNDARY_LOGICAL_ID, {
     path: cloudRolePath(env),
     description: `Rovara Cloud ${env} (${part}): the permissions boundary of every role this stack makes`,
-    policyDocument: { Version: "2012-10-17", Statement: [...cloudBoundaryStatements({ env, partition: stack.partition, region: stack.region, account: stack.account, ...(deployAccount === undefined ? {} : { deployAccount }) }, part), ...meterReads] },
+    policyDocument: { Version: "2012-10-17", Statement: [...cloudBoundaryStatements({ env, partition: stack.partition, region: stack.region, account: stack.account, ...(deployAccount === undefined ? {} : { deployAccount }) }, part), ...meterReads, ...(releaseActions === undefined ? [] : releaseActionsParameterStatements(stack.partition, stack.region, releaseActions))] },
   });
   if (part === "gateway") {
     policy.cfnOptions.deletionPolicy = CfnDeletionPolicy.RETAIN;
