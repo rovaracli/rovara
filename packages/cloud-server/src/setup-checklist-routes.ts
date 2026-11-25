@@ -8,7 +8,7 @@
 //   POST /v1/app/projects/{p}/setup-agent   {requestId} -> Code POST /v1/app/projects/{p}/setup-agent                  (start, or Re-run setup: a re-run only proposes)
 //   POST /v1/app/projects/{p}/setup-agent/stop {requestId} -> Code POST .../setup-agent/stop
 //   GET  /v1/app/projects/{p}/setup-agent/journal?after=n  -> Code GET .../setup-agent/journal?after=n
-//   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
+//   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?, useAnyway?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
 //   POST /v1/app/projects/{p}/setup-agent/discard {requestId}                              -> Code POST .../setup-agent/discard  (drop the waiting candidate)
 //   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: Code's risk-based approver rule)
 //   POST /v1/app/projects/{p}/setup-agent/host-decide {requestId, host, outcome, seen, reason?} -> Code POST .../setup-agent/host-decide (allow or refuse an address a setup run asked for: Code's rule is a live company owner or admin; Cloud adds none)
@@ -314,13 +314,14 @@ export function applyAnswer(value: unknown): Plain {
   };
 }
 
-/** The browser's "Use this setup", strictly: `{requestId, expectedRevision, itemIds?}` and nothing else. */
-export function confirmBody(value: unknown): { requestId: string; expectedRevision: number; itemIds?: string[] } | undefined {
-  if (!plain(value) || Object.keys(value).some((key) => key !== "requestId" && key !== "expectedRevision" && key !== "itemIds")) return undefined;
-  const ids = value["itemIds"];
+/** The browser's "Use this setup", strictly: `{requestId, expectedRevision, itemIds?, useAnyway?}` and nothing else. `useAnyway` names ticked items the page warned about; Code decides whether it counts. */
+export function confirmBody(value: unknown): { requestId: string; expectedRevision: number; itemIds?: string[]; useAnyway?: string[] } | undefined {
+  if (!plain(value) || Object.keys(value).some((key) => key !== "requestId" && key !== "expectedRevision" && key !== "itemIds" && key !== "useAnyway")) return undefined;
+  const ids = value["itemIds"], anyway = value["useAnyway"];
   if (typeof value["requestId"] !== "string" || !UUID.test(value["requestId"]) || !whole(value["expectedRevision"], 0, 1_000_000_000)) return undefined;
   if (ids !== undefined && !(Array.isArray(ids) && ids.length <= CONFIRM_IDS_MAX && ids.every((id) => text(id, 100)))) return undefined;
-  return { requestId: value["requestId"], expectedRevision: value["expectedRevision"], ...(ids === undefined ? {} : { itemIds: [...ids] }) };
+  if (anyway !== undefined && !(Array.isArray(anyway) && anyway.length <= CONFIRM_IDS_MAX && anyway.every((id) => text(id, 100)))) return undefined;
+  return { requestId: value["requestId"], expectedRevision: value["expectedRevision"], ...(ids === undefined ? {} : { itemIds: [...ids] }), ...(anyway === undefined ? {} : { useAnyway: [...anyway] }) };
 }
 
 export interface DecideBody { requestId: string; outcome: "approve" | "reject"; seen: { revision: number; artifactDigest: string }; reason?: string }

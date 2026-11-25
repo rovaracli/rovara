@@ -204,6 +204,11 @@ describe("Use this setup (confirm)", () => {
       expect(errorOf(res).message).toBe(SETUP_CHECKLIST_WORDS.invalid);
     }
     expect(confirmBody({ requestId: UUID1, expectedRevision: 0 })).toEqual({ requestId: UUID1, expectedRevision: 0 });
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, itemIds: ["a", "b"], useAnyway: ["a"] })).toEqual({ requestId: UUID1, expectedRevision: 0, itemIds: ["a", "b"], useAnyway: ["a"] });
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, useAnyway: "a" })).toBeUndefined();
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, useAnyway: [""] })).toBeUndefined();
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, useAnyway: Array.from({ length: 129 }, (_, i) => `i${String(i)}`) })).toBeUndefined();
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, other: 1 })).toBeUndefined();
     expect(w.codeCalls()).toHaveLength(0);
   });
 
