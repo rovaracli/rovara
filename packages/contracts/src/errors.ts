@@ -113,6 +113,13 @@ export const AgentXErrorCodeSchema = z.enum([
   "EXTERNAL_ACCOUNT_TAKEN",
   "EXTERNAL_ACCOUNT_OTHER_WORKSPACE",
   "EXTERNAL_ACCOUNT_LINK_EXISTS",
+  // Code's task actions (Slack offers every task action; Code packages/code-api/src/errors.ts). A refusal Code sends with its own sentence and a `reason`; Cloud's web calls none of those
+  // routes today, but a refusal that reaches Cloud must parse. NEEDS_INPUT (400): a value or the confirm is missing. NEEDS_WEB (403): the action is the website's. NOT_OFFERED (409): the task
+  // moved on and no longer offers it. STALE (409): pressed on an out-of-date card. Appended: no code changes meaning.
+  "TASK_ACTION_NOT_OFFERED",
+  "TASK_ACTION_STALE",
+  "TASK_ACTION_NEEDS_INPUT",
+  "TASK_ACTION_NEEDS_WEB",
 ]);
 
 export const CSRF_STALE_MESSAGE = "Your sign-in changed in another tab. Trying again.";
@@ -163,10 +170,10 @@ export function errorStatus(code: AgentXErrorCode): number {
   if (code === "TASK_STOP_CONFIG_MISSING" || code === "TASK_STOP_CONFIG_INVALID" || code === "TASK_STOP_APPROVAL_ABOVE_CEILING") return 409;
   if (code === "AUTH_REQUIRED") return 401;
   // The sign-in is valid but too old, or the wrong kind, for this change: 403, so a client does not treat it as a sign-in that ended.
-  if (code === "CSRF_STALE" || code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED" || code === "SESSION_LEVEL_REQUIRED" || code === "LOCAL_AGENT_NOT_ALLOWED" || code === "PROCESS_SELF_CONFIRM" || code === "LINK_START_AGAIN") return 403;
+  if (code === "CSRF_STALE" || code === "REAUTH_REQUIRED" || code === "FORBIDDEN" || code === "SLACK_TEAM_NOT_BOUND" || code === "PROJECT_ACCESS_DENIED" || code === "PROJECT_TASKS_DISABLED" || code === "TASK_ACCESS_DENIED" || code === "TRIAL_LOCKED" || code === "AGENT_NOT_ON_PROJECT" || code === "AGENT_TOOL_NOT_GRANTED" || code === "MODEL_NOT_ALLOWED" || code === "REMOVED_FROM_ORG" || code === "GITHUB_NOT_CONNECTED" || code === "SESSION_LEVEL_REQUIRED" || code === "LOCAL_AGENT_NOT_ALLOWED" || code === "PROCESS_SELF_CONFIRM" || code === "LINK_START_AGAIN" || code === "TASK_ACTION_NEEDS_WEB") return 403;
   if (code === "NOT_FOUND" || code === "PROJECT_NOT_FOUND" || code === "TASK_NOT_FOUND" || code === "LEARNING_OFF" || code === "LEARNING_LOCKED") return 404;
   if (code === "BUDGET_EXCEEDED" || code === "ORG_BUDGET_EXCEEDED" || code === "MACHINE_TIME_EXCEEDED" || code === "PROJECT_BUDGET_EXCEEDED" || code === "AGENT_BUDGET_EXCEEDED" || code === "TEST_ALLOWANCE_USED" || code === "CHAIN_BUDGET_EXCEEDED") return 402;
-  if (code === "CONFIG_INVALID" || code === "PROCESS_UNAVAILABLE" || code === "AUDIT_RANGE_INVALID" || code === "AUDIT_REASON_REQUIRED" || code === "AUDIT_FILTER_TOO_WIDE") return 400;
+  if (code === "CONFIG_INVALID" || code === "PROCESS_UNAVAILABLE" || code === "AUDIT_RANGE_INVALID" || code === "AUDIT_REASON_REQUIRED" || code === "AUDIT_FILTER_TOO_WIDE" || code === "TASK_ACTION_NEEDS_INPUT") return 400;
   if (code === "TOO_MANY_REQUESTS") return 429;
   if (code === "TRASH_EXPIRED") return 410;
   if (code === "RUNTIME_UNAVAILABLE" || code === "SLACK_UNAVAILABLE" || code === "MODEL_PROXY_UNAVAILABLE" || code === "AUDIT_UNAVAILABLE") return 503;

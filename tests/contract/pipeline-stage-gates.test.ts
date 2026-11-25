@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { discoverGates, mergeGateRecords, runPhase } from "../../ops/pipeline/lib/gates.ts";
 import { gate as integrity } from "../../ops/pipeline/gates/change-set-integrity.gate.ts";
 import { gate as backfill } from "../../ops/pipeline/gates/own-key-backfill.gate.ts";
-import { gate as gitleaks } from "../../ops/pipeline/gates/gitleaks.gate.ts";
+import { gate as gitleaks, configExtras } from "../../ops/pipeline/gates/gitleaks.gate.ts";
+import { readFileSync } from "node:fs";
 import { countRows } from "../../ops/pipeline/lib/changesets.ts";
 import type { ChangeRow, ChangeSetRecord, Gate, GateInput, Manifest, PipelineEnv } from "../../ops/pipeline/types.ts";
 import { CDK_METADATA, EXEC8, EXEC_ID, FAKE_ACCOUNT, MODIFY_FUNCTION, config, makePorts, newState, row, sha } from "./pipeline-stage-fakes.ts";
@@ -131,22 +132,79 @@ describe("pipeline stage CLI: gate own-key-backfill", () => {
   });
 });
 
+const GITLEAKS_CONFIG = '# comment\ntitle = "Rovara Cloud secret scan"\n\n[extend]\nuseDefault = true\n';
+const gitleaksState = (config: string | null = GITLEAKS_CONFIG) => {
+  const state = newState();
+  if (config !== null) state.files["/p/.gitleaks.toml"] = config;
+  return state;
+};
+
 describe("pipeline stage CLI: gate gitleaks", () => {
-  it("scans a clean export of the tracked files, and passes on exit 0", async () => {
-    const state = newState();
+  it("scans a clean export of the tracked files with the pipeline tree's config (--config), and passes on exit 0", async () => {
+    const state = gitleaksState();
     expect((await gitleaks.run(input({ phase: "preflight", state }))).result).toBe("pass");
     expect(state.calls.some((c) => c.startsWith("exec bash -c") && c.includes("git -C") && c.includes("archive"))).toBe(true);
-    expect(state.calls).toContain("exec gitleaks dir --no-banner --redact --exit-code 1 /w/gitleaks-tree");
+    expect(state.calls).toContain("exec gitleaks dir --no-banner --redact --exit-code 1 --ignore-gitleaks-allow --config /p/.gitleaks.toml -i /w/gitleaks-no-ignore /w/gitleaks-tree");
   });
 
   it("fails when gitleaks finds something, is missing, or the export fails", async () => {
-    const state = newState();
+    const state = gitleaksState();
     state.exec = (cmd) => (cmd === "gitleaks" ? { code: 1, stdout: "", stderr: "1 leaks found" } : { code: 0, stdout: "", stderr: "" });
     expect((await gitleaks.run(input({ phase: "preflight", state }))).failures?.[0]).toMatch(/leaks found/);
     state.exec = (cmd) => (cmd === "gitleaks" ? { code: 127, stdout: "", stderr: "" } : { code: 0, stdout: "", stderr: "" });
     expect((await gitleaks.run(input({ phase: "preflight", state }))).failures?.[0]).toMatch(/not installed/);
     state.exec = (cmd) => (cmd === "bash" ? { code: 1, stdout: "", stderr: "tar failed" } : { code: 0, stdout: "", stderr: "" });
     expect((await gitleaks.run(input({ phase: "preflight", state }))).failures?.[0]).toMatch(/could not export/);
+  });
+
+  it("never scans without its config, and refuses a config with any allow entry (nothing runs)", async () => {
+    const missing = gitleaksState(null);
+    expect((await gitleaks.run(input({ phase: "preflight", state: missing }))).failures?.[0]).toMatch(/config .*\.gitleaks\.toml is missing/);
+    expect(missing.calls.some((c) => c.startsWith("exec gitleaks"))).toBe(false);
+    for (const extra of ['[allowlist]\npaths = ["tests/"]', '[[allowlists]]\nregexes = ["x"]', '[[rules]]\nid = "x"', 'stopwords = ["x"]', "useDefault = false", '[extend]\npath = "other.toml"']) {
+      const state = gitleaksState(`${GITLEAKS_CONFIG}${extra}\n`);
+      const result = await gitleaks.run(input({ phase: "preflight", state }));
+      expect(result.result, extra).toBe("fail");
+      expect(result.failures?.[0], extra).toMatch(/no allowlist or rule change is allowed/);
+      expect(state.calls.some((c) => c.startsWith("exec gitleaks")), extra).toBe(false);
+    }
+  });
+
+  it("fails on any tracked .gitleaksignore, at the root or deeper, before it scans (it would switch findings off)", async () => {
+    for (const path of [".gitleaksignore", "packages/x/.gitleaksignore"]) {
+      const state = gitleaksState();
+      state.exec = (cmd, args) => (cmd === "git" && args.includes("ls-tree") ? { code: 0, stdout: `a.ts\0${path}\0`, stderr: "" } : { code: 0, stdout: "", stderr: "" });
+      const result = await gitleaks.run(input({ phase: "preflight", state }));
+      expect(result.result, path).toBe("fail");
+      expect(result.failures?.[0], path).toMatch(/tracks a \.gitleaksignore/);
+      expect(state.calls.some((c) => c.startsWith("exec gitleaks")), path).toBe(false);
+    }
+  });
+
+  it("fails when the export is not the tracked tree (export-ignore drops a file, or something extra appears), and passes when they are equal", async () => {
+    const world = (tracked: string[], exported: string[]) => {
+      const state = gitleaksState();
+      state.exec = (cmd, args) => {
+        if (cmd === "git" && args.includes("ls-tree")) return { code: 0, stdout: tracked.map((f) => `${f}\0`).join(""), stderr: "" };
+        if (cmd === "bash" && args.includes("list")) return { code: 0, stdout: exported.map((f) => `./${f}\0`).join(""), stderr: "" };
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      return state;
+    };
+    const dropped = world(["a.ts", "secrets/k.ts"], ["a.ts"]);
+    const droppedResult = await gitleaks.run(input({ phase: "preflight", state: dropped }));
+    expect(droppedResult.result).toBe("fail");
+    expect(droppedResult.failures?.[0]).toMatch(/1 tracked file\(s\) missing from the export.*secrets\/k\.ts/);
+    expect(dropped.calls.some((c) => c.startsWith("exec gitleaks"))).toBe(false);
+    const extra = world(["a.ts"], ["a.ts", "b.ts"]);
+    expect((await gitleaks.run(input({ phase: "preflight", state: extra }))).failures?.[0]).toMatch(/1 extra/);
+    expect((await gitleaks.run(input({ phase: "preflight", state: world(["a.ts", "d/b.ts"], ["d/b.ts", "a.ts"]) }))).result).toBe("pass");
+  });
+
+  it("the committed .gitleaks.toml of this repository has no allow entry", () => {
+    const text = readFileSync(new URL("../../.gitleaks.toml", import.meta.url), "utf8");
+    expect(configExtras(text)).toEqual([]);
+    expect(text).toMatch(/useDefault = true/);
   });
 });
 

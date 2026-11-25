@@ -189,7 +189,7 @@ describe("connection variables", () => {
   });
   it("refuses text that looks like a key, anywhere in a template", () => {
     const build = (...parts: string[]) => parts.join("");
-    const token = "Qk7mP2xR9vLw4NtY8bZc3HdF6gJs1VaUeXoI5";
+    const token = build("Qk7mP2xR9vLw4N", "tY8bZc3HdF6gJs1VaUeXoI5");
     for (const text of [build("sk", "_live_", token.slice(0, 20)), build("sk", "_test_", token.slice(0, 20)), build("AKIA", "ABCDEFGHIJKLMNOP"), build("gh", "p_", token), build("-----", "BEGIN"), token, build("ey", "J", token.slice(0, 16), ".", token.slice(0, 16), ".", token.slice(0, 16))]) {
       for (const template of [`https://{host}/v1/${text}`, `https://{host}/?id=${text}`, `{host}/${text}`]) {
         expect(dep.connectTemplateProblem(template), template.slice(0, 24)).toBe("secret_shaped");

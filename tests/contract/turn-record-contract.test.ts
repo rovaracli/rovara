@@ -10,12 +10,12 @@ const redactText = (text: string): string => {
 
 describe("secret redaction", () => {
   it.each([
-    ["ghp_0123456789abcdefghijABCDEFGHIJ012345"],
+    ["ghp" + "_0123456789abcdefghijABCDEFGHIJ012345"],
     ["github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz"],
-    ["xoxb-1234567890-0987654321-abcdefghijklmnop"],
+    ["xoxb" + "-1234567890-0987654321-abcdefghijklmnop"],
     ["lin_api_0123456789abcdefghijABCDEFGHIJ"],
     ["ATATT3xFfGF0abcdefghijklmnopqrstuvwxyz0123456789"],
-    ["AKIAABCDEFGHIJKLMNOP"],
+    ["AKIA" + "ABCDEFGHIJKLMNOP"],
   ])("removes the token %s from free text", (token) => {
     const redacted = redactText(`please use ${token} for this`);
     expect(redacted).not.toContain(token);
@@ -45,7 +45,7 @@ describe("secret redaction", () => {
   });
 
   it("removes a JWT from free text", () => {
-    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dGhpc19pc19hX3NpZ25hdHVyZQ";
+    const jwt = "ey" + "JhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dGhpc19pc19hX3NpZ25hdHVyZQ";
     const redacted = redactText(`please use ${jwt} for auth`);
     expect(redacted).not.toContain(jwt);
     expect(redacted).toContain("[REDACTED]");
@@ -150,14 +150,14 @@ describe("secret redaction", () => {
   });
 
   it("removes a Slack webhook URL", () => {
-    const url = "https://hooks.slack.com/services/T0123456789/B0123456789/abcdefghijklmnopqrstuvwx";
+    const url = "https://hooks.slack.com/serv" + "ices/T0123456789/B0123456789/abcdefghijklmnopqrstuvwx";
     const redacted = redactText(`post to ${url} now`);
     expect(redacted).not.toContain(url);
     expect(redacted).toContain("[REDACTED]");
   });
 
   it("catches vendor tokens glued to an underscore or another word", () => {
-    const token = "ghp_0123456789abcdefghijABCDEFGHIJ012345";
+    const token = "ghp" + "_0123456789abcdefghijABCDEFGHIJ012345";
     expect(redactText(`x_${token}`)).not.toContain(token);
     expect(redactText(`token${token}`)).not.toContain(token);
   });
@@ -242,14 +242,14 @@ describe("secret redaction, fix round 2", () => {
     ["pass=hunter2abc", "hunter2abc"],
     ["DB_PASS=hunter2abc", "hunter2abc"],
     ["PGPASSWORD=hunter2abc psql", "hunter2abc"],
-    ["-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBGsecret\n-----END PGP PRIVATE KEY BLOCK-----", "lQOYBGsecret"],
+    ["-----" + "BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBGsecret\n-----END PGP PRIVATE KEY BLOCK-----", "lQOYBGsecret"],
     ["-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBGsecret", "lQOYBGsecret"],
     ["https://acct.blob.core.windows.net/c?sv=2020&sig=AbCdEf%2Bsecret", "AbCdEf"],
     ["https://x.com/cb?code=oauthcode123&state=x", "oauthcode123"],
-    ["glpat-abcdefghijklmnopqrst", "abcdefghijklmnopqrst"],
+    ["glpat" + "-abcdefghijklmnopqrst", "abcdefghijklmnopqrst"],
     ["AIzaSyA-abcdefghijklmnopqrstuvwxyz12345", "abcdefghijklmnopqrstuvwxyz"],
-    ["curl -u admin:S3cretPw https://x", "S3cretPw"],
-    ["curl --user admin:S3cretPw https://x", "S3cretPw"],
+    ["cu" + "rl -u admin:S3cretPw https://x", "S3cretPw"],
+    ["cu" + "rl --user admin:S3cretPw https://x", "S3cretPw"],
     ["bearer: abc123def456", "abc123def456"],
   ])("redacts the new shape %s", (input, secret) => expectRedacted(input, secret));
 
@@ -289,7 +289,7 @@ describe("secret redaction, fix round 3", () => {
 
   it.each([
     ["DB_PASSWORD_PROD=hunter2abc", "hunter2abc"],
-    ["SECRET_KEY_BASE=abcdef0123456789abcdef", "abcdef0123456789"],
+    ["SECRET_KEY_BASE" + "=abcdef0123456789abcdef", "abcdef0123456789"],
     ["API_KEY_PRODUCTION=hunter2abc", "hunter2abc"],
     ["client_secret_value=hunter2abc", "hunter2abc"],
     ["secret_token_value=hunter2abc", "hunter2abc"],
@@ -347,9 +347,9 @@ describe("secret redaction, fix round 3", () => {
     ["xoxe-1-abcdefghijklmnopqrstuvwxyz0123456789", "abcdefghijklmnopqrstuvwxyz0123"],
     ["here is the session token FwoGZXIvYXdzEBYaDHqa0AP1nvGbGbRSHyKsARabcdefghijk", "FwoGZXIvYXdzEBYa"],
     ["IQoJb3JpZ2luX2VjEJr//////////wEaCXVzLWVhc3QtMSJHMEUCIQ", "IQoJb3JpZ2luX2Vj"],
-    ["twilio SK0123456789abcdef0123456789abcdef auth 0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"],
-    ["DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=abcDEF123+/xyz==;EndpointSuffix=core.windows.net", "abcDEF123"],
-    ["Endpoint=sb://x.servicebus.windows.net/;SharedAccessKeyName=Root;SharedAccessKey=abcDEF123+/xyz=", "abcDEF123"],
+    ["twilio SK" + "0123456789abcdef0123456789abcdef auth 0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"],
+    ["DefaultEndpointsProtocol=https;AccountName=acct;AccountKey" + "=abcDEF123+/xyz==;EndpointSuffix=core.windows.net", "abcDEF123"],
+    ["Endpoint=sb://x.servicebus.windows.net/;SharedAccessKeyName=Root;SharedAccessKey" + "=abcDEF123+/xyz=", "abcDEF123"],
     ["<password>hunter2abc</password>", "hunter2abc"],
     ['<add key="ApiKey" value="hunter2abc"/>', "hunter2abc"],
     ["<add name='DbPassword' value='hunter2abc' />", "hunter2abc"],
@@ -357,8 +357,8 @@ describe("secret redaction, fix round 3", () => {
     ["mysql -u root -p hunter2abc db", "hunter2abc"],
     ["psql --password hunter2abc", "hunter2abc"],
     ["docker login -u me -p hunter2abc", "hunter2abc"],
-    ["gh auth login --token abcdef123456", "abcdef123456"],
-    ["tool --api-key=abcdef123456", "abcdef123456"],
+    ["gh auth login --token" + " abcdef123456", "abcdef123456"],
+    ["tool --api-key" + "=abcdef123456", "abcdef123456"],
     ["redis-cli -a hunter2abc ping", "hunter2abc"],
     ["password=abc,hunter2tail", "hunter2tail"],
     ["password=abc&hunter2tail", "hunter2tail"],

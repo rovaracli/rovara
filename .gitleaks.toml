@@ -1,0 +1,7 @@
+# The secret scan of the Cloud tree (the pipeline's gitleaks gate, ops/pipeline/gates/gitleaks.gate.ts) uses gitleaks' default rules and nothing else.
+# NO allowlist belongs in this file: no paths, regexes, commits, stopwords or rule overrides, and no .gitleaksignore next to it. A finding is fixed in the code
+# (a token-shaped test value is built at run time, not written out), never suppressed. Changing this file needs the controller; the gate refuses any line but the three below.
+title = "Rovara Cloud secret scan"
+
+[extend]
+useDefault = true

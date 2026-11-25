@@ -1,11 +1,12 @@
 // Contract drift, the runner: Cloud's side of the comparison, the pinned snapshot of Code's side, the baseline of accepted drift, and the refresh from a Code checkout. Used by
 // scripts/contract-drift.ts and tests/contract/contract-drift.test.ts. Rules and the refresh: scripts/contract-drift.ts.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { makeTemporaryNodeModules } from "./code-workspaces.js";
 import { compareDocuments, driftKey, isRequestSchemaName, type Drift, type DriftReport, type SchemaDocument } from "./compare.js";
 import { extractSchemas, type Extracted, type ZodLike } from "./extract.js";
 
@@ -102,9 +103,10 @@ export async function exportCode(source: CodeSource): Promise<Snapshot> {
     ref = source.ref;
     temporary = mkdtempSync(path.join(tmpdir(), "contract-drift-code-"));
     root = temporary;
-    // Only the contracts package is read; its one dependency that matters (zod) comes from this repository, at the version both repositories pin.
+    // Only the contracts package is read; zod comes from this repository, at the version both repositories pin. The Code workspace packages the contracts import
+    // (@preplabsai/rovara-code-api since Code train 42) are exported from the same commit and built into the temporary node_modules (code-workspaces.ts); one that cannot be built throws.
     execFileSync("sh", ["-c", `git -C "$1" archive "$2" packages/contracts | tar -x -C "$3"`, "sh", source.repo, sha, temporary]);
-    symlinkSync(path.join(CLOUD_ROOT, "node_modules"), path.join(temporary, "node_modules"));
+    makeTemporaryNodeModules(temporary, CLOUD_ROOT, source.repo, sha);
   }
   try {
     const zodPackage = createRequire(path.join(root, "package.json")).resolve("zod/package.json");

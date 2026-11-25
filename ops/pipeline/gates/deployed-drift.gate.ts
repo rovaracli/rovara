@@ -1,7 +1,7 @@
 // Gate 1 (L5; BETA-CLOUD-PLAN section 2 and C3/C4): the DEPLOYED Cloud's own contract-drift check, against the Code commit that will be live.
 // Check out the Cloud sha this environment is running (the DeployedCloudSha stack output) and run THAT tree's `npm run contract:drift -- check --code-ref <sha> --code-repo <clone>`:
 // the deployed tree's rules, parsers and accepted-drift file are the ones that apply (candidate rules can name parsers the deployed tree lacks). The candidate tree is checked too.
-// The one thing it writes is local: a git worktree and `npm ci` in it (a documented exception to "a gate never creates anything"); both child commands run with AWS credentials removed.
+// The one thing it writes is local: a git worktree, `npm ci` in it and the Code workspace packages the contracts import (built into that tree's node_modules) (a documented exception to "a gate never creates anything"); both child commands run with AWS credentials removed.
 // Failure: "release Cloud first: run with CODE_RELEASE=skip, then Code". Read-only: it creates a worktree and runs npm ci in it, nothing else.
 //
 // First release (no DeployedCloudSha yet; an outputs-only first adoption may write none): fail closed, never pass. The deployed tree is known only
@@ -40,6 +40,11 @@ async function runDrift(input: GateInput, dir: string, codeSha: string, repo: st
   const { ports } = input;
   const pkg = `${dir}/package.json`;
   if (!ports.fs.exists(pkg) || !ports.fs.readText(pkg).includes('"contract:drift"')) return { ok: false, lines: [`${label}: this tree has no contract:drift script (it predates the check), so it cannot vouch for itself`] };
+  // The tree's own drift tool exports only packages/contracts from the Code clone; a tree that predates its fix cannot load Code's contracts once they import a sibling workspace package
+  // (@preplabsai/rovara-code-api, Code train 42). The PIPELINE tree's helper puts the Code workspace packages the contracts need, built from the pinned Code commit, into this tree's node_modules.
+  // Fail closed: if they cannot be installed, the check does not run.
+  const link = await ports.exec("node", [`${input.dirs.pipeline}/scripts/contract-drift/link-code-workspaces.ts`, dir, repo, codeSha], { env: NO_AWS_ENV });
+  if (link.code !== 0) return { ok: false, lines: [`${label}: the Code workspace packages that Code's contracts import could not be installed (exit ${link.code}): ${(link.stderr || link.stdout).split("\n").filter((l) => l !== "").slice(-2).join(" / ").slice(0, 300)}`] };
   const run = await ports.exec("npm", ["run", "contract:drift", "--", "check", "--code-ref", codeSha, "--code-repo", repo], { cwd: dir, env: NO_AWS_ENV });
   const all = `${run.stdout}\n${run.stderr}`.split("\n").map((l) => l.trimEnd()).filter((l) => l !== "");
   for (const line of all.slice(-6)) input.log(`${label}: ${line}`);

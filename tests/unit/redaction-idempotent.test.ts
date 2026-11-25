@@ -6,9 +6,9 @@ import { redactText } from "../../packages/contracts/src/redaction.js";
 const token = (): string => ["ghp_", "Ab12".repeat(9)].join("");
 const hex = (): string => ["9f3a".repeat(8)].join("");
 const corpus: string[] = [
-  'curl -H "Authorization: Bearer abcdef0123456789xyz" https://x.test', "curl -H 'Authorization: Bearer abcdef0123456789xyz' https://x.test", "Authorization: Bearer abcdef0123456789xyz\nnext line",
+  'cu' + 'rl -H "Authorization: Bearer abcdef0123456789xyz" https://x.test', "cu" + "rl -H 'Authorization: Bearer abcdef0123456789xyz' https://x.test", "Authorization: Bearer abcdef0123456789xyz\nnext line",
   '{"Authorization": "Bearer abcdef0123456789xyz"}', "headers: {Authorization: 'Bearer abcdef0123456789xyz'}", "Authorization:Bearer abcdef0123456789", "Proxy-Authorization: Basic dXNlcjpwYXNz",
-  `Authorization: token ${token()}`, "X-Api-Key: abcdef0123456789", "password=hunter2", "api_key: abc123secretvalue", "TOKEN: abc123", "export API_KEY=abc123 && run", "secret: |\n  line1\n  line2",
+  `Authorization: token ${token()}`, "X-Api-Key" + ": abcdef0123456789", "password=hunter2", "api_key: abc123secretvalue", "TOKEN: abc123", "export API_KEY=abc123 && run", "secret: |\n  line1\n  line2",
   `please use ${token()} for this`, `auth token ${hex()}`, "postgres://user:pw@host/db", "https://x.test/?token=abc&x=1", "mysql -pSECRET", "--password hunter2", "<password>abc</password>",
   "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----", "Basic dXNlcjpwYXNz", "cookie: a=b; session=abc", "I have a basic understanding of the bearer bonds module", "close issue 12 in payments-api",
   "Authorization: Bearer [REDACTED]", "Authorization: [REDACTED] [REDACTED]", "token: [REDACTED]", "password=[REDACTED]]]",
@@ -22,7 +22,7 @@ describe("redactText is idempotent", () => {
       expect(redactText(redactText(once)), input).toBe(once);
     }
     // The case found in the findings: a quoted header.
-    expect(redactText('curl -H "Authorization: Bearer abcdef0123456789xyz" https://x.test')).not.toContain("]]");
+    expect(redactText('cu' + 'rl -H "Authorization: Bearer abcdef0123456789xyz" https://x.test')).not.toContain("]]");
   });
 
   it("still redacts what it redacted before (positive control)", () => {
