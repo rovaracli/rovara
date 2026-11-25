@@ -14,6 +14,8 @@ import { VisibleText } from "../../design/VisibleText.js";
 import { AuthStage } from "../signed-out/AuthStage.js";
 import "./onboarding.css";
 
+/** SLACK-LINK-L1: what to do when this Slack sign-in is not the account you already use. Connecting Slack is on the Account page of a signed-in member (Account, Sign-in methods, Connect Slack). */
+export const NO_COMPANY_GITHUB_WORDS = "Already use Rovara with GitHub? Sign in with GitHub, then go to Account → Sign-in methods → Connect Slack.";
 export const JOIN_UNUSABLE = "This invite can't be used. Ask your company admin for a new one.";
 const CreatedSchema = z.object({ companyId: z.string().regex(/^org_[0-9a-z]{20}$/u), signInAgain: z.literal(true) }).strict();
 
@@ -29,6 +31,8 @@ export function NoCompanyScreen() {
       <div className="rv-auth-actions">
         <Button variant="primary" data-testid="no-company-create" onClick={() => host.navigate("/app/create-company")}>Create your company</Button>
       </div>
+      {/* SLACK-LINK-L1: the common reason for landing here is a Slack sign-in by someone who already has a Rovara account that signs in with GitHub (a sign-in is matched by its exact identity, never by email). */}
+      <p className="rv-auth-message" data-testid="no-company-github">{NO_COMPANY_GITHUB_WORDS}</p>
     </AuthStage>
   );
 }
