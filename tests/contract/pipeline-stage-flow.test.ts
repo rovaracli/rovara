@@ -13,6 +13,7 @@ import { gatewayStep } from "../../ops/pipeline/steps/gateway.ts";
 import { gatewayCheckStep } from "../../ops/pipeline/steps/gateway-check.ts";
 import { webAppStep } from "../../ops/pipeline/steps/web-app.ts";
 import { proofStep } from "../../ops/pipeline/steps/proof.ts";
+import { StageError } from "../../ops/pipeline/types.ts";
 import type { Gate, ImageStepResult, Manifest, PipelineEnv, StepName } from "../../ops/pipeline/types.ts";
 import { seedLastGood, CDK_METADATA, DIGEST_A, DIGEST_B, EXEC8, FAKE_ACCOUNT, OTHER_ACCOUNT, EXEC_ID, MODIFY_FUNCTION, config, fakeSwitches, liveStack, makeCtx, makePorts, newState, row, sha, stackFor } from "./pipeline-stage-fakes.ts";
 import type { FakeState } from "./pipeline-stage-fakes.ts";
@@ -71,7 +72,7 @@ describe("pipeline stage CLI: beta, step by step", () => {
     expect(cdk).toContain("RovaraCloudApp,RovaraCloudWeb");
     expect(cdk).toContain("agentxAccount");
     expect(cdk).toContain("rovaraCloudSha");
-    expect(cdk).toContain("params=CodeUrl=https://beta-code.example.test");
+    expect(cdk).toContain("params=rovara-cloud-beta-app:CodeUrl=https://beta-code.example.test,rovara-cloud-beta-web:CodeUrl=https://beta-code.example.test");
     expect(run.state.calls).toContain(`git worktree ${sha("4").slice(0, 7)} /work/cloud-${sha("4").slice(0, 12)}`);
     expect(run.state.calls.filter((c) => c.startsWith("exec bash -c")).map((c) => c.slice("exec bash -c ".length))).toEqual(["npm ci", "npx tsc -b infra", "npx tsc -b packages/model-gateway", "npm run build:web"]);
     expect(run.state.files["out/summary.txt"]).toMatch(/^PROMOTION SUMMARY beta {2}execution 1a2b3c4d {2}mode release/u);
@@ -89,7 +90,7 @@ describe("pipeline stage CLI: beta, step by step", () => {
     expect(m.stages.beta!.completed).toEqual(["preflight", "image", "gateway", "gateway-check", "web-app", "proof"]);
     expect(m.gateway).toMatchObject({ digest: DIGEST_A, source: "built" });
     const cdkCalls = run.state.calls.filter((c) => c.startsWith("cdk "));
-    expect(cdkCalls[1]).toMatch(new RegExp(`^cdk RovaraModelGateway ${NAME} ctx=.*rovaraCloudSha.* params=ImageDigest=${DIGEST_A}$`, "u"));
+    expect(cdkCalls[1]).toMatch(new RegExp(`^cdk RovaraModelGateway ${NAME} ctx=.*rovaraCloudSha.* params=rovara-cloud-beta-gateway:ImageDigest=${DIGEST_A}$`, "u"));
     expect(cdkCalls[1]).not.toContain("agentxAccount");
     expect(executes(run.state)).toEqual([`cfn execute ${stackFor("beta", "gateway")} ${NAME}`, `cfn execute ${stackFor("beta", "app")} ${NAME}`, `cfn execute ${stackFor("beta", "web")} ${NAME}`]);
     expect(m.stages.beta!.releaseCheck).toMatchObject({ base: "https://cloud.example.test", failures: [] });
@@ -186,6 +187,34 @@ describe("pipeline stage CLI: beta, step by step", () => {
     await failsWith(step(run, "beta", "preflight"), "GATE_FAILED", /spy/);
     expect(seen).toEqual(["app+web"]);
     expect(executes(run.state)).toEqual([]);
+    // and the unexecuted change sets of this run are deleted, not left behind
+    expect(Object.keys(run.state.changeSets)).toEqual([]);
+    expect(run.state.calls.filter((c) => c.startsWith("cfn delete"))).toEqual([`cfn delete ${stackFor("beta", "app")} ${NAME}`, `cfn delete ${stackFor("beta", "web")} ${NAME}`]);
+  });
+
+  it("a cdk failure in the gateway step (the incident: cdk refused a parameter) deletes the change sets this call made and nothing else, then fails the step", async () => {
+    const run = newRun(betaWorld());
+    await step(run, "beta", "preflight");
+    await step(run, "beta", "image");
+    const gatewayStack = stackFor("beta", "gateway");
+    const original = run.state.calls.length;
+    const real = makePorts(run.state);
+    // cdk creates the change set, then dies (a second stack of the call rejected a parameter): the step must clean up what exists
+    run.steps = { ...run.steps, gateway: (c, st) => gatewayStep({ ...c, ports: { ...c.ports, cdk: { deployNoExecute: async (a) => { await real.cdk.deployNoExecute(a); throw new StageError("FAILED", "cdk deploy --no-execute failed (exit 1): Parameters: [ImageDigest] do not exist in the template"); } } } }, st) };
+    await failsWith(step(run, "beta", "gateway"), "FAILED", /do not exist in the template/);
+    expect(Object.keys(run.state.changeSets).sort()).toEqual([`${stackFor("beta", "app")}/${NAME}`, `${stackFor("beta", "web")}/${NAME}`]); // preflight's stay: they belong to the later web-app step of this execution
+    expect(run.state.calls.slice(original).filter((c) => c.startsWith("cfn delete"))).toEqual([`cfn delete ${gatewayStack} ${NAME}`]);
+    expect(executes(run.state)).toEqual([]);
+  });
+
+  it("a gate refusing the web and app change sets at web-app (nothing executed) deletes them", async () => {
+    const run = newRun(betaWorld());
+    run.gates = [integrity, pass("g2", "gateway-live")];
+    for (const name of ["preflight", "image", "gateway", "gateway-check"] as StepName[]) await step(run, "beta", name);
+    // the environment changed after the preview: the recorded change set is no longer the live one
+    run.state.changeSets[`${stackFor("beta", "app")}/${NAME}`]!.id = "someone-else";
+    await failsWith(step(run, "beta", "web-app"), "CHANGE_SET_MISMATCH");
+    expect(Object.keys(run.state.changeSets).filter((k) => k.includes("-web/") || k.includes("-app/"))).toEqual([]);
   });
 
   it("the gateway step gives the change-set gates ONLY the gateway change set and does not execute when one fails", async () => {
@@ -414,6 +443,115 @@ describe("pipeline stage CLI: a dry run is never proof, and never mixed with a r
   });
 });
 
+describe("pipeline stage CLI: CLOUD_REF=from-trigger through the stages", () => {
+  const FIRST = { cloudRef: "from-trigger", cloudSourceCommit: sha("3") };
+  const writes = (state: FakeState): string[] => state.calls.filter((c) => /^(cfn|cdk|ssm put|aws|git worktree)/u.test(c));
+
+  it("beta resolves the tag on the source commit and records how; the manifest carries it on", async () => {
+    const run = newRun(betaWorld(), { inputs: FIRST });
+    await step(run, "beta", "preflight");
+    expect(manifestOf(run.state).cloud).toMatchObject({ tag: "v0.13.9", sha: sha("3"), ref: "from-trigger" });
+    expect(run.state.calls.find((c) => c.startsWith("cdk "))).toContain("rovaraCloudSha");
+  });
+
+  it("a Code push (no tag on the commit) keeps beta's recorded Cloud: the release proceeds on that Cloud", async () => {
+    const state = betaWorld();
+    state.history.push(sha("5"));
+    const run = newRun(state, { inputs: { cloudRef: "from-trigger", cloudSourceCommit: sha("5") } });
+    await step(run, "beta", "preflight");
+    expect(manifestOf(run.state).cloud).toMatchObject({ tag: "v0.13.1", sha: sha("1"), ref: "last-good" });
+    // the candidate is the RECORDED tag's commit, never the trunk commit handed in
+    const worktrees = run.state.calls.filter((c) => c.startsWith("git worktree"));
+    expect(worktrees).toHaveLength(1);
+    expect(worktrees[0]).toContain(`git worktree ${sha("1").slice(0, 7)} `);
+    expect(worktrees[0]).not.toContain(sha("5").slice(0, 7));
+    expect(run.state.calls.find((c) => c.startsWith("cdk "))).toBeDefined();
+  });
+
+  it("refuses before any write when the commit has two tags, is off the trunk, or CLOUD_SOURCE_COMMIT is missing", async () => {
+    const two = betaWorld();
+    two.tags["v0.13.11"] = sha("3");
+    for (const [state, commit, text] of [[two, sha("3"), /carries 2 release tags/u], [betaWorld(), sha("9"), /not on cloud\/next/u], [betaWorld(), null, /needs CLOUD_SOURCE_COMMIT/u]] as const) {
+      const run = newRun(state, { inputs: { cloudRef: "from-trigger", cloudSourceCommit: commit } });
+      await failsWith(step(run, "beta", "preflight"), "REF_FAILED", text);
+      expect(writes(run.state)).toEqual([]);
+      expect(run.state.files["out/manifest.json"]).toBeUndefined();
+    }
+  });
+
+  it("an adoption run still has to name the tag (from-trigger does not adopt)", async () => {
+    const run = newRun(betaWorld(), { inputs: { ...FIRST, adopt: true } });
+    await failsWith(step(run, "beta", "preflight"), "REFUSED", /set CLOUD_REF/u);
+  });
+
+  it("production deploys what beta resolved: from-trigger with no source commit is not re-resolved, and a different explicit tag is refused", async () => {
+    const beta = newRun(betaWorld(), { inputs: FIRST });
+    beta.gates = [integrity, pass("g2", "gateway-live"), pass("p", "proof")];
+    for (const name of ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as StepName[]) await step(beta, "beta", name);
+    const prod = betaWorld();
+    for (const part of ["gateway", "web", "app"] as const) { prod.stacks[stackFor("production", part)] = { ...prod.stacks[stackFor("beta", part)]!, templateSha: "x" }; delete prod.stacks[stackFor("beta", part)]; }
+    seedLastGood(prod, "production");
+    prod.files = { ...beta.state.files };
+    prod.tags["v0.13.11"] = sha("4"); // something newer exists: it must not be picked up
+    const run = newRun(prod, { inputs: { cloudRef: "from-trigger", cloudSourceCommit: null, cloudProd: true, expectedAccount: FAKE_ACCOUNT } });
+    run.gates = [integrity, pass("g2", "gateway-live"), pass("p", "proof")];
+    await step(run, "production", "preflight");
+    expect(manifestOf(prod).cloud).toMatchObject({ tag: "v0.13.9", sha: sha("3") });
+    expect(prod.calls.some((c) => c.startsWith("git fetchTags"))).toBe(false); // nothing was re-resolved
+    expect(prod.calls.find((c) => c.startsWith("git worktree"))).toContain(sha("3").slice(0, 7));
+    const other = newRun(prod, { inputs: { cloudRef: "v0.13.10", cloudProd: true, expectedAccount: FAKE_ACCOUNT } });
+    other.gates = run.gates;
+    prod.files["out/manifest.json"] = beta.state.files["out/manifest.json"]!;
+    await failsWith(step(other, "production", "preflight"), "REFUSED", /not the release Beta resolved/u);
+  });
+});
+
+describe("pipeline stage CLI: production joins what beta resolved", () => {
+  const prodFrom = async (inputs: Partial<Inputs>, tweak: (files: Record<string, string>) => void = () => {}) => {
+    const beta = newRun(betaWorld(), { inputs: { cloudRef: "from-trigger", cloudSourceCommit: sha("3"), ...inputs } });
+    beta.gates = [integrity, pass("g2", "gateway-live"), pass("p", "proof")];
+    for (const name of ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as StepName[]) await step(beta, "beta", name);
+    const prod = betaWorld();
+    for (const part of ["gateway", "web", "app"] as const) { prod.stacks[stackFor("production", part)] = { ...prod.stacks[stackFor("beta", part)]!, templateSha: "x" }; delete prod.stacks[stackFor("beta", part)]; }
+    seedLastGood(prod, "production");
+    prod.files = { ...beta.state.files };
+    tweak(prod.files);
+    return prod;
+  };
+
+  it("refuses when beta left no resolved Cloud release in the manifest (production never resolves one)", async () => {
+    for (const edit of [(m: { cloud: { sha: string; tag: string } }) => { m.cloud.sha = "abc"; }, (m: { cloud: { sha: string; tag: string } }) => { m.cloud.tag = "cloud/next"; }]) {
+      const prod = await prodFrom({}, (files) => { const m = JSON.parse(files["out/manifest.json"]!) as { cloud: { sha: string; tag: string } }; edit(m); files["out/manifest.json"] = JSON.stringify(m); });
+      const run = newRun(prod, { inputs: { cloudRef: "v0.13.9", cloudProd: true, expectedAccount: FAKE_ACCOUNT } });
+      run.gates = [integrity, pass("g2", "gateway-live"), pass("p", "proof")];
+      await failsWith(step(run, "production", "preflight"), "REFUSED", /Beta left no resolved Cloud release/u);
+      expect(prod.calls.some((c) => c.startsWith("git fetchTags"))).toBe(false);
+    }
+  });
+
+  const skipped = async (prodLive: string | null, betaInputs: Partial<Inputs> = {}) => {
+    const prod = await prodFrom(betaInputs, () => {});
+    if (prodLive !== null) liveStack(prod, stackFor("production", "web"), { outputs: { DeployedCloudSha: prodLive } });
+    const run = newRun(prod, { inputs: { cloudProd: false } });
+    await step(run, "production", "preflight");
+    return { stage: manifestOf(prod).stages.production!, run };
+  };
+
+  it("warns when Code is promoted next to an OLDER production Cloud than the one beta tested (CLOUD_PROD off), and says nothing otherwise", async () => {
+    const older = await skipped(sha("2"));
+    expect(older.stage.skipped).toBe("CLOUD_PROD=off");
+    expect(older.stage.warnings.join(" ")).toMatch(/promoted next to an OLDER production Cloud \(222222222\) than the one Beta tested \(v0\.13\.9/u);
+    expect(older.run.logs.join("\n")).toMatch(/WARNING: Code is promoted next to an OLDER/u);
+    expect((await skipped(sha("3"))).stage.warnings).toEqual([]); // the same Cloud
+    expect((await skipped(sha("4"))).stage.warnings).toEqual([]); // a NEWER production Cloud is not "older"
+    expect((await skipped(sha("2"), { codeRelease: "skip" })).stage.warnings).toEqual([]);
+  });
+
+  it("an unreadable or unknown production Cloud is said, never a failure of the skip", async () => {
+    expect((await skipped(null)).stage.warnings.join(" ")).toMatch(/cannot be compared|could not read/u);
+  });
+});
+
 describe("pipeline stage CLI: the image step", () => {
   const afterPreflight = async (): Promise<Run> => { const run = newRun(betaWorld()); await step(run, "beta", "preflight"); return run; };
 
@@ -531,6 +669,18 @@ describe("pipeline stage CLI: command line and exit codes", () => {
     const exit = main(argv, env, { config, switchesFile: fakeSwitches, gates: extra.gates ?? [integrity], requiredGates: { preflight: [], "change-sets": [], "gateway-live": [], "proof": [] }, makePorts: () => makePorts(state, argv[0] as PipelineEnv), out: (l) => lines.push(l) });
     return exit.then((code) => ({ code, lines, state }));
   };
+
+  it("CLOUD_PROD=on is refused unless CLOUD_REF is an explicit release tag, before any port is used", async () => {
+    const env = { ...ctxEnv, CLOUD_SOURCE_COMMIT: sha("3") };
+    for (const ref of [undefined, "from-trigger", "latest", "cloud/next"]) {
+      const r = await run(["beta", "preflight"], { ...env, CLOUD_PROD: "on", ...(ref === undefined ? {} : { CLOUD_REF: ref }) });
+      expect(r.code).toBe(3);
+      expect(r.lines.join("\n")).toMatch(/CLOUD_PROD=on needs CLOUD_REF set to a release tag/u);
+      expect(r.state.calls).toEqual([]);
+    }
+    expect((await run(["beta", "preflight"], { ...env, CLOUD_PROD: "on", CLOUD_REF: "v0.13.9" })).code).toBe(0);
+    expect((await run(["beta", "preflight"], { ...env, CLOUD_PROD: "off", CLOUD_REF: "from-trigger" })).code).toBe(0);
+  });
 
   it("parses flags, rejects unknown ones and bad values, and prints usage for help", () => {
     expect(parseArgs(["beta", "preflight", "--adopt", "--cloud-ref", "v1.2.3"])).toEqual({ env: "beta", step: "preflight", flags: { adopt: true, "cloud-ref": "v1.2.3" } });

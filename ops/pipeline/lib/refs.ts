@@ -4,8 +4,16 @@ import { releaseTagRegex } from "../config.ts";
 import type { PipelineConfig } from "../config.ts";
 import { StageError } from "../types.ts";
 import type { PipelineEnv, Ports } from "../types.ts";
+import { readLastGood } from "./lastgood.ts";
 
-export interface ResolvedRef { tag: string; sha: string; ref: "latest-tag" | "CLOUD_REF"; trunk: string }
+/** How a Cloud ref was decided: the newest tag (no CLOUD_REF), an explicit CLOUD_REF, the one tag on the trigger's source commit, or the recorded last-good tag (a Code push: Cloud does not change). */
+export interface ResolvedRef { tag: string; sha: string; ref: "latest-tag" | "CLOUD_REF" | "from-trigger" | "last-good"; trunk: string }
+
+/** The pipeline's default CLOUD_REF (Code's release pipeline passes it with CLOUD_SOURCE_COMMIT = the Cloud source commit of the run). */
+export const FROM_TRIGGER = "from-trigger";
+const SHA40 = /^[0-9a-f]{40}$/u;
+/** What `from-trigger` reads: the Cloud source commit of the run (CLOUD_SOURCE_COMMIT) and the environment whose last-good record a tagless commit falls back to (Beta). */
+export interface TriggerFacts { sourceCommit: string | null; env: PipelineEnv }
 
 const versionOf = (tag: string): [number, number, number] => {
   const parts = tag.slice(1).split(".").map((part) => Number(part));
@@ -17,8 +25,13 @@ export function compareTags(a: string, b: string): number {
   return x[0] - y[0] || x[1] - y[1] || x[2] - y[2];
 }
 
-export async function resolveCloudRef(ports: Ports, config: PipelineConfig, requested: string | null): Promise<ResolvedRef> {
+export async function resolveCloudRef(ports: Ports, config: PipelineConfig, requested: string | null, trigger: TriggerFacts | null = null): Promise<ResolvedRef> {
   const pattern = releaseTagRegex(config);
+  // CLOUD_REF=from-trigger: decided from the source commit before anything is fetched. A missing or malformed commit is never guessed around.
+  if (requested === FROM_TRIGGER) {
+    if (trigger === null || trigger.sourceCommit === null || !SHA40.test(trigger.sourceCommit)) throw new StageError("REF_FAILED", `CLOUD_REF=${FROM_TRIGGER} needs CLOUD_SOURCE_COMMIT, the full 40-character commit of the Cloud source: it is missing or malformed, so no release is chosen (name a release tag in CLOUD_REF to start by hand)`);
+    return fromTrigger(ports, config, trigger.sourceCommit, trigger.env);
+  }
   if (requested !== null && !pattern.test(requested)) throw new StageError("REF_FAILED", `CLOUD_REF ${requested} is not a release tag (vX.Y.Z); the pipeline deploys release tags only`);
   await ports.git.fetchTags();
   const trunks: string[] = [];
@@ -42,6 +55,52 @@ export async function resolveCloudRef(ports: Ports, config: PipelineConfig, requ
     if (trunk !== null) return { tag, sha, ref: "latest-tag", trunk };
   }
   throw new StageError("REF_FAILED", `no vX.Y.Z release tag is on ${trunks.join(" or ")}; the pipeline deploys release tags only`);
+}
+
+async function trunksOf(ports: Ports, config: PipelineConfig): Promise<string[]> {
+  await ports.git.fetchTags();
+  const trunks: string[] = [];
+  for (const branch of config.trunkBranches) if (await ports.git.fetchBranch(branch)) trunks.push(branch);
+  if (trunks.length === 0) throw new StageError("REF_FAILED", `none of the trunk branches (${config.trunkBranches.join(", ")}) exists on origin`);
+  return trunks;
+}
+
+/**
+ * from-trigger: exactly one release tag on the source commit is that tag; a commit with no release tag (a Code push: Code never changes Cloud) keeps the Cloud the environment's
+ * last-good record names (never "the newest tag"; no record is refused); two or more tags, or a commit that is not on the trunk, are refused. Nothing is written before this answers.
+ */
+async function fromTrigger(ports: Ports, config: PipelineConfig, commit: string, env: PipelineEnv): Promise<ResolvedRef> {
+  const pattern = releaseTagRegex(config);
+  const trunks = await trunksOf(ports, config);
+  let trunk: string | null = null;
+  try { for (const branch of trunks) if (trunk === null && await ports.git.isAncestor(commit, `origin/${branch}`)) trunk = branch; } catch {
+    throw new StageError("REF_FAILED", `the Cloud source commit ${commit.slice(0, 9)} is not known to git here, so it cannot be shown to be on ${trunks.join(" or ")}: nothing is released`);
+  }
+  if (trunk === null) throw new StageError("REF_FAILED", `the Cloud source commit ${commit.slice(0, 9)} is not on ${trunks.join(" or ")}: this pipeline releases only commits cut from the trunk`);
+  const onCommit: string[] = [];
+  for (const tag of (await ports.git.tags()).filter((t) => pattern.test(t)).sort((a, b) => compareTags(b, a))) {
+    try { if ((await ports.git.revParse(`refs/tags/${tag}^{commit}`)) === commit) onCommit.push(tag); } catch { /* an unreadable tag is not on this commit */ }
+  }
+  if (onCommit.length > 1) throw new StageError("REF_FAILED", `the Cloud source commit ${commit.slice(0, 9)} carries ${onCommit.length} release tags (${onCommit.join(", ")}): it is not clear which one to release, so none is (start by hand with CLOUD_REF set to the tag)`);
+  const record = await readLastGood(ports, config, env);
+  if (onCommit.length === 1) {
+    // A late push of an OLD tag must never roll Cloud back: a tag older than the last recorded good one is refused here (a deliberate rollback names CLOUD_REF on a manual start).
+    const tag = onCommit[0]!;
+    if (record !== null && record.cloud.tag !== tag) {
+      let older = compareTags(tag, record.cloud.tag) < 0;
+      try { older = older || await ports.git.isAncestor(commit, record.cloud.sha); } catch { /* the recorded commit is unknown here: the version order above stands */ }
+      if (older) throw new StageError("REF_FAILED", `${tag} is older than ${record.cloud.tag}, the release ${env} last recorded as good: a pushed tag never rolls Cloud back (to roll back on purpose, start by hand with CLOUD_REF set to ${tag} and PIPELINE_MODE=rollback)`);
+    }
+    return { tag, sha: commit, ref: "from-trigger", trunk };
+  }
+  if (record === null) throw new StageError("REF_FAILED", `the Cloud source commit ${commit.slice(0, 9)} carries no release tag (a Code push), and ${env} has no recorded last-good release to keep: nothing is released (run an adoption run, or start by hand with CLOUD_REF set to a release tag)`);
+  let recordedSha: string | null = null;
+  try { recordedSha = await ports.git.revParse(`refs/tags/${record.cloud.tag}^{commit}`); } catch { /* checked below */ }
+  if (recordedSha === null || recordedSha !== record.cloud.sha) throw new StageError("REF_FAILED", `the Cloud source commit ${commit.slice(0, 9)} carries no release tag, and the release ${env} last recorded (${record.cloud.tag}) no longer points at the commit recorded for it: nothing is released`);
+  let recordedTrunk: string | null = null;
+  for (const branch of trunks) if (recordedTrunk === null && await ports.git.isAncestor(recordedSha, `origin/${branch}`)) recordedTrunk = branch;
+  if (recordedTrunk === null) throw new StageError("REF_FAILED", `the release ${env} last recorded (${record.cloud.tag}) is not on ${trunks.join(" or ")}: nothing is released`);
+  return { tag: record.cloud.tag, sha: recordedSha, ref: "last-good", trunk: recordedTrunk };
 }
 
 /** The release tag (if any) whose commit is `sha`: for the rollback record's "live tag". */

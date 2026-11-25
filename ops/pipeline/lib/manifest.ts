@@ -61,7 +61,7 @@ export function parseManifest(raw: string): Manifest {
     cloud: {
       tag: need(cloud.tag, "cloud.tag"),
       sha: need(cloud.sha, "cloud.sha"),
-      ref: cloud.ref === "CLOUD_REF" ? "CLOUD_REF" : "latest-tag",
+      ref: cloud.ref === "CLOUD_REF" || cloud.ref === "from-trigger" || cloud.ref === "last-good" ? cloud.ref : "latest-tag",
       trunk: need(cloud.trunk, "cloud.trunk"),
       liveSha: { beta: text(live.beta), production: text(live.production) },
     },

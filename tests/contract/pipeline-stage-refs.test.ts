@@ -4,8 +4,8 @@ import { cloudAppStackName } from "../../infra/lib/cloud-app.js";
 import { cloudWebStackName } from "../../infra/lib/cloud-web.js";
 import { modelGatewayImagesStackName, modelGatewayStackName } from "../../infra/lib/model-gateway.js";
 import { changeSetNameFor, lastGoodParameter, parseConfig, parseGatePolicy, releaseTagRegex, ssmChecksPrefixFor, ssmPrefixFor, stackName } from "../../ops/pipeline/config.ts";
-import { compareTags, decideMode, readLiveCloudSha, resolveCloudRef, tagOfSha } from "../../ops/pipeline/lib/refs.ts";
-import { config, liveStack, makePorts, newState, sha, stackFor } from "./pipeline-stage-fakes.ts";
+import { FROM_TRIGGER, compareTags, decideMode, readLiveCloudSha, resolveCloudRef, tagOfSha } from "../../ops/pipeline/lib/refs.ts";
+import { config, liveStack, makePorts, newState, seedLastGood, sha, stackFor } from "./pipeline-stage-fakes.ts";
 import { readFileSync, readdirSync } from "node:fs";
 
 describe("pipeline stage CLI: layout config", () => {
@@ -106,6 +106,100 @@ describe("pipeline stage CLI: ref resolution", () => {
     const ports = makePorts(newState());
     expect(await tagOfSha(ports, config, sha("3"))).toBe("v0.13.9");
     expect(await tagOfSha(ports, config, sha("5"))).toBeNull();
+  });
+});
+
+describe("pipeline stage CLI: CLOUD_REF=from-trigger", () => {
+  const trigger = (sourceCommit: string | null) => ({ sourceCommit, env: "beta" as const });
+  const world = () => { const state = newState(); seedLastGood(state, "beta"); return state; }; // beta's last-good is v0.13.1; the newest tag on the trunk is v0.13.10
+
+  it("exactly one release tag on the source commit is that tag (not the newest tag, not the last-good one)", async () => {
+    const state = world();
+    expect(await resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("3")))).toEqual({ tag: "v0.13.9", sha: sha("3"), ref: "from-trigger", trunk: "cloud/next" });
+  });
+
+  it("an explicit CLOUD_REF on a manual start still wins, and the source commit is ignored", async () => {
+    const resolved = await resolveCloudRef(makePorts(world()), config, "v0.13.2", trigger(sha("3")));
+    expect(resolved).toMatchObject({ tag: "v0.13.2", ref: "CLOUD_REF" });
+    // and with nothing named, the newest tag as today
+    expect((await resolveCloudRef(makePorts(world()), config, null, trigger(sha("3")))).tag).toBe("v0.13.10");
+  });
+
+  it("a commit on the trunk with no release tag (a Code push) keeps beta's recorded last-good Cloud, never the newest tag", async () => {
+    const state = world();
+    state.history.push(sha("5")); // a trunk commit nobody tagged
+    expect(await resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("5")))).toEqual({ tag: "v0.13.1", sha: sha("1"), ref: "last-good", trunk: "cloud/next" });
+  });
+
+  it("a tagless commit with no last-good record is refused in plain words", async () => {
+    const state = newState();
+    state.history.push(sha("5"));
+    const ports = makePorts(state);
+    await expect(resolveCloudRef(ports, config, FROM_TRIGGER, trigger(sha("5")))).rejects.toMatchObject({ exitName: "REF_FAILED" });
+    await expect(resolveCloudRef(ports, config, FROM_TRIGGER, trigger(sha("5")))).rejects.toThrow(/no recorded last-good release to keep/u);
+  });
+
+  it("refuses when the recorded last-good tag moved, is gone, or is off the trunk", async () => {
+    const state = world();
+    state.history.push(sha("5"));
+    state.tags["v0.13.1"] = sha("2"); // the tag was moved since it was recorded
+    await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("5")))).rejects.toThrow(/no longer points at the commit recorded/u);
+    delete state.tags["v0.13.1"];
+    await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("5")))).rejects.toThrow(/no longer points/u);
+    const off = world();
+    off.history.push(sha("5"));
+    off.ssm["/rovara-cloud/beta/release/last-good"] = JSON.stringify({ schema: 1, env: "beta", recordedAt: "2026-11-20T00:00:00.000Z", executionId: "e", mode: "release", cloud: { tag: "v0.14.0", sha: sha("9") }, gateway: { digest: "sha256:" + "b".repeat(64) } });
+    await expect(resolveCloudRef(makePorts(off), config, FROM_TRIGGER, trigger(sha("5")))).rejects.toThrow(/is not on cloud\/next/u);
+  });
+
+  it("two or more release tags on the commit are refused", async () => {
+    const state = world();
+    state.tags["v0.13.11"] = sha("3"); // v0.13.9 and v0.13.11 on one commit
+    await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("3")))).rejects.toThrow(/carries 2 release tags \(v0.13.11, v0.13.9\)/u);
+  });
+
+  it("a prerelease tag on the commit does not count as a release tag", async () => {
+    const state = world();
+    state.history.push(sha("6"));
+    state.tags["v0.16.0-rc1"] = sha("6");
+    expect((await resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("6")))).ref).toBe("last-good");
+  });
+
+  it("a commit that is not on the trunk, or unknown, is refused even when it carries a tag", async () => {
+    const state = world();
+    await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("9")))).rejects.toThrow(/not on cloud\/next/u); // v0.14.0 is on it, but off the trunk
+    await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("e")))).rejects.toThrow(/not on cloud\/next/u);
+  });
+
+  it("a missing or malformed CLOUD_SOURCE_COMMIT is refused before git is touched", async () => {
+    for (const bad of [null, "", "abc1234", sha("a").toUpperCase(), `${sha("3")}0`, "v0.13.9", "HEAD"]) {
+      const state = world();
+      await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(bad))).rejects.toMatchObject({ exitName: "REF_FAILED" });
+      expect(state.calls).toEqual([]);
+    }
+    await expect(resolveCloudRef(makePorts(world()), config, FROM_TRIGGER)).rejects.toMatchObject({ exitName: "REF_FAILED" });
+  });
+
+  it("a pushed tag OLDER than the last recorded good release is refused; the same, a newer one, and an explicit CLOUD_REF (a deliberate rollback) are not", async () => {
+    const state = world();
+    state.ssm["/rovara-cloud/beta/release/last-good"] = JSON.stringify({ schema: 1, env: "beta", recordedAt: "2026-11-20T00:00:00.000Z", executionId: "e", mode: "release", cloud: { tag: "v0.13.9", sha: sha("3") }, gateway: { digest: "sha256:" + "b".repeat(64) } });
+    await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("2")))).rejects.toThrow(/v0\.13\.2 is older than v0\.13\.9.*never rolls Cloud back/u);
+    await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("1")))).rejects.toMatchObject({ exitName: "REF_FAILED" });
+    expect((await resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("3")))).tag).toBe("v0.13.9");
+    expect((await resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("4")))).tag).toBe("v0.13.10");
+    expect((await resolveCloudRef(makePorts(state), config, "v0.13.2", trigger(sha("2")))).ref).toBe("CLOUD_REF");
+  });
+
+  it("a tag with a HIGHER version number on an older commit is refused too (ancestry, not only the numbers)", async () => {
+    const state = world();
+    delete state.tags["v0.13.2"];
+    state.tags["v0.30.0"] = sha("2"); // a re-cut tag: a high number, but its commit is behind the recorded release
+    state.ssm["/rovara-cloud/beta/release/last-good"] = JSON.stringify({ schema: 1, env: "beta", recordedAt: "2026-11-20T00:00:00.000Z", executionId: "e", mode: "release", cloud: { tag: "v0.13.9", sha: sha("3") }, gateway: { digest: "sha256:" + "b".repeat(64) } });
+    await expect(resolveCloudRef(makePorts(state), config, FROM_TRIGGER, trigger(sha("2")))).rejects.toThrow(/v0\.30\.0 is older than v0\.13\.9/u);
+  });
+
+  it("the literal `latest` is refused as it is today (only an unset CLOUD_REF means the newest tag)", async () => {
+    await expect(resolveCloudRef(makePorts(world()), config, "latest", trigger(sha("3")))).rejects.toThrow(/not a release tag/u);
   });
 });
 

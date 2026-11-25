@@ -4,7 +4,7 @@ import { changeSetNameFor, stackName } from "../config.ts";
 import { StageError } from "../types.ts";
 import { buildCandidate } from "../lib/candidate.ts";
 import type { StepContext } from "../lib/context.ts";
-import { executeRecorded, previewChangeSets, tidyChangeSets } from "../lib/changesets.ts";
+import { discardChangeSets, executeRecorded, previewChangeSets, tidyChangeSets } from "../lib/changesets.ts";
 import { stageOf } from "../lib/manifest.ts";
 import { gatePhase, requireManifest } from "../lib/run.ts";
 import type { State } from "../lib/run.ts";
@@ -20,13 +20,18 @@ export async function gatewayStep(ctx: StepContext, state: State): Promise<void>
   const dir = await buildCandidate(ctx, manifest.cloud.sha, false);
   const name = stackName(ctx.config, ctx.env, "gateway");
   const changeSetName = changeSetNameFor(manifest.exec8);
-  const [record] = await previewChangeSets({
-    ports: ctx.ports, dir, changeSetName, stacks: [{ part: "gateway", stack: name, stackId: ctx.config.stackIds.gateway }],
-    context: { ...ctx.contextFor("gateway"), rovaraCloudSha: manifest.cloud.sha }, parameters: { ImageDigest: digest }, log: ctx.log,
-  });
-  stage.changeSets = [...stage.changeSets.filter((cs) => cs.part !== "gateway"), record!];
-  await gatePhase(ctx, state, stage, "change-sets", [record!], dir, ctx.inputs.workDir);
-  const [executed] = await executeRecorded({ ports: ctx.ports, records: [record!], settleTimeoutSeconds: SETTLE_TIMEOUT_SECONDS, log: ctx.log });
-  stage.changeSets = stage.changeSets.map((cs) => (cs.part === "gateway" ? executed! : cs));
+  try {
+    const [record] = await previewChangeSets({
+      ports: ctx.ports, dir, changeSetName, stacks: [{ part: "gateway", stack: name, stackId: ctx.config.stackIds.gateway }],
+      context: { ...ctx.contextFor("gateway"), rovaraCloudSha: manifest.cloud.sha }, parameters: { ImageDigest: digest }, log: ctx.log,
+    });
+    stage.changeSets = [...stage.changeSets.filter((cs) => cs.part !== "gateway"), record!];
+    await gatePhase(ctx, state, stage, "change-sets", [record!], dir, ctx.inputs.workDir);
+    const [executed] = await executeRecorded({ ports: ctx.ports, records: [record!], settleTimeoutSeconds: SETTLE_TIMEOUT_SECONDS, log: ctx.log });
+    stage.changeSets = stage.changeSets.map((cs) => (cs.part === "gateway" ? executed! : cs));
+  } catch (error) {
+    await discardChangeSets(ctx.ports, [name], changeSetName, ctx.log);
+    throw error;
+  }
   await tidyChangeSets(ctx.ports, [name], changeSetName, ctx.log);
 }

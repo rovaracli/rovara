@@ -6,6 +6,8 @@ import type { Gate, Manifest, PipelineEnv, Ports, StackPart, StepName } from "..
 export interface Inputs {
   execId: string;
   cloudRef: string | null;
+  /** CLOUD_SOURCE_COMMIT: the Cloud source commit of the pipeline run (Beta's Cloud Preflight only); read when CLOUD_REF is `from-trigger`. */
+  cloudSourceCommit: string | null;
   codeRelease: "run" | "skip";
   cloudProd: boolean;
   codeSha: string | null;

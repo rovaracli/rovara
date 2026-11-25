@@ -108,7 +108,7 @@ export interface Manifest {
   cloud: {
     tag: string;
     sha: string;
-    ref: "latest-tag" | "CLOUD_REF";
+    ref: "latest-tag" | "CLOUD_REF" | "from-trigger" | "last-good";
     trunk: string;
     liveSha: Record<PipelineEnv, string | null>;
   };
@@ -188,6 +188,8 @@ export interface ExecOptions { cwd?: string; env?: Record<string, string | undef
 export interface ChangeSetDescription { id: string; status: string; executionStatus: string; statusReason: string | null; rows: ChangeRow[] }
 export interface StackDescription { status: string; parameters: Record<string, string>; outputs: Record<string, string> }
 
+/** One cdk call: it names every stack it may touch (the cdk stack id selects it, the stack name is what `--parameters` matches) and each stack's own parameters, so a parameter can never be left unprefixed. */
+export interface CdkStackSelection { stackId: string; stackName: string; parameters: Record<string, string> }
 export interface Ports {
   exec(cmd: string, args: readonly string[], opts?: ExecOptions): Promise<ExecResult>;
   aws: { json(args: readonly string[], opts?: { profile?: string | null; env?: Record<string, string> }): Promise<unknown> };
@@ -209,7 +211,7 @@ export interface Ports {
     listChangeSetNames(stack: string): Promise<string[]>;
     waitSettled(stack: string, timeoutSeconds: number): Promise<string>;
   };
-  cdk: { deployNoExecute(a: { dir: string; stackIds: readonly string[]; changeSetName: string; context: Record<string, string>; parameters: Record<string, string> }): Promise<void> };
+  cdk: { deployNoExecute(a: { dir: string; stacks: readonly CdkStackSelection[]; changeSetName: string; context: Record<string, string> }): Promise<void> };
   ssm: { get(name: string): Promise<string | null>; put(name: string, value: string): Promise<void> };
   /** `body` is the response text (at most 64 KiB), for a gate that reads a JSON answer (the gateway's /healthz); absent when the call failed (status 0). */
   http: { get(url: string, timeoutMs: number): Promise<{ status: number; body?: string }> };

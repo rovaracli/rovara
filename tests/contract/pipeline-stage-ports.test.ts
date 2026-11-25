@@ -24,6 +24,7 @@ case "$1 $2" in
     echo '{"Stacks":[{"StackStatus":"UPDATE_COMPLETE","Parameters":[{"ParameterKey":"ImageDigest","ParameterValue":"sha256:x"}],"Outputs":[{"OutputKey":"CloudUrl","OutputValue":"https://c.example.test/app"}]}]}' ;;
   "cloudformation describe-change-set")
     case "$*" in *nochangeset*) echo "An error occurred (ChangeSetNotFound): ChangeSet [nochangeset] does not exist" >&2; exit 254 ;; esac
+    case "$*" in *nostack*) echo "An error occurred (ValidationError) when calling the DescribeChangeSet operation: Stack [nostack] does not exist" >&2; exit 254 ;; esac
     echo '{"ChangeSetId":"cs-1","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"ResourceChange":{"Action":"Modify","LogicalResourceId":"Fn","PhysicalResourceId":"fn-1","ResourceType":"AWS::Lambda::Function","Replacement":"False","Details":[{"Target":{"Attribute":"Properties","Name":"Environment","RequiresRecreation":"Never"}},{"Target":{"Attribute":"Properties","Name":"Environment"}},{"Target":{"Attribute":"Tags"}}]}},{"ResourceChange":{"Action":"Modify","LogicalResourceId":"Bare","ResourceType":"AWS::SQS::Queue","Replacement":"False"}}]}' ;;
   "cloudformation get-template") echo '{"TemplateBody":{"b":1,"a":{"d":2,"c":3}}}' ;;
   "cloudformation list-change-sets") echo '{"Summaries":[{"ChangeSetName":"rovara-pipeline-aaaaaaaa"}]}' ;;
@@ -63,6 +64,27 @@ describe("pipeline stage CLI: real ports (a fake aws on the PATH, a real git rep
     expect(cs).toEqual({ id: "cs-1", status: "CREATE_COMPLETE", executionStatus: "AVAILABLE", statusReason: null, rows: [{ action: "Modify", logicalId: "Fn", physicalId: "fn-1", resourceType: "AWS::Lambda::Function", replacement: "False", changedProperties: ["Properties:Environment", "Tags"] }, { action: "Modify", logicalId: "Bare", physicalId: null, resourceType: "AWS::SQS::Queue", replacement: "False" }] });
     expect(await p.cfn.templateSha256("s", "x")).toBe(canonicalSha256({ a: { c: 3, d: 2 }, b: 1 }));
     expect(await p.cfn.listChangeSetNames("s")).toEqual(["rovara-pipeline-aaaaaaaa"]);
+  });
+
+  it("reads a change set of a stack that does not exist as no change set (the cleanup after a failed first call must not fail)", async () => {
+    expect(await ports().cfn.describeChangeSet("nostack", "x")).toBeNull();
+  });
+
+  it("every CloudFormation read names the region, asks for json, and runs as the deploy role with no profile", async () => {
+    writeFileSync(logFile, "");
+    const p = ports();
+    await p.cfn.describeChangeSet("s", "rovara-pipeline-1a2b3c4d");
+    await p.cfn.templateSha256("s", "rovara-pipeline-1a2b3c4d");
+    await p.cfn.liveTemplateSha256("s");
+    await p.cfn.listChangeSetNames("s");
+    const lines = log().filter((l) => l.split("|")[2]!.startsWith("cloudformation "));
+    expect(lines.map((l) => l.split("|")[2])).toEqual([
+      "cloudformation describe-change-set --stack-name s --change-set-name rovara-pipeline-1a2b3c4d --region us-east-1 --output json",
+      "cloudformation get-template --stack-name s --change-set-name rovara-pipeline-1a2b3c4d --template-stage Original --region us-east-1 --output json",
+      "cloudformation get-template --stack-name s --template-stage Original --region us-east-1 --output json",
+      "cloudformation list-change-sets --stack-name s --region us-east-1 --output json",
+    ]);
+    expect(lines.every((l) => l.startsWith("|AKIATEST|"))).toBe(true);
   });
 
   it("executes and deletes change sets by name through the deploy role", async () => {

@@ -1,13 +1,13 @@
 // Step preflight: resolve the ref and the Code pin, check out and build the candidate, capture the rollback record, run the preflight gates,
 // preview the web and app change sets (never executed here), run the change-set gates on them, print the promotion summary.
-import { changeSetNameFor, stackName } from "../config.ts";
+import { changeSetNameFor, releaseTagRegex, stackName } from "../config.ts";
 import { StageError } from "../types.ts";
 import type { Manifest, PipelineEnv } from "../types.ts";
 import { buildCandidate } from "../lib/candidate.ts";
 import type { StepContext } from "../lib/context.ts";
-import { previewChangeSets } from "../lib/changesets.ts";
+import { discardChangeSets, previewChangeSets } from "../lib/changesets.ts";
 import { newStageRecord, stageOf } from "../lib/manifest.ts";
-import { decideMode, readLiveCloudSha, resolveCloudRef } from "../lib/refs.ts";
+import { FROM_TRIGGER, decideMode, readLiveCloudSha, resolveCloudRef } from "../lib/refs.ts";
 import { captureRollbackRecord } from "../lib/rollback.ts";
 import { readLastGood } from "../lib/lastgood.ts";
 import { gatePhase, requireManifest } from "../lib/run.ts";
@@ -55,7 +55,7 @@ const pinFor = (inputs: StepContext["inputs"]): string | null => inputs.codeTarg
 
 async function createManifest(ctx: StepContext, state: State): Promise<Manifest> {
   const { ports, config, inputs } = ctx;
-  const resolved = await resolveCloudRef(ports, config, inputs.cloudRef);
+  const resolved = await resolveCloudRef(ports, config, inputs.cloudRef, { sourceCommit: inputs.cloudSourceCommit, env: ctx.env });
   ctx.log(`Cloud ref: ${resolved.tag} at ${resolved.sha.slice(0, 12)} (${resolved.ref}, on ${resolved.trunk})`);
   const live = await readLiveCloudSha(ports, stackName(config, ctx.env, "web"), stackName(config, ctx.env, "gateway"));
   const decision = await decideMode(ports, { requested: inputs.codeRelease, resolved, liveSha: live.sha, adopt: inputs.adopt, env: ctx.env, declared: inputs.declaredRollback, codeTarget: inputs.codeTarget });
@@ -124,6 +124,10 @@ async function joinManifest(ctx: StepContext, state: State): Promise<Manifest> {
   if (ctx.env === "production" && beta?.completed.includes("proof") !== true) throw new StageError("REFUSED", "production preflight comes after beta's proof, which has not completed in this execution");
   // A dry run proves nothing, and a record that does not say it was real is not proof either.
   if (ctx.env === "production" && beta?.dryRun !== false) throw new StageError("REFUSED", "beta's proof in this execution was a dry run (or does not say it was real): it is not proof for production");
+  // Beta must have left a resolved Cloud ref (a release tag and its full commit): Production never resolves one itself.
+  if (!releaseTagRegex(config).test(manifest.cloud.tag) || !/^[0-9a-f]{40}$/u.test(manifest.cloud.sha)) throw new StageError("REFUSED", "Beta left no resolved Cloud release (tag and commit) in this execution's manifest: Production never resolves one itself");
+  // Production deploys what Beta resolved (the manifest's tag and commit), never something re-resolved: `from-trigger` is not read here, and an explicit tag that is not Beta's is refused.
+  if (inputs.cloudRef !== null && inputs.cloudRef !== FROM_TRIGGER && inputs.cloudRef !== manifest.cloud.tag) throw new StageError("REFUSED", `CLOUD_REF ${inputs.cloudRef} is not the release Beta resolved in this execution (${manifest.cloud.tag}): ${ctx.env} deploys what Beta deployed`);
   await requireLastGoodUnlessAdoption(ctx, manifest.mode);
   const live = await readLiveCloudSha(ports, stackName(config, ctx.env, "web"), stackName(config, ctx.env, "gateway"));
   manifest.cloud.liveSha[ctx.env] = live.sha;
@@ -149,7 +153,13 @@ export async function preflight(ctx: StepContext, state: State): Promise<void> {
   stage.rollback = await captureRollbackRecord(ctx.ports, ctx.config, ctx.env, ctx.inputs, manifest.cloud.liveSha[ctx.env]);
   await gatePhase(ctx, state, stage, "preflight", [], dir, ctx.inputs.workDir);
   await previewWebApp(ctx, state, dir);
-  if (!ctx.inputs.dryRun) await gatePhase(ctx, state, stage, "change-sets", stage.changeSets.filter((cs) => cs.part !== "gateway"), dir, ctx.inputs.workDir);
+  try {
+    if (!ctx.inputs.dryRun) await gatePhase(ctx, state, stage, "change-sets", stage.changeSets.filter((cs) => cs.part !== "gateway"), dir, ctx.inputs.workDir);
+  } catch (error) {
+    // The change-set gates refused: nothing will execute these change sets, so they are deleted, not left for the next run to find.
+    await discardChangeSets(ctx.ports, (["app", "web"] as const).map((part) => stackName(ctx.config, ctx.env, part)), changeSetNameFor(manifest.exec8), ctx.log);
+    throw error;
+  }
 }
 
 /** Adoption: the gateway keeps the digest it runs now (BETA-CLOUD-PLAN 3.1): no build, no new image. */
