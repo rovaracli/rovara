@@ -2,7 +2,12 @@
   "schema": 1,
   "about": "Rollback floors (BETA-CLOUD-PLAN 5). A Cloud ref must equal or descend from every sha under floors, or the rollback-floor gate refuses it with that floor's reason. Read from the pipeline tree, never from the candidate. The `code` group is the exception: its shas are Code commits that a Code rollback target must equal or descend from (judged in the Code clone, only when a run rolls Code back); it is empty until the controller names the first Code floor. A new floor is one reviewed edit here. Pending rows are NOT enforced: they name the condition after which the controller moves them into floors.",
   "floors": {
-    "code": [],
+    "code": [
+      {
+        "sha": "5e6c41b127a3be962f8e9790f98dc6420b0f3c1e",
+        "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
+      }
+    ],
     "web": [
       {
         "sha": "fbe943520414def8b15b1cdb5b28eff48eec4fc6",
@@ -39,12 +44,6 @@
       "sha": "debd9aa1bebc550ecf10a0eb8d35d22f0f96a68c",
       "when": "Code train 27 is live in the environment",
       "reason": "Cloud never goes below v0.13.19 once Code train 27 is live"
-    },
-    {
-      "group": "code",
-      "tag": "BEDROCK-BYO-CHECK-FIXES",
-      "when": "the Code release with BEDROCK-BYO-CHECK-FIXES is merged: set sha to its merge commit and move this row to floors.code (Code's gateway copy reads the same documents)",
-      "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
     }
   ]
 }
