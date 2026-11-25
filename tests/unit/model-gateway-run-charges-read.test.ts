@@ -14,7 +14,7 @@ import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
 import { Dynamo } from "../../packages/model-gateway/src/dynamo.js";
 import { DynamoMeter } from "../../packages/model-gateway/src/dynamo-meter.js";
 import { StaticInstallRegistry } from "../../packages/model-gateway/src/installs.js";
-import { InMemoryMeter, RUN_CALLS_MAX, type Meter, type MeterScope } from "../../packages/model-gateway/src/meter.js";
+import { InMemoryMeter, RUN_CALLS_MAX, type MeterScope } from "../../packages/model-gateway/src/meter.js";
 import { readGatewayConfig, startServe, type RunningGateway, type ServeConfig } from "../../packages/model-gateway/src/process.js";
 import {
   answerRunCharges, createRunChargesHandler, projectRunReceipt, RUN_CHARGES_AUDIENCE, RUN_CHARGES_PER_MINUTE, RUN_CHARGES_TOKEN_KIND, type RunChargesHandlerOptions,
@@ -43,21 +43,21 @@ type Kind = "dynamo" | "memory";
 function world(kind: Kind) {
   const wire = new WireDynamo(Object.values(TABLES));
   const db = new Dynamo({ region: "us-west-2", credentials: async () => ({ accessKeyId: "AKIDEXAMPLE", secretAccessKey: "test-secret-not-real" }), transport: wire.transport });
-  const meter: Meter & Required<Pick<Meter, "runCharges" | "settleV2">> = kind === "dynamo" ? new DynamoMeter({ db, tables: TABLES, now: () => now }) as never : new InMemoryMeter(() => now) as never;
+  const meter = kind === "dynamo" ? new DynamoMeter({ db, tables: TABLES, now: () => now }) : new InMemoryMeter(() => now);
   const reads: string[] = [];
   const opts: RunChargesHandlerOptions = { verify: verify(), meter: { runCharges: async (scope, op) => { reads.push(`${scope.cid}/${scope.tid}/${op}`); return meter.runCharges(scope, op); } }, now: () => now };
   /** One call of a run: held with its receipt (as the agent route holds it), then optionally settled. */
   const call = async (o: { company?: string; task?: string; op: string; reservation?: number; settle?: "final" | "estimated" | "none" | "unreceipted"; reported?: number }) => {
     const company = o.company ?? A, task = o.task ?? "task_1", reservation = o.reservation ?? 500;
     const scope: MeterScope = { iss: ISS, cid: company, pid: "web", tid: task };
-    const initial = initialCharge({ ...claims, cid: company, tid: task, op: o.op } as never, { provider: "anthropic", modelId: "claude-sonnet-4-5" }, SOURCE, reservation, now, PRICE as never);
+    const initial = initialCharge({ ...claims, cid: company, tid: task, op: o.op } as never, { provider: "anthropic", modelId: "claude-sonnet-4-5" }, SOURCE, reservation, now, PRICE);
     const held = await meter.reserve({ scope, caps: CAPS, estimateMicros: reservation, run: { operationId: o.op }, ...(o.settle === "unreceipted" ? {} : { charge: { receipt: initial, kind: "chat", requestFingerprint: "a".repeat(64) } }) });
     if (!held.ok) throw new Error(`not held: ${JSON.stringify(held)}`);
     if (o.settle === "unreceipted") { await meter.settle(held.reservation, reservation); return { initial, final: undefined }; }
     if (o.settle === "none") return { initial, final: undefined };
     const final = o.settle === "estimated"
-      ? finishCharge(initial, { price: PRICE as never, notSent: false, now, failedMicros: Math.floor(reservation / 2) })
-      : finishCharge(initial, { reportedCostMicros: o.reported ?? 123, price: PRICE as never, notSent: false, now });
+      ? finishCharge(initial, { price: PRICE, notSent: false, now, failedMicros: Math.floor(reservation / 2) })
+      : finishCharge(initial, { reportedCostMicros: o.reported ?? 123, price: PRICE, notSent: false, now });
     await meter.settleV2({ reservationId: held.reservation.id, receipt: final });
     return { initial, final };
   };
@@ -110,7 +110,7 @@ describe.each(["dynamo", "memory"] as const)("the answer (%s meter)", (kind) => 
     const waiting = during.receipts.find((r) => r.callId === open.initial.callId)!;
     expect(waiting).toMatchObject({ status: "awaiting_usage", reason: "missing_usage" });
     expect(amountOf(waiting)).toBe(700);
-    await w.meter.settleV2({ reservationId: open.initial.callId, receipt: finishCharge(open.initial, { reportedCostMicros: 300, price: PRICE as never, notSent: false, now }) });
+    await w.meter.settleV2({ reservationId: open.initial.callId, receipt: finishCharge(open.initial, { reportedCostMicros: 300, price: PRICE, notSent: false, now }) });
     const after = (await get(w.opts, pathOf(A, op))).body as Body;
     expect(after.complete).toBe(true);
     expect(after.receipts.map(amountOf).sort((a, b) => a - b)).toEqual([100, 300]);
@@ -118,8 +118,9 @@ describe.each(["dynamo", "memory"] as const)("the answer (%s meter)", (kind) => 
   it("a revised receipt (a later revision of a call) is what the run answers, never the first one", async () => {
     const w = world(kind); const op = randomUUID();
     const first = await w.call({ op, settle: "estimated", reservation: 800 });
-    const revised: ChargeReceiptV1 = { ...first.final!, revision: 2, replacesRevision: 1, status: "final", reason: "reported_cost", neverConfirmed: undefined, amountMicros: { state: "available", value: 150 }, providerCostMicros: { state: "available", value: 150 }, billableMicros: { state: "available", value: 0 } } as ChargeReceiptV1;
-    delete (revised as { neverConfirmed?: true }).neverConfirmed;
+    const rest = structuredClone(first.final!);
+    delete rest.neverConfirmed;
+    const revised: ChargeReceiptV1 = { ...rest, revision: 2, replacesRevision: 1, status: "final", reason: "reported_cost", amountMicros: { state: "available", value: 150 }, providerCostMicros: { state: "available", value: 150 }, billableMicros: { state: "available", value: 0 } };
     if (w.meter.applyChargeReceipt === undefined) throw new Error("no revisions");
     await w.meter.applyChargeReceipt(revised);
     const body = (await get(w.opts, pathOf(A, op))).body as Body;
@@ -289,7 +290,7 @@ const ENV = {
   [GATEWAY_ENV.mode]: "serve", AWS_REGION: "us-west-2", [GATEWAY_ENV.port]: "8080",
   [GATEWAY_ENV.installIssuer]: ISS, [GATEWAY_ENV.installJwksUrl]: `${ISS}/.well-known/jwks.json`, [GATEWAY_ENV.installTaskKids]: kid,
   [GATEWAY_ENV.meterTable]: TABLES.meter, [GATEWAY_ENV.ledgerTable]: TABLES.ledger, [GATEWAY_ENV.markersTable]: TABLES.markers, [GATEWAY_ENV.pricesTable]: TABLES.prices, [GATEWAY_ENV.companyTable]: TABLES.companies,
-  [GATEWAY_ENV.anthropicKeySecret]: "arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf",
+  [GATEWAY_ENV.anthropicKeySecret]: `arn:aws:secretsmanager:us-west-2:${"1".repeat(12)}:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf`,
 };
 const jwksFetch: typeof fetch = async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 });
 const running: RunningGateway[] = [];
