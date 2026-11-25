@@ -7,6 +7,7 @@ import { ssmChecksPrefixFor } from "../config.ts";
 import { awsLane, checkLambdaErrors, plain, runLane } from "../lib/canary.ts";
 import type { LaneRun } from "../lib/canary.ts";
 import type { Gate } from "../types.ts";
+import { codeShaAfterRun } from "../lib/manifest.ts";
 
 const NAME = /^[A-Za-z0-9_-]{1,64}$/u;
 
@@ -22,7 +23,7 @@ export const gate: Gate = {
     if (start === null || status === null) return { result: "fail", failures: [`only one of canary-start-function and canary-status-function is set under ${prefix}: the lane is half configured`] };
     if (!NAME.test(start) || !NAME.test(status)) return { result: "fail", failures: ["a canary function name under the checks prefix is not a Lambda function name"] };
     // The Code sha under test: what is promoted, or in a run that skips Code the sha Code is pinned to.
-    const codeSha = manifest.code.release === "skip" ? manifest.code.pinnedSha[env] : manifest.code.sha;
+    const codeSha = codeShaAfterRun(manifest, env);
     const hold = (reason: string, data: Record<string, unknown> = {}) => ({ result: "skipped" as const, skippedReason: plain(reason, 200), data: { holdsLastGood: true, ...data } });
     if (codeSha === null) return hold("no Code sha is known for this run, so the lane cannot name both shas");
     const run: LaneRun = { runId: `rel-cloud-${manifest.executionId}`, codeSha, cloudSha: manifest.cloud.sha, installId: `cloud-${manifest.exec8}` };

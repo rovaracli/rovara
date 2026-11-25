@@ -329,7 +329,10 @@ describe("pipeline stage CLI: the first release is an adoption run", () => {
     expect(buildInputs({}, { ...base, PIPELINE_MODE: "release" }, new Date()).adopt).toBe(false);
     expect(buildInputs({}, { ...base, PIPELINE_MODE: "adopt" }, new Date()).adopt).toBe(true);
     expect(buildInputs({ adopt: true }, { ...base, PIPELINE_MODE: "adopt" }, new Date()).adopt).toBe(true);
-    expect(() => buildInputs({}, { ...base, PIPELINE_MODE: "rollback" }, new Date())).toThrow(/release or adopt/);
+    expect(buildInputs({}, { ...base, PIPELINE_MODE: "rollback" }, new Date())).toMatchObject({ adopt: false, declaredRollback: true });
+    expect(buildInputs({}, { ...base }, new Date()).declaredRollback).toBe(false);
+    expect(() => buildInputs({}, { ...base, PIPELINE_MODE: "backwards" }, new Date())).toThrow(/release, adopt or rollback/);
+    expect(() => buildInputs({}, { ...base, PIPELINE_MODE: "rollback", PIPELINE_ADOPT: "1" }, new Date())).toThrow(/contradicts/);
     expect(() => buildInputs({}, { ...base, PIPELINE_MODE: "release", PIPELINE_ADOPT: "1" }, new Date())).toThrow(/contradicts/);
   });
 });
@@ -521,6 +524,8 @@ describe("pipeline stage CLI: records", () => {
 
 describe("pipeline stage CLI: command line and exit codes", () => {
   const baseEnv = { EXEC_ID, AWS_REGION: "us-east-1", ROVARA_EXPECTED_DEPLOY_ACCOUNT: FAKE_ACCOUNT };
+  // A pipeline run (a uuid execution id) gets its Code facts in CODE_CTX (L9b); a Preflight without it is refused.
+  const ctxEnv = { ...baseEnv, CODE_CTX: `live:${sha("d")},target:none,supersedes:none,supersedesSha:none` };
   const run = (argv: string[], env: Record<string, string | undefined>, state = betaWorld(), extra: { gates?: Gate[] } = {}) => {
     const lines: string[] = [];
     const exit = main(argv, env, { config, switchesFile: fakeSwitches, gates: extra.gates ?? [integrity], requiredGates: { preflight: [], "change-sets": [], "gateway-live": [], "proof": [] }, makePorts: () => makePorts(state, argv[0] as PipelineEnv), out: (l) => lines.push(l) });
@@ -550,15 +555,15 @@ describe("pipeline stage CLI: command line and exit codes", () => {
 
   it("exits 2 on usage errors and 0 on help", async () => {
     expect((await run(["beta", "nope"], baseEnv)).code).toBe(2);
-    expect((await run(["beta", "preflight", "--help"], baseEnv)).code).toBe(0);
+    expect((await run(["beta", "preflight", "--help"], ctxEnv)).code).toBe(0);
     expect((await run(["beta", "preflight"], {})).code).toBe(2);
   });
 
   it("exits 3 with a STAGE-FAILED line for the wrong region, and 40 for a missing tag", async () => {
-    const wrong = await run(["beta", "preflight"], { ...baseEnv, AWS_REGION: "eu-west-1" });
+    const wrong = await run(["beta", "preflight"], { ...ctxEnv, AWS_REGION: "eu-west-1" });
     expect(wrong.code).toBe(3);
     expect(wrong.lines.at(-1)).toMatch(/^STAGE-FAILED beta preflight REFUSED: AWS_REGION is eu-west-1/);
-    const noTag = await run(["beta", "preflight"], baseEnv, betaWorld({ tags: {} }));
+    const noTag = await run(["beta", "preflight"], ctxEnv, betaWorld({ tags: {} }));
     expect(noTag.code).toBe(40);
     expect(noTag.lines.at(-1)).toMatch(/^STAGE-FAILED beta preflight REF_FAILED/);
   });
@@ -566,26 +571,26 @@ describe("pipeline stage CLI: command line and exit codes", () => {
   it("exits 42 for a release run in an environment that has never been adopted", async () => {
     const state = betaWorld();
     state.ssm = {};
-    const refused = await run(["beta", "preflight"], baseEnv, state);
+    const refused = await run(["beta", "preflight"], ctxEnv, state);
     expect(refused.code).toBe(42);
     expect(refused.lines.at(-1)).toMatch(/^STAGE-FAILED beta preflight ADOPTION_REQUIRED: beta has no last-good record/);
   });
 
   it("exits 20 when a gate fails, 3 for an image step with no repository, 0 for a good preflight", async () => {
     const bad: Gate = { name: "bad", phases: ["preflight"], run: () => Promise.resolve({ result: "fail", failures: ["x"] }) };
-    expect((await run(["beta", "preflight"], baseEnv, betaWorld(), { gates: [integrity, bad] })).code).toBe(20);
+    expect((await run(["beta", "preflight"], ctxEnv, betaWorld(), { gates: [integrity, bad] })).code).toBe(20);
     const state = betaWorld();
-    const good = await run(["beta", "preflight"], baseEnv, state);
+    const good = await run(["beta", "preflight"], ctxEnv, state);
     expect(good.code).toBe(0);
     state.files["/in/manifest.json"] = state.files["out/manifest.json"]!;
-    const image = await run(["beta", "image", "--manifest", "/in/manifest.json"], baseEnv, state);
+    const image = await run(["beta", "image", "--manifest", "/in/manifest.json"], ctxEnv, state);
     expect(image.code).toBe(3);
     expect(image.lines.at(-1)).toMatch(/^STAGE-FAILED beta image REFUSED: the stack rovara-cloud-beta-gateway-images does not exist/);
   });
 
   it("ref prints the resolution without writing, last-good prints the record or none, summary re-prints", async () => {
     const state = betaWorld();
-    const ref = await run(["beta", "ref"], baseEnv, state);
+    const ref = await run(["beta", "ref"], ctxEnv, state);
     expect(ref.code).toBe(0);
     expect(JSON.parse(ref.lines.join("\n"))).toMatchObject({ env: "beta", cloud: { tag: "v0.13.10" }, mode: "release", lastGoodParameter: "/rovara-cloud/beta/release/last-good" });
     expect(Object.keys(state.files)).toEqual([]);
@@ -594,7 +599,7 @@ describe("pipeline stage CLI: command line and exit codes", () => {
     state.ssm["/rovara-cloud/beta/release/last-good"] = "garbage";
     expect((await run(["beta", "last-good"], baseEnv, state)).code).toBe(3);
     seedLastGood(state, "beta");
-    await run(["beta", "preflight"], baseEnv, state);
+    await run(["beta", "preflight"], ctxEnv, state);
     state.files["/in/manifest.json"] = state.files["out/manifest.json"]!;
     const summary = await run(["beta", "summary", "--manifest", "/in/manifest.json"], baseEnv, state);
     expect(summary.lines[0]).toMatch(/^PROMOTION SUMMARY beta/);

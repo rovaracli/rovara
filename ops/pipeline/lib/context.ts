@@ -9,9 +9,16 @@ export interface Inputs {
   codeRelease: "run" | "skip";
   cloudProd: boolean;
   codeSha: string | null;
+  /** The Code commit this stage runs now: CODE_CTX live in a pipeline run (CODE_LIVE_SHA only in a hand-started one). Read by the Preflight only; later steps read the manifest. */
   codeLiveSha: string | null;
   codeLiveFacts: Record<string, string>;
   supersedes: { executionId: string; codeSha: string | null } | null;
+  /** L9b: the Code commit a Code rollback moves to (CODE_CTX target; CODE_ROLLBACK_TARGET / --code-target in a hand-started run or the rollback plan), or null. */
+  codeTarget: string | null;
+  /** L9b: PIPELINE_MODE=rollback: a declared rollback, even when CLOUD_REF is not older than what is live. */
+  declaredRollback: boolean;
+  /** L9b: the Code facts above came from CODE_CTX (a pipeline run); false = hand-started (CODE_LIVE_SHA and friends), which a pipeline execution id may not be. */
+  codeCtxGiven: boolean;
   adopt: boolean;
   gatewayDigest: string | null;
   /** rollback-plan only (--target): which recorded release to plan the rollback to. */

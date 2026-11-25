@@ -71,7 +71,11 @@ export interface PromotionSummary {
   env: PipelineEnv;
   executionId: string;
   mode: PipelineMode;
-  code: { sha: string | null; release: "run" | "skip"; pinnedSha: string | null; supersedes: { executionId: string; codeSha: string | null } | null };
+  code: {
+    sha: string | null; release: "run" | "skip"; pinnedSha: string | null; supersedes: { executionId: string; codeSha: string | null } | null;
+    /** L9b: the Code commit this stage runs now (CODE_CTX live) and the commit a Code rollback moves to; absent in a summary from before L9b. */
+    liveSha?: string | null; rollbackTarget?: string | null;
+  };
   cloud: { tag: string; sha: string; liveSha: string | null };
   gateway: { digest: string | null; source: string | null };
   changeSets: Array<{ part: string; stack: string; noChanges: boolean; counts: ChangeCounts }>;
@@ -112,9 +116,13 @@ export interface Manifest {
     sha: string | null;
     release: "run" | "skip";
     requestedRelease: "run" | "skip";
-    /** Rollback only: the Code sha each environment stays on (CODE_LIVE_SHA of that environment's preflight). */
+    /** Rollback only: the Code sha each environment is pinned to: the rollback target when a Code target is given, else what is live there (CODE_CTX live of that environment's preflight). */
     pinnedSha: Record<PipelineEnv, string | null>;
     supersedes: { executionId: string; codeSha: string | null } | null;
+    /** L9b (read tolerantly: absent in a manifest from before L9b = null): the Code commit each environment ran before this run (CODE_CTX live; the commit Code moves FROM). */
+    liveSha?: Record<PipelineEnv, string | null>;
+    /** L9b: the Code commit a Code rollback moves to (CODE_CTX target, the same for both stages), or null (no Code rollback). With a target Code releases (release = run) and the pin is the target. */
+    rollbackTarget?: string | null;
   };
   gateway: {
     digest: string | null;

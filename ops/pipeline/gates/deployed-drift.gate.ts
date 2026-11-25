@@ -8,6 +8,7 @@
 //   - in an ADOPTION run (manifest.mode === "adoption", the one adoption concept L2 owns: CLOUD_REF is the tag already live, and every change set must be empty, so deployed == candidate), or
 //   - when the operator names it with ROVARA_ADOPT_DEPLOYED_CLOUD_SHA=<40 hex of a release tag's commit that is the candidate or an ancestor of it> (recorded in the verdict).
 import { ADOPT_DEPLOYED_SHA_ENV, CODE_REPO_ENV, NO_AWS_ENV, codeShaThatWillBeLive, commitInRepo, envValue } from "../lib/gate-env.ts";
+import { codeTargetOf } from "../lib/manifest.ts";
 import { tagOfSha } from "../lib/refs.ts";
 import type { Gate, GateInput } from "../types.ts";
 
@@ -87,7 +88,9 @@ export const gate: Gate = {
     const candidateResult = await runDrift(input, input.dirs.cloud, code.sha, repo, `candidate ${candidate.slice(0, 9)}`);
     if (!deployedResult.ok) {
       failures.push(...deployedResult.lines);
-      failures.push(manifest.code.release === "run"
+      failures.push(codeTargetOf(manifest) !== null
+        ? "this is a Code rollback: the Cloud that is live cannot read the Code it rolls back to; roll Cloud back with it (an older CLOUD_REF), or choose another Code target"
+        : manifest.code.release === "run"
         ? "release Cloud first: run with CODE_RELEASE=skip, then Code (the Cloud that is live cannot read what this Code sends)"
         : "the Code that stays live and the Cloud that is live already disagree; fix that before releasing anything");
     }

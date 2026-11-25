@@ -1,5 +1,6 @@
 // What the L5 gates need from the build environment and from the Code clone, read through ports only (a fake in tests, nothing real touched).
 import type { Manifest, PipelineEnv, Ports } from "../types.ts";
+import { codeShaAfterRun, codeTargetOf } from "./manifest.ts";
 
 /** An environment variable of the build, through the exec port (the gate interface has no environment of its own). Unset or empty: null. */
 export async function envValue(ports: Ports, name: string): Promise<string | null> {
@@ -22,6 +23,8 @@ export interface CodeShaChoice { sha: string | null; why: string }
  * Never a guess: null with the reason when it is not known.
  */
 export function codeShaThatWillBeLive(manifest: Readonly<Manifest>, env: PipelineEnv): CodeShaChoice {
+  // A Code rollback (L9b): Code moves to the target, not to the commit the run itself came from.
+  if (manifest.mode === "rollback" && codeTargetOf(manifest) !== null) return { sha: codeShaAfterRun(manifest, env), why: "Code rollback: Code moves to the rollback target" };
   if (manifest.code.release === "run") {
     return manifest.code.sha === null ? { sha: null, why: "this run releases Code but has no CODE_SHA" } : { sha: manifest.code.sha, why: "Code release run: the commit this run promotes" };
   }

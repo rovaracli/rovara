@@ -3,6 +3,7 @@ import { lastGoodParameter } from "../config.ts";
 import type { PipelineConfig } from "../config.ts";
 import { StageError } from "../types.ts";
 import type { LastGoodRecord, Manifest, PipelineEnv, Ports } from "../types.ts";
+import { codeShaAfterRun } from "./manifest.ts";
 
 const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown): string | null => (typeof value === "string" && value !== "" ? value : null);
@@ -48,7 +49,7 @@ export function buildLastGood(manifest: Manifest, env: PipelineEnv, proofGates: 
     mode: manifest.mode,
     cloud: { tag: manifest.cloud.tag, sha: manifest.cloud.sha },
     gateway: { digest: manifest.gateway.digest },
-    code: { sha: manifest.code.release === "skip" ? manifest.code.pinnedSha[env] : manifest.code.sha },
+    code: { sha: codeShaAfterRun(manifest, env) },
     proofGates,
     ...(proofSkipped.length === 0 ? {} : { proofSkipped }),
     previous: previous === null ? null : { cloudTag: previous.cloud.tag, cloudSha: previous.cloud.sha, gatewayDigest: previous.gateway.digest },

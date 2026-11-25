@@ -75,16 +75,31 @@ export async function readLiveCloudSha(ports: Ports, web: string, gateway: strin
 export interface ModeDecision { mode: "release" | "rollback" | "adoption"; codeRelease: "run" | "skip"; warnings: string[] }
 
 /**
- * Mode (L2-STAGE-CLI-INTERFACE.md 5): a CLOUD_REF that is a strict ancestor of the live Cloud sha is a rollback, which forces CODE_RELEASE=skip
- * (the caller pins Code). An unknown live sha cannot be proven a rollback: not one, with a warning.
+ * Mode (L2-STAGE-CLI-INTERFACE.md 5; L9b): a CLOUD_REF that is a strict ancestor of the live Cloud sha is a rollback, which forces CODE_RELEASE=skip
+ * (the caller pins Code). PIPELINE_MODE=rollback DECLARES a rollback even when CLOUD_REF is the live tag (a Code-only rollback); it never lets Cloud move forward:
+ * a ref that is not the live commit or one of its ancestors is refused. With a Code target the Code release runs (CODE_RELEASE_EFFECTIVE=run: Code deploys the target);
+ * a CODE_RELEASE=skip request next to a target is refused, since Code would not be rolled back. An unknown live sha cannot be proven a rollback: not one, with a warning.
  */
-export async function decideMode(ports: Ports, args: { requested: "run" | "skip"; resolved: ResolvedRef; liveSha: string | null; adopt: boolean; env: PipelineEnv }): Promise<ModeDecision> {
+export async function decideMode(ports: Ports, args: { requested: "run" | "skip"; resolved: ResolvedRef; liveSha: string | null; adopt: boolean; env: PipelineEnv; declared?: boolean; codeTarget?: string | null }): Promise<ModeDecision> {
   const warnings: string[] = [];
+  const target = args.codeTarget ?? null;
   if (args.adopt) {
+    if (args.declared === true || target !== null) throw new StageError("REFUSED", "an adoption run cannot also be a rollback (PIPELINE_MODE=rollback or a Code target)");
     if (args.resolved.ref !== "CLOUD_REF") throw new StageError("REFUSED", "an adoption run names the tag already live: set CLOUD_REF");
     if (args.liveSha !== null && args.liveSha !== args.resolved.sha) throw new StageError("REFUSED", `adoption: ${args.resolved.tag} (${args.resolved.sha.slice(0, 9)}) is not what is live (${args.liveSha.slice(0, 9)})`);
     if (args.liveSha === null) warnings.push("adoption with an unknown live Cloud sha: the empty change sets are the proof");
     return { mode: "adoption", codeRelease: args.requested, warnings };
+  }
+  if (args.declared === true) {
+    if (target !== null && args.requested === "skip") throw new StageError("ROLLBACK_REFUSED", `a Code rollback to ${target.slice(0, 12)} needs CODE_RELEASE=run: with skip, Code would not be rolled back`);
+    if (target === null && args.liveSha !== null && args.liveSha === args.resolved.sha) throw new StageError("ROLLBACK_REFUSED", `PIPELINE_MODE=rollback with CLOUD_REF ${args.resolved.tag} (what ${args.env} runs) and no Code target changes nothing: name an older tag, or a Code target`);
+    if (args.liveSha === null) warnings.push("a rollback is declared but the live Cloud sha is unknown, so it cannot be proven that CLOUD_REF does not move Cloud forward");
+    else if (args.liveSha !== args.resolved.sha) {
+      let behind = false;
+      try { behind = await ports.git.isAncestor(args.resolved.sha, args.liveSha); } catch { /* not in this repository: not proven, refused below */ }
+      if (!behind) throw new StageError("ROLLBACK_REFUSED", `PIPELINE_MODE=rollback, but ${args.resolved.tag} (${args.resolved.sha.slice(0, 9)}) is not the live Cloud (${args.liveSha.slice(0, 9)}) or older than it: a rollback never moves Cloud forward (name the live tag, or an older one, in CLOUD_REF)`);
+    }
+    return { mode: "rollback", codeRelease: target === null ? "skip" : "run", warnings };
   }
   if (args.liveSha === null) {
     if (args.resolved.ref === "CLOUD_REF") warnings.push("CLOUD_REF is set but the live Cloud sha is unknown, so a rollback cannot be told from a release");

@@ -12,6 +12,7 @@ import type { SwitchesFile } from "./switches.ts";
 import { EXIT, StageError } from "./types.ts";
 import type { Gate, PipelineEnv, Ports, StepName } from "./types.ts";
 import { accountSource } from "./lib/account.ts";
+import { parseCodeCtx } from "./lib/codectx.ts";
 import { errorText } from "./lib/context.ts";
 import type { Inputs, StepContext } from "./lib/context.ts";
 import { discoverGates } from "./lib/gates.ts";
@@ -43,12 +44,14 @@ type ReadOnlyStep = (typeof READ_ONLY_STEPS)[number];
 export const USAGE = `usage: node ops/pipeline/stage.ts <${SWITCHES_ENVIRONMENTS.join("|")}> <${[...Object.keys(RUN_STEPS), ...READ_ONLY_STEPS].join("|")}> [flags]
 flags (env var): --exec-id (EXEC_ID) --manifest (PIPELINE_MANIFEST) --out (PIPELINE_OUT, default out) --cloud-ref (CLOUD_REF)
   --code-release run|skip (CODE_RELEASE) --cloud-prod on|off (CLOUD_PROD) --code-sha (CODE_SHA) --code-live-sha (CODE_LIVE_SHA)
-  --adopt (PIPELINE_ADOPT=1, or PIPELINE_MODE=adopt; PIPELINE_MODE=release is the default) --gateway-digest sha256:... (GATEWAY_DIGEST) --dry-run (PIPELINE_DRY_RUN=1)
-  rollback-plan only: --target last-good|previous (default last-good)
-other env: ROVARA_EXPECTED_DEPLOY_ACCOUNT (required: the account this stage must run in; from a pipeline variable, never git), AWS_REGION, ROVARA_PIPELINE_PROFILE, PIPELINE_WORK, CODE_LIVE_FACTS (json), PIPELINE_SUPERSEDES (json)
+  --adopt (PIPELINE_ADOPT=1, or PIPELINE_MODE=adopt; PIPELINE_MODE=release is the default; PIPELINE_MODE=rollback declares a rollback) --gateway-digest sha256:... (GATEWAY_DIGEST) --dry-run (PIPELINE_DRY_RUN=1)
+  --code-target <40-hex sha> (CODE_ROLLBACK_TARGET: hand-started runs and rollback-plan; a pipeline run gets it inside CODE_CTX)
+  rollback-plan only: --target last-good|previous (default last-good); --code-target <sha> also plans a Code rollback (prints the variables)
+other env: ROVARA_EXPECTED_DEPLOY_ACCOUNT (required: the account this stage must run in; from a pipeline variable, never git), AWS_REGION, ROVARA_PIPELINE_PROFILE, PIPELINE_WORK, CODE_LIVE_FACTS (json),
+  CODE_CTX (the Cloud Preflight action only: live:<sha>,target:<sha|none>,supersedes:<id|none>,supersedesSha:<sha|none>; set by the pipeline, parsed strictly), PIPELINE_SUPERSEDES (json; hand-started runs only)
 `;
 
-const VALUE_FLAGS = ["exec-id", "manifest", "out", "cloud-ref", "code-release", "cloud-prod", "code-sha", "code-live-sha", "gateway-digest", "expected-account", "target"];
+const VALUE_FLAGS = ["exec-id", "manifest", "out", "cloud-ref", "code-release", "cloud-prod", "code-sha", "code-live-sha", "gateway-digest", "expected-account", "target", "code-target"];
 const BOOLEAN_FLAGS = ["adopt", "dry-run", "help"];
 
 export interface Parsed { env: PipelineEnv; step: StepName | ReadOnlyStep; flags: Record<string, string | true> }
@@ -106,13 +109,25 @@ export function buildInputs(flags: Record<string, string | true>, env: Record<st
     for (const [k, v] of Object.entries(facts as Record<string, unknown>)) if (typeof v === "string") codeLiveFacts[k] = v;
   }
   const sup = jsonEnv(env.PIPELINE_SUPERSEDES, "PIPELINE_SUPERSEDES") as { executionId?: unknown; codeSha?: unknown } | null;
-  const supersedes = sup !== null && typeof sup.executionId === "string" && sup.executionId !== "" ? { executionId: sup.executionId, codeSha: typeof sup.codeSha === "string" && sup.codeSha !== "" ? sup.codeSha : null } : null;
+  const handSupersedes = sup !== null && typeof sup.executionId === "string" && sup.executionId !== "" ? { executionId: sup.executionId, codeSha: typeof sup.codeSha === "string" && sup.codeSha !== "" ? sup.codeSha : null } : null;
+  const handTargetRaw = pick("code-target", "CODE_ROLLBACK_TARGET");
+  const handTarget = handTargetRaw === "none" ? null : sha(handTargetRaw, "CODE_ROLLBACK_TARGET");
+  const handLive = sha(pick("code-live-sha", "CODE_LIVE_SHA"), "CODE_LIVE_SHA");
+  // L9b: in a pipeline run the Code facts arrive in ONE value, CODE_CTX, parsed strictly (a malformed one refuses, exit 3). A hand variable beside it must say the same thing, or the run is refused.
+  const ctxRaw = env.CODE_CTX === undefined || env.CODE_CTX === "" ? null : env.CODE_CTX;
+  const ctx = ctxRaw === null ? null : parseCodeCtx(ctxRaw);
+  if (ctx !== null) {
+    const disagree = (what: string): StageError => new StageError("REFUSED", `${what} contradicts CODE_CTX: a pipeline run takes its Code facts from CODE_CTX alone`);
+    if (handLive !== null && handLive !== ctx.live) throw disagree("CODE_LIVE_SHA");
+    if (handTargetRaw !== null && handTarget !== ctx.target) throw disagree("CODE_ROLLBACK_TARGET");
+    if (handSupersedes !== null && (handSupersedes.executionId !== ctx.supersedes?.executionId || handSupersedes.codeSha !== ctx.supersedes.codeSha)) throw disagree("PIPELINE_SUPERSEDES");
+  }
   const gatewayDigest = pick("gateway-digest", "GATEWAY_DIGEST");
-  // The pipeline's per-run mode (L1): PIPELINE_MODE=release|adopt. PIPELINE_ADOPT=1 and --adopt stay; a contradiction between them is refused.
+  // The pipeline's per-run mode (L1, L9b): PIPELINE_MODE=release|adopt|rollback. PIPELINE_ADOPT=1 and --adopt stay; a contradiction between them is refused.
   const mode = env.PIPELINE_MODE === undefined || env.PIPELINE_MODE === "" ? null : env.PIPELINE_MODE;
-  if (mode !== null && mode !== "release" && mode !== "adopt") throw new StageError("USAGE", "PIPELINE_MODE must be release or adopt");
+  if (mode !== null && mode !== "release" && mode !== "adopt" && mode !== "rollback") throw new StageError("USAGE", "PIPELINE_MODE must be release, adopt or rollback");
   const adoptRequested = flags.adopt === true || env.PIPELINE_ADOPT === "1";
-  if (mode === "release" && adoptRequested) throw new StageError("USAGE", "PIPELINE_MODE=release contradicts --adopt / PIPELINE_ADOPT=1");
+  if ((mode === "release" || mode === "rollback") && adoptRequested) throw new StageError("USAGE", `PIPELINE_MODE=${mode} contradicts --adopt / PIPELINE_ADOPT=1`);
   const adopt = mode === "adopt" || adoptRequested;
   const expectedAccount = pick("expected-account", "ROVARA_EXPECTED_DEPLOY_ACCOUNT");
   if (expectedAccount !== null && !/^[0-9]{12}$/u.test(expectedAccount)) throw new StageError("USAGE", "ROVARA_EXPECTED_DEPLOY_ACCOUNT must be a 12-digit account id");
@@ -124,9 +139,12 @@ export function buildInputs(flags: Record<string, string | true>, env: Record<st
     codeRelease,
     cloudProd: cloudProd === "on",
     codeSha: sha(pick("code-sha", "CODE_SHA"), "CODE_SHA"),
-    codeLiveSha: sha(pick("code-live-sha", "CODE_LIVE_SHA"), "CODE_LIVE_SHA"),
+    codeLiveSha: ctx === null ? handLive : ctx.live,
     codeLiveFacts,
-    supersedes,
+    supersedes: ctx === null ? handSupersedes : ctx.supersedes,
+    codeTarget: ctx === null ? handTarget : ctx.target,
+    declaredRollback: mode === "rollback",
+    codeCtxGiven: ctx !== null,
     adopt,
     gatewayDigest,
     target: typeof flags.target === "string" ? flags.target : null,
@@ -197,7 +215,7 @@ async function readOnly(step: ReadOnlyStep, ctx: StepContext, out: (line: string
   if (step === "rollback-plan") {
     const target = inputs.target ?? "last-good";
     if (target !== "last-good" && target !== "previous") throw new StageError("USAGE", "--target must be last-good or previous");
-    for (const line of await planRollback({ ports, config, env, which: target, codeLiveSha: inputs.codeLiveSha, pipelineDir: ctx.pipelineDir })) out(line);
+    for (const line of await planRollback({ ports, config, env, which: target, codeLiveSha: inputs.codeLiveSha, pipelineDir: ctx.pipelineDir, codeTarget: inputs.codeTarget })) out(line);
     return EXIT.OK;
   }
   if (step === "summary") {
@@ -210,8 +228,8 @@ async function readOnly(step: ReadOnlyStep, ctx: StepContext, out: (line: string
   }
   const resolved = await resolveCloudRef(ports, config, inputs.cloudRef);
   const live = await readLiveCloudSha(ports, stackName(config, env, "web"), stackName(config, env, "gateway"));
-  const decision = await decideMode(ports, { requested: inputs.codeRelease, resolved, liveSha: live.sha, adopt: inputs.adopt, env });
-  out(JSON.stringify({ env, cloud: resolved, liveSha: live.sha, mode: decision.mode, codeRelease: decision.codeRelease, codeLiveShaNeeded: decision.mode === "rollback", lastGoodParameter: lastGoodParameter(config, env), warnings: [...live.warnings, ...decision.warnings] }, null, 2));
+  const decision = await decideMode(ports, { requested: inputs.codeRelease, resolved, liveSha: live.sha, adopt: inputs.adopt, env, declared: inputs.declaredRollback, codeTarget: inputs.codeTarget });
+  out(JSON.stringify({ env, cloud: resolved, liveSha: live.sha, mode: decision.mode, codeRelease: decision.codeRelease, codeLiveShaNeeded: decision.mode === "rollback", codeTarget: inputs.codeTarget, lastGoodParameter: lastGoodParameter(config, env), warnings: [...live.warnings, ...decision.warnings] }, null, 2));
   return EXIT.OK;
 }
 

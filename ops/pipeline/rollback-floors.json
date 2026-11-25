@@ -1,7 +1,8 @@
 {
   "schema": 1,
-  "about": "Rollback floors (BETA-CLOUD-PLAN 5). A Cloud ref must equal or descend from every sha under floors, or the rollback-floor gate refuses it with that floor's reason. Read from the pipeline tree, never from the candidate. A new floor is one reviewed edit here. Pending rows are NOT enforced: they name the condition after which the controller moves them into floors.",
+  "about": "Rollback floors (BETA-CLOUD-PLAN 5). A Cloud ref must equal or descend from every sha under floors, or the rollback-floor gate refuses it with that floor's reason. Read from the pipeline tree, never from the candidate. The `code` group is the exception: its shas are Code commits that a Code rollback target must equal or descend from (judged in the Code clone, only when a run rolls Code back); it is empty until the controller names the first Code floor. A new floor is one reviewed edit here. Pending rows are NOT enforced: they name the condition after which the controller moves them into floors.",
   "floors": {
+    "code": [],
     "web": [
       {
         "sha": "fbe943520414def8b15b1cdb5b28eff48eec4fc6",

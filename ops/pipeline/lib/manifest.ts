@@ -50,6 +50,7 @@ export function parseManifest(raw: string): Manifest {
   const supersedes = isObject(code.supersedes) && text(code.supersedes.executionId) !== null
     ? { executionId: text(code.supersedes.executionId)!, codeSha: text(code.supersedes.codeSha) }
     : null;
+  const codeLive = isObject(code.liveSha) ? code.liveSha : {};
   const source = gateway.source;
   return {
     schema: 1,
@@ -70,6 +71,8 @@ export function parseManifest(raw: string): Manifest {
       requestedRelease: code.requestedRelease === "skip" ? "skip" : "run",
       pinnedSha: { beta: text(pinned.beta), production: text(pinned.production) },
       supersedes,
+      liveSha: { beta: text(codeLive.beta), production: text(codeLive.production) },
+      rollbackTarget: text(code.rollbackTarget),
     },
     gateway: {
       digest: text(gateway.digest),
@@ -108,4 +111,14 @@ export function requirePredecessor(stage: StageRecord, step: StepName): void {
 
 export function markCompleted(stage: StageRecord, step: StepName): void {
   if (!stage.completed.includes(step)) stage.completed.push(step);
+}
+
+/** The Code commit a Code rollback moves to (L9b), or null when this run has none. */
+export const codeTargetOf = (manifest: Readonly<Manifest>): string | null => manifest.code.rollbackTarget ?? null;
+
+/** The Code commit that will be live in an environment once this run is done: the rollback target's pin, the pin of a skipped Code, or the commit this run releases. */
+export function codeShaAfterRun(manifest: Readonly<Manifest>, env: PipelineEnv): string | null {
+  const target = codeTargetOf(manifest);
+  if (manifest.mode === "rollback" && target !== null) return manifest.code.pinnedSha[env] ?? target;
+  return manifest.code.release === "skip" ? manifest.code.pinnedSha[env] : manifest.code.sha;
 }

@@ -180,7 +180,7 @@ export const CDK_METADATA: ChangeRow = row("Modify", "CDKMetadata", "AWS::CDK::M
 
 export function makeInputs(over: Partial<Inputs> = {}): Inputs {
   return {
-    execId: EXEC_ID, cloudRef: null, codeRelease: "run", cloudProd: false, codeSha: sha("c"), codeLiveSha: null, codeLiveFacts: {}, supersedes: null, adopt: false,
+    execId: EXEC_ID, cloudRef: null, codeRelease: "run", cloudProd: false, codeSha: sha("c"), codeLiveSha: null, codeLiveFacts: {}, supersedes: null, codeTarget: null, declaredRollback: false, codeCtxGiven: true, adopt: false,
     gatewayDigest: null, target: null, expectedAccount: FAKE_ACCOUNT, dryRun: false, region: "us-east-1", manifestPath: null, outDir: "out", workDir: "/work", ...over,
   };
 }
