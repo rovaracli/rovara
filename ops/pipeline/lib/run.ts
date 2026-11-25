@@ -2,11 +2,12 @@
 // (also after a failure, so the build log and artifact say how far it got), prints the summary.
 import { StageError } from "../types.ts";
 import { checkAccount } from "./account.ts";
-import { stackName } from "../config.ts";
+import { changeSetNameFor, stackName } from "../config.ts";
 import { readLiveCloudSha } from "./refs.ts";
 import type { GatePhase, Manifest, StageRecord } from "../types.ts";
 import type { StepContext } from "./context.ts";
 import { errorText } from "./context.ts";
+import { discardChangeSets } from "./changesets.ts";
 import { mergeGateRecords, runPhase } from "./gates.ts";
 import { markCompleted, newStageRecord, parseManifest, requirePredecessor, serializeManifest, stageOf } from "./manifest.ts";
 import { buildSummary, renderExports, renderSummary } from "./summary.ts";
@@ -85,6 +86,17 @@ async function warnOlderProductionCloud(ctx: StepContext, manifest: Manifest, st
   } catch { stage.warnings.push("could not read production's live Cloud commit to compare it with the one Beta tested"); }
 }
 
+/**
+ * A step failed: this run is failing closed, so nothing will execute the change sets it created. Deletes this run's change set (by this run's name only) on EVERY stack of the
+ * environment (gateway, web, app), not only the failing step's: the web and app change sets previewed in preflight are otherwise left behind when the gateway step fails (the beta
+ * adoption incident). A change set that is executing or has executed (EXECUTE_*) is never deleted; best effort, never throws.
+ */
+async function discardRunChangeSets(ctx: StepContext, state: State): Promise<void> {
+  const manifest = state.manifest;
+  if (manifest === null || ctx.inputs.dryRun) return;
+  await discardChangeSets(ctx.ports, (["gateway", "web", "app"] as const).map((part) => stackName(ctx.config, ctx.env, part)), changeSetNameFor(manifest.exec8), ctx.log);
+}
+
 export async function runStep(ctx: StepContext, step: StepFunction): Promise<void> {
   const state: State = { manifest: readManifest(ctx) };
   const isFirst = ctx.env === "beta" && ctx.step === "preflight";
@@ -127,6 +139,7 @@ export async function runStep(ctx: StepContext, step: StepFunction): Promise<voi
   try {
     await step(ctx, state);
   } catch (error) {
+    await discardRunChangeSets(ctx, state);
     writeOutputs(ctx, state, false);
     logEvent(ctx, "failed", errorText(error));
     throw error;

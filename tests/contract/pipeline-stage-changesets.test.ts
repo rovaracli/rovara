@@ -128,21 +128,42 @@ describe("pipeline stage CLI: change sets by name", () => {
     expect(state.calls.filter((c) => c.startsWith("cfn execute"))).toHaveLength(1);
   });
 
-  it("detects a change set swapped during the execute", async () => {
+  it("detects another change set having run instead of the recorded one: the stack's last change set is checked after the execute, not the change set by name", async () => {
     const state = newState({ plan: { RovaraCloudApp: [MODIFY_FUNCTION], RovaraCloudWeb: [MODIFY_FUNCTION] } });
     for (const part of ["app", "web"] as const) liveStack(state, stackFor("beta", part));
     const records = await preview(state);
-    state.onExecute = (stack) => { state.changeSets[`${stack}/${NAME}`]!.id = "swapped"; };
-    await expect(executeRecorded({ ports: makePorts(state), records, settleTimeoutSeconds: 60, log: () => {} })).rejects.toThrow(/not the recorded change set/);
+    state.onExecute = (stack) => { state.stacks[stack]!.changeSetId = "arn:aws:cloudformation:us-east-1:x:changeSet/someone-else/1"; };
+    await expect(executeRecorded({ ports: makePorts(state), records, settleTimeoutSeconds: 60, log: () => {}, })).rejects.toThrow(/not the recorded change set/);
   });
 
-  it("a retried action waits for a change set that already executed instead of executing it again", async () => {
+  it("a retried action (the stack already ran the recorded change set; CloudFormation deleted the change set) waits for the stack instead of executing again", async () => {
     const state = newState({ plan: { RovaraCloudApp: [MODIFY_FUNCTION], RovaraCloudWeb: [MODIFY_FUNCTION] } });
     for (const part of ["app", "web"] as const) liveStack(state, stackFor("beta", part));
     const records = await preview(state);
-    state.changeSets[`${records[0]!.stack}/${NAME}`]!.executionStatus = "EXECUTE_COMPLETE";
-    await executeRecorded({ ports: makePorts(state), records, settleTimeoutSeconds: 60, log: () => {} });
+    await makePorts(state).cfn.executeChangeSet(records[0]!.stack, NAME); // an earlier invocation executed the app stack's change set, then stopped
+    state.calls.length = 0;
+    const done = await executeRecorded({ ports: makePorts(state), records, settleTimeoutSeconds: 60, log: () => {} });
     expect(state.calls.filter((c) => c.startsWith("cfn execute"))).toEqual([`cfn execute ${records[1]!.stack} ${NAME}`]);
+    expect(done.map((r) => r.finalStatus)).toEqual(["UPDATE_COMPLETE", "UPDATE_COMPLETE"]);
+  });
+
+  it("a change set that is gone is never accepted without the stack proving it ran that very change set", async () => {
+    const state = newState({ plan: { RovaraCloudApp: [MODIFY_FUNCTION], RovaraCloudWeb: [MODIFY_FUNCTION] } });
+    for (const part of ["app", "web"] as const) liveStack(state, stackFor("beta", part));
+    const records = await preview(state);
+    delete state.changeSets[`${records[0]!.stack}/${NAME}`]; // deleted by someone, never executed: the stack still points at an earlier change set
+    await expect(executeRecorded({ ports: makePorts(state), records, settleTimeoutSeconds: 60, log: () => {} })).rejects.toThrow(/cannot be read/);
+    state.stacks[records[0]!.stack]!.changeSetId = "arn:aws:cloudformation:us-east-1:x:changeSet/another/1";
+    await expect(executeRecorded({ ports: makePorts(state), records, settleTimeoutSeconds: 60, log: () => {} })).rejects.toThrow(/cannot be read/);
+  });
+
+  it("tidy also leaves another execution's change set that is still being created or is executing", async () => {
+    const state = newState();
+    const s = stackFor("beta", "web");
+    const cs = (name: string, status: string, executionStatus: string) => { state.changeSets[`${s}/${name}`] = { id: name, status, executionStatus, statusReason: null, rows: [], template: "" }; };
+    cs("rovara-pipeline-creating0", "CREATE_IN_PROGRESS", "UNAVAILABLE"); cs("rovara-pipeline-pending00", "CREATE_PENDING", "UNAVAILABLE"); cs("rovara-pipeline-running00", "CREATE_COMPLETE", "EXECUTE_IN_PROGRESS"); cs("rovara-pipeline-failed000", "FAILED", "UNAVAILABLE");
+    await tidyChangeSets(makePorts(state), [s], NAME, () => {});
+    expect(Object.keys(state.changeSets).sort()).toEqual([`${s}/rovara-pipeline-creating0`, `${s}/rovara-pipeline-pending00`, `${s}/rovara-pipeline-running00`]);
   });
 
   it("tidies this run's change sets and unusable older ones, and leaves an AVAILABLE one of a newer execution", async () => {
@@ -152,6 +173,168 @@ describe("pipeline stage CLI: change sets by name", () => {
     cs(NAME, "EXECUTE_COMPLETE"); cs("rovara-pipeline-older000", "OBSOLETE"); cs("rovara-pipeline-newer000", "AVAILABLE"); cs("hand-made", "AVAILABLE");
     await tidyChangeSets(makePorts(state), [s], NAME, () => {});
     expect(Object.keys(state.changeSets).sort()).toEqual([`${s}/hand-made`, `${s}/rovara-pipeline-newer000`]);
+  });
+});
+
+describe("pipeline stage CLI: the execute is verified by the stack (the beta adoption incident: CloudFormation deletes a stack's change sets once one executes)", () => {
+  const gatewayStack = stackFor("beta", "gateway");
+  const gatewayPlan = { RovaraModelGateway: [] as ReturnType<typeof row>[] }; // +0 ~0 -0: only a new output, so CloudFormation still creates a CREATE_COMPLETE change set
+  const previewGateway = (state: ReturnType<typeof newState>) => previewChangeSets({ ports: makePorts(state), dir: "/c", changeSetName: NAME, stacks: [{ part: "gateway", stack: gatewayStack, stackId: "RovaraModelGateway" }], context: {}, parameters: { ImageDigest: "sha256:x" }, log: () => {} });
+  const world = (over: Partial<ReturnType<typeof newState>> = {}) => { const state = newState({ plan: gatewayPlan, ...over }); liveStack(state, gatewayStack); return state; };
+  const run = (state: ReturnType<typeof newState>, records: Awaited<ReturnType<typeof previewGateway>>) => executeRecorded({ ports: makePorts(state), records, settleTimeoutSeconds: 60, log: () => {} });
+
+  it("the fake behaves like CloudFormation: an execute deletes every change set of that stack (the executed one too), leaves other stacks' alone, and the stack remembers the id", async () => {
+    const state = newState({ plan: { RovaraCloudApp: [MODIFY_FUNCTION], RovaraCloudWeb: [MODIFY_FUNCTION] } });
+    for (const part of ["app", "web"] as const) liveStack(state, stackFor("beta", part));
+    const records = await preview(state);
+    state.changeSets[`${records[0]!.stack}/rovara-pipeline-other0000`] = { id: "other", status: "CREATE_COMPLETE", executionStatus: "AVAILABLE", statusReason: null, rows: [], template: "" };
+    await makePorts(state).cfn.executeChangeSet(records[0]!.stack, NAME);
+    expect(Object.keys(state.changeSets)).toEqual([`${records[1]!.stack}/${NAME}`]);
+    expect(await makePorts(state).cfn.describeChangeSet(records[0]!.stack, NAME)).toBeNull();
+    expect(state.stacks[records[0]!.stack]!.changeSetId).toBe(records[0]!.changeSetId);
+  });
+
+  it("the fake refuses to execute a change set that is not there or not executable", async () => {
+    const state = world();
+    await expect(makePorts(state).cfn.executeChangeSet(gatewayStack, NAME)).rejects.toThrow(/ChangeSetNotFound/);
+    const [record] = await previewGateway(state);
+    state.changeSets[`${gatewayStack}/${NAME}`]!.executionStatus = "OBSOLETE";
+    await expect(makePorts(state).cfn.executeChangeSet(gatewayStack, NAME)).rejects.toThrow(/InvalidChangeSetStatus/);
+    expect(record!.changeSetId).not.toBeNull();
+  });
+
+  it("INCIDENT SHAPE: an empty-looking change set executes, the change set is gone afterwards, and the run passes because the STACK says it ran the recorded change set", async () => {
+    const state = world();
+    const [record] = await previewGateway(state);
+    expect(record).toMatchObject({ noChanges: false, status: "CREATE_COMPLETE", counts: { add: 0, modify: 0, remove: 0, replace: 0 } });
+    const [done] = await run(state, [record!]);
+    expect(done).toMatchObject({ finalStatus: "UPDATE_COMPLETE" });
+    expect(done!.executedAt).not.toBeNull();
+    expect(Object.keys(state.changeSets)).toEqual([]);
+    expect(state.stacks[gatewayStack]!.changeSetId).toBe(record!.changeSetId);
+  });
+
+  it("refuses when the stack's last change set is not the recorded one (another change set ran)", async () => {
+    const state = world();
+    const [record] = await previewGateway(state);
+    state.onExecute = () => { state.stacks[gatewayStack]!.changeSetId = "arn:aws:cloudformation:us-east-1:x:changeSet/someone-else/1"; };
+    await expect(run(state, [record!])).rejects.toMatchObject({ exitName: "CHANGE_SET_MISMATCH" });
+  });
+
+  it("refuses a stack that has no change set at all after the execute", async () => {
+    const state = world();
+    const [record] = await previewGateway(state);
+    state.onExecute = () => { state.stacks[gatewayStack]!.changeSetId = null; };
+    await expect(run(state, [record!])).rejects.toThrow(/last change set is none/);
+  });
+
+  it.each(["UPDATE_ROLLBACK_COMPLETE", "UPDATE_ROLLBACK_FAILED", "UPDATE_FAILED", "ROLLBACK_COMPLETE", "CREATE_FAILED", "DELETE_COMPLETE", "UPDATE_ROLLBACK_IN_PROGRESS", "UPDATE_IN_PROGRESS"])("refuses a stack that ends as %s", async (status) => {
+    const state = world({ executeOutcome: { [gatewayStack]: status } });
+    const [record] = await previewGateway(state);
+    await expect(run(state, [record!])).rejects.toMatchObject({ exitName: "DEPLOY_FAILED" });
+  });
+
+  it("refuses a stack that was not updated since the execute started, but allows a small clock difference", async () => {
+    const stale = world();
+    const [record] = await previewGateway(stale);
+    stale.onExecute = () => { stale.stacks[gatewayStack]!.lastUpdatedTime = new Date(stale.now - 10 * 60_000).toISOString(); };
+    await expect(run(stale, [record!])).rejects.toThrow(/not updated since the execute started/);
+    const skewed = world();
+    const [again] = await previewGateway(skewed);
+    skewed.onExecute = () => { skewed.stacks[gatewayStack]!.lastUpdatedTime = new Date(skewed.now - 60_000).toISOString(); };
+    await expect(run(skewed, [again!])).resolves.toHaveLength(1);
+    const never = world();
+    const [third] = await previewGateway(never);
+    never.onExecute = () => { never.stacks[gatewayStack]!.lastUpdatedTime = null; };
+    await expect(run(never, [third!])).rejects.toThrow(/never updated/);
+  });
+
+  it("waits while describe-stacks still shows the stack as it was (eventual consistency right after the execute), and gives up when it never changes", async () => {
+    const lagging = world({ executeLag: { [gatewayStack]: 3 } });
+    const [record] = await previewGateway(lagging);
+    const before = lagging.now;
+    await expect(run(lagging, [record!])).resolves.toHaveLength(1);
+    expect(lagging.now).toBeGreaterThan(before); // it slept between reads
+    const forever = world({ executeLag: { [gatewayStack]: 100_000 } });
+    const [stuck] = await previewGateway(forever);
+    await expect(run(forever, [stuck!])).rejects.toMatchObject({ exitName: "CHANGE_SET_MISMATCH" });
+  });
+
+  it("a stack still IN_PROGRESS beyond the wait is a failed deploy (the port's wait gives up)", async () => {
+    const state = world();
+    const [record] = await previewGateway(state);
+    const ports = makePorts(state);
+    ports.cfn.waitSettled = () => Promise.reject(new StageError("DEPLOY_FAILED", "rovara-cloud-beta-gateway is still UPDATE_IN_PROGRESS after 1 s"));
+    await expect(executeRecorded({ ports, records: [record!], settleTimeoutSeconds: 1, log: () => {} })).rejects.toMatchObject({ exitName: "DEPLOY_FAILED" });
+  });
+
+  it("the by-name check still guards the moment BEFORE the execute (different id, changed template)", async () => {
+    const state = world();
+    const [record] = await previewGateway(state);
+    state.changeSets[`${gatewayStack}/${NAME}`]!.id = "swapped-before-execute";
+    await expect(run(state, [record!])).rejects.toThrow(/different id/);
+    expect(state.calls.some((c) => c.startsWith("cfn execute"))).toBe(false);
+  });
+});
+
+describe("pipeline stage CLI: other real CloudFormation behaviour the stage CLI must handle", () => {
+  const web = stackFor("beta", "web");
+  const webPlan = { RovaraCloudWeb: [row("Add", "Fn", "AWS::Lambda::Function")] };
+  const previewWeb = (state: ReturnType<typeof newState>, ports = makePorts(state)) => previewChangeSets({ ports, dir: "/c", changeSetName: NAME, stacks: [{ part: "web", stack: web, stackId: "RovaraCloudWeb" }], context: {}, parameters: {}, log: () => {} });
+
+  it("the first deploy of a stack: cdk leaves a REVIEW_IN_PROGRESS shell holding the change set, it is executed, and the stack ends CREATE_COMPLETE (a created stack has no LastUpdatedTime)", async () => {
+    const state = newState({ plan: webPlan });
+    const [record] = await previewWeb(state);
+    expect(state.stacks[web]!.status).toBe("REVIEW_IN_PROGRESS");
+    const [done] = await executeRecorded({ ports: makePorts(state), records: [record!], settleTimeoutSeconds: 60, log: () => {} });
+    expect(done).toMatchObject({ finalStatus: "CREATE_COMPLETE" });
+    expect(state.stacks[web]!.changeSetId).toBe(record!.changeSetId);
+  });
+
+  it("a stack the change set CREATED needs no update time (CloudFormation may or may not report one for a created stack); an UPDATED stack does", async () => {
+    const state = newState({ plan: webPlan });
+    const [record] = await previewWeb(state);
+    state.onExecute = () => { state.stacks[web]!.lastUpdatedTime = new Date(state.now - 86_400_000).toISOString(); };
+    await expect(executeRecorded({ ports: makePorts(state), records: [record!], settleTimeoutSeconds: 60, log: () => {} })).resolves.toHaveLength(1);
+  });
+
+  it("a REVIEW_IN_PROGRESS stack whose change set is gone, and any other unsettled stack, are still refused", async () => {
+    const state = newState({ plan: webPlan });
+    const [record] = await previewWeb(state);
+    delete state.changeSets[`${web}/${NAME}`];
+    await expect(executeRecorded({ ports: makePorts(state), records: [record!], settleTimeoutSeconds: 60, log: () => {} })).rejects.toThrow(/cannot be read/);
+    for (const status of ["ROLLBACK_COMPLETE", "UPDATE_ROLLBACK_COMPLETE", "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS", "CREATE_FAILED", "DELETE_FAILED"]) {
+      const other = newState({ plan: webPlan });
+      const [rec] = await previewWeb(other);
+      other.stacks[web]!.status = status;
+      await expect(executeRecorded({ ports: makePorts(other), records: [rec!], settleTimeoutSeconds: 1, log: () => {} })).rejects.toMatchObject({ exitName: "REFUSED" });
+      expect(other.calls.some((c) => c.startsWith("cfn execute"))).toBe(false);
+    }
+  });
+
+  it("a change set that is not there yet, or still CREATE_IN_PROGRESS, right after cdk made it is read again; one that never appears is still a mismatch", async () => {
+    const lateState = newState({ plan: webPlan });
+    const late = makePorts(lateState);
+    const describe = late.cfn.describeChangeSet.bind(late.cfn);
+    let reads = 0;
+    late.cfn.describeChangeSet = async (stack, name) => { reads += 1; const found = await describe(stack, name); return reads <= 2 ? null : reads === 3 ? { ...found!, status: "CREATE_IN_PROGRESS", executionStatus: "UNAVAILABLE" } : found; };
+    const [record] = await previewWeb(lateState, late);
+    expect(record).toMatchObject({ noChanges: false, status: "CREATE_COMPLETE", executionStatus: "AVAILABLE" });
+    expect(reads).toBe(4);
+    const never = newState({ plan: webPlan });
+    const ports = makePorts(never);
+    ports.cfn.describeChangeSet = () => Promise.resolve(null);
+    await expect(previewWeb(never, ports)).rejects.toThrow(/does not exist/);
+  });
+
+  it("a change set that FAILED with \"didn't contain changes\" is no change (what cdk --no-execute leaves; cdk only deletes the empty change set when it executes), and it is never executed or verified", async () => {
+    const state = newState({ plan: { RovaraCloudWeb: null } });
+    liveStack(state, web);
+    const [record] = await previewWeb(state);
+    expect(record).toMatchObject({ noChanges: true, changeSetId: null });
+    const [done] = await executeRecorded({ ports: makePorts(state), records: [record!], settleTimeoutSeconds: 60, log: () => {} });
+    expect(done).toBe(record);
+    expect(state.calls.some((c) => c.startsWith("cfn execute"))).toBe(false);
   });
 });
 

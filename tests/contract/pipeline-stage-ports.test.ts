@@ -21,11 +21,16 @@ case "$1 $2" in
   "sts assume-role") echo '{"Credentials":{"AccessKeyId":"AKIATEST","SecretAccessKey":"s","SessionToken":"t"}}' ;;
   "cloudformation describe-stacks")
     case "$*" in *missing*) echo "An error occurred (ValidationError): Stack with id missing does not exist" >&2; exit 254 ;; esac
-    echo '{"Stacks":[{"StackStatus":"UPDATE_COMPLETE","Parameters":[{"ParameterKey":"ImageDigest","ParameterValue":"sha256:x"}],"Outputs":[{"OutputKey":"CloudUrl","OutputValue":"https://c.example.test/app"}]}]}' ;;
+    echo '{"Stacks":[{"StackStatus":"UPDATE_COMPLETE","ChangeSetId":"arn:cs/1","LastUpdatedTime":"2026-11-25T01:02:03.000Z","Parameters":[{"ParameterKey":"ImageDigest","ParameterValue":"sha256:x"}],"Outputs":[{"OutputKey":"CloudUrl","OutputValue":"https://c.example.test/app"}]}]}' ;;
   "cloudformation describe-change-set")
     case "$*" in *nochangeset*) echo "An error occurred (ChangeSetNotFound): ChangeSet [nochangeset] does not exist" >&2; exit 254 ;; esac
     case "$*" in *nostack*) echo "An error occurred (ValidationError) when calling the DescribeChangeSet operation: Stack [nostack] does not exist" >&2; exit 254 ;; esac
     echo '{"ChangeSetId":"cs-1","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"ResourceChange":{"Action":"Modify","LogicalResourceId":"Fn","PhysicalResourceId":"fn-1","ResourceType":"AWS::Lambda::Function","Replacement":"False","Details":[{"Target":{"Attribute":"Properties","Name":"Environment","RequiresRecreation":"Never"}},{"Target":{"Attribute":"Properties","Name":"Environment"}},{"Target":{"Attribute":"Tags"}}]}},{"ResourceChange":{"Action":"Modify","LogicalResourceId":"Bare","ResourceType":"AWS::SQS::Queue","Replacement":"False"}}]}' ;;
+  "cloudformation delete-change-set")
+    case "$*" in *nochangeset*) echo "An error occurred (ChangeSetNotFound) when calling the DeleteChangeSet operation: ChangeSet [nochangeset] does not exist" >&2; exit 254 ;; esac
+    case "$*" in *nostack*) echo "An error occurred (ValidationError) when calling the DeleteChangeSet operation: Stack [nostack] does not exist" >&2; exit 254 ;; esac
+    case "$*" in *denied*) echo "An error occurred (AccessDenied) when calling the DeleteChangeSet operation: not allowed" >&2; exit 254 ;; esac
+    echo 'null' ;;
   "cloudformation get-template") echo '{"TemplateBody":{"b":1,"a":{"d":2,"c":3}}}' ;;
   "cloudformation list-change-sets") echo '{"Summaries":[{"ChangeSetName":"rovara-pipeline-aaaaaaaa"}]}' ;;
   "ssm get-parameter")
@@ -49,7 +54,7 @@ describe("pipeline stage CLI: real ports (a fake aws on the PATH, a real git rep
     const p = ports();
     expect(await p.sts.account()).toBe(FAKE_ACCOUNT);
     const stack = await p.cfn.describeStack("rovara-cloud-beta-web");
-    expect(stack).toEqual({ status: "UPDATE_COMPLETE", parameters: { ImageDigest: "sha256:x" }, outputs: { CloudUrl: "https://c.example.test/app" } });
+    expect(stack).toEqual({ status: "UPDATE_COMPLETE", parameters: { ImageDigest: "sha256:x" }, outputs: { CloudUrl: "https://c.example.test/app" }, changeSetId: "arn:cs/1", lastUpdatedTime: "2026-11-25T01:02:03.000Z" });
     const lines = log();
     expect(lines[0]).toBe("rovara-cloud-beta||sts get-caller-identity --region us-east-1 --output json");
     expect(lines[1]).toBe(`rovara-cloud-beta||sts assume-role --role-arn arn:aws:iam::${FAKE_ACCOUNT}:role/cdk-hnb659fds-deploy-role-${FAKE_ACCOUNT}-us-east-1 --role-session-name rovara-pipeline-1a2b3c4d --region us-east-1 --output json`);
@@ -68,6 +73,13 @@ describe("pipeline stage CLI: real ports (a fake aws on the PATH, a real git rep
 
   it("reads a change set of a stack that does not exist as no change set (the cleanup after a failed first call must not fail)", async () => {
     expect(await ports().cfn.describeChangeSet("nostack", "x")).toBeNull();
+  });
+
+  it("deleting a change set that is already gone (CloudFormation deletes them itself once one executes), or whose stack is, is done; any other refusal still fails", async () => {
+    const p = ports();
+    await expect(p.cfn.deleteChangeSet("s", "nochangeset")).resolves.toBeUndefined();
+    await expect(p.cfn.deleteChangeSet("nostack", "x")).resolves.toBeUndefined();
+    await expect(p.cfn.deleteChangeSet("s", "denied")).rejects.toThrow(/delete-change-set failed/);
   });
 
   it("every CloudFormation read names the region, asks for json, and runs as the deploy role with no profile", async () => {
