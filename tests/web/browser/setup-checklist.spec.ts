@@ -52,7 +52,7 @@ test("a finished run, the verified Setup tab that stays after the checklist is g
   const tab = new SetupTabPage(page);
   await tab.open(PROJECT);
   await expect(tab.card).toHaveAttribute("data-state", "verified");
-  await expect(tab.card).toContainText("Setup is done.");
+  await expect(tab.card).toContainText("Setup approved.");
   await expect(tab.start).toHaveAttribute("class", /rv-button-secondary/u);
   await page.screenshot({ path: testInfo.outputPath("setup-tab-verified.png"), fullPage: true });
   await checklist.openSettings(PROJECT);

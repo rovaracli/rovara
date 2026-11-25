@@ -78,7 +78,7 @@ it("offers to run the setup, and starts it with a request id of its own", async 
   f.close();
 });
 
-it("while it runs: shows the journal as quoted text, the addresses it asked for, steer and a command box, and stops on request", async () => {
+it("while it runs: shows the journal as quoted text, the addresses it asked for, a steer box and no command box, and stops on request", async () => {
   const f = setup({
     read: { status: 200, body: view({ status: "running", taskId: TASK, sessionId: "ses_aaaaaaaaaaaaaaaaaaaa", startedAt: "2026-11-02T12:00:00.000Z" }) },
     journal: { status: "running", entries: [ENTRY], hostAsks: [{ host: "registry.example-build.io", status: "open", journalN: 1 }] },
@@ -89,10 +89,9 @@ it("while it runs: shows the journal as quoted text, the addresses it asked for,
   expect(within(section).getByText("Failed (code 1)")).toBeTruthy();
   expect(within(section).getByText(/Waiting for a company owner or admin to decide/u)).toBeTruthy();
   expect(within(section).getAllByText("registry.example-build.io").length).toBeGreaterThan(0);
-  fireEvent.change(within(section).getByLabelText("Run a command yourself"), { target: { value: "ls -la" } });
-  fireEvent.click(within(section).getByRole("button", { name: "Run command" }));
-  await waitFor(() => expect(posts(f, "/setup-agent/command")).toHaveLength(1));
-  expect(posts(f, "/setup-agent/command")[0]!.body).toMatchObject({ command: "ls -la" });
+  expect(within(section).queryByLabelText("Run a command yourself")).toBeNull();
+  expect(within(section).queryByRole("button", { name: "Run command" })).toBeNull();
+  expect(posts(f, "/setup-agent/command")).toHaveLength(0);
   fireEvent.change(within(section).getByLabelText("Tell Rovara something about this project"), { target: { value: "Use pnpm, not npm" } });
   fireEvent.click(within(section).getByRole("button", { name: "Send to Rovara" }));
   await waitFor(() => expect(f.request.mock.calls.some(([r]) => r.method === "POST" && r.path === "/v1/app/sessions/ses_aaaaaaaaaaaaaaaaaaaa/messages")).toBe(true));
@@ -104,11 +103,11 @@ it("while it runs: shows the journal as quoted text, the addresses it asked for,
   f.close();
 });
 
-it("with no session there is no steer box, and the command box is only for a run that is going", async () => {
+it("with no session there is no steer box, and no command box at all", async () => {
   const f = setup({ read: { status: 200, body: view({ status: "running", taskId: TASK }) } });
   const section = await region();
   expect(within(section).queryByLabelText("Tell Rovara something about this project")).toBeNull();
-  expect(within(section).getByLabelText("Run a command yourself")).toBeTruthy();
+  expect(within(section).queryByLabelText("Run a command yourself")).toBeNull();
   f.close();
   const done = setup({ read: { status: 200, body: view({ status: "ready", stop: "proposed", summary: SUMMARY, proposal: PROPOSAL, verified: true, verification: { "setup-web": "verified", "tests-web": "verified" }, taskId: TASK }) } });
   const finished = await region();

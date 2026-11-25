@@ -2,7 +2,7 @@
 // command needs a fresh browser sign-in) and decides everything, so this client only asks. The gateway puts its own `requestId` in every answer and the contracts are strict, so it is set aside first.
 import { useMemo } from "react";
 import {
-  ProjectOverviewProjectSchema, SetupAgentCommandReplySchema, SetupAgentCommandRequestSchema, SetupAgentRequestBodySchema, SetupAgentViewSchema, SetupConfirmReplySchema, SetupConfirmRequestSchema, SetupDecideReplySchema, SetupDecideRequestSchema, SetupDiscardReplySchema, SetupDiscardRequestSchema, SetupHostDecideReplySchema, SetupHostDecideRequestSchema, SetupJournalReplySchema,
+  ProjectOverviewProjectSchema, SetupAgentRequestBodySchema, SetupAgentViewSchema, SetupConfirmReplySchema, SetupConfirmRequestSchema, SetupDecideReplySchema, SetupDecideRequestSchema, SetupDiscardReplySchema, SetupDiscardRequestSchema, SetupHostDecideReplySchema, SetupHostDecideRequestSchema, SetupJournalReplySchema,
 } from "@agentx/contracts/web";
 import { useAppHost, type AppHost } from "../host.js";
 import { createApiClient } from "./client.js";
@@ -20,7 +20,6 @@ export function createSetupAgentApi(host: AppHost) {
     journal: (name: string, options?: { retry: "never" }) => api.get(base(name) + "/journal", exactAnswer(SetupJournalReplySchema), undefined, options),
     start: (name: string, requestId: string) => api.sendAnswer("POST", base(name), SetupAgentRequestBodySchema.parse({ requestId }), view),
     stop: (name: string, requestId: string) => api.sendAnswer("POST", base(name) + "/stop", SetupAgentRequestBodySchema.parse({ requestId }), view),
-    command: (name: string, requestId: string, command: string) => api.sendAnswer("POST", base(name) + "/command", SetupAgentCommandRequestSchema.parse({ requestId, command }), exactAnswer(SetupAgentCommandReplySchema)),
     confirm: (name: string, body: ReturnType<typeof SetupConfirmRequestSchema.parse>) => api.sendAnswer("POST", base(name) + "/confirm", SetupConfirmRequestSchema.parse(body), exactAnswer(SetupConfirmReplySchema)),
     /** L4-D2: drop the waiting candidate. */
     discard: (name: string, requestId: string) => api.sendAnswer("POST", base(name) + "/discard", SetupDiscardRequestSchema.parse({ requestId }), exactAnswer(SetupDiscardReplySchema)),

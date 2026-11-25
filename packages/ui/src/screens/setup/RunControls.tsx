@@ -1,11 +1,9 @@
 import { useState } from "react";
 import { useAppHost } from "../../host.js";
 import { createSessionApi } from "../../api/sessions.js";
-import { useSetupAgentApi } from "../../api/setup-agent.js";
 import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { TextArea } from "../../design/TextArea.js";
-import { TextField } from "../../design/TextField.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { RUN } from "../setup-tab/setup-tab-text.js";
 
@@ -24,21 +22,5 @@ export function SteerBox({ sessionId }: { sessionId: string }) {
     <Button busy={busy} disabled={text.trim() === ""} onClick={() => { void send(); }}>{RUN.steerSend}</Button>
     {sent && <p role="status">{RUN.steerSent}</p>}
     {error !== undefined && <p role="alert"><VisibleText text={error} /></p>}
-  </section>;
-}
-
-/** Runs one command of the person's own in the run's sandbox. A command needs a signed-in browser whose sign-in is fresh; the server decides, this page only asks. */
-export function CommandBox({ project, onRan }: { project: string; onRan: () => void }) {
-  const api = useSetupAgentApi();
-  const [command, setCommand] = useState(""), [busy, setBusy] = useState(false), [queued, setQueued] = useState(false), [error, setError] = useState<{ message: string }>(), [requestId, setRequestId] = useState(() => crypto.randomUUID());
-  async function run() {
-    setBusy(true); setError(undefined); setQueued(false);
-    try { await api.command(project, requestId, command.trim()); setCommand(""); setRequestId(crypto.randomUUID()); setQueued(true); onRan(); } catch (caught) { setError(problem(caught, "Couldn't run that. Try again.")); } finally { setBusy(false); }
-  }
-  return <section aria-label="Run a command">
-    <TextField label={RUN.commandLabel} hint={RUN.commandHint} value={command} onChange={event => { setCommand(event.target.value); setRequestId(crypto.randomUUID()); }} maxLength={1000} />
-    <Button busy={busy} disabled={command.trim() === ""} onClick={() => { void run(); }}>{RUN.commandRun}</Button>
-    {queued && <p role="status">{RUN.commandQueued}</p>}
-    {error !== undefined && <p role="alert"><VisibleText text={error.message} /></p>}
   </section>;
 }

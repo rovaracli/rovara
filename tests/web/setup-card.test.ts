@@ -98,7 +98,7 @@ describe("the status card, every state (3.5)", () => {
     const verified = row({ state: "done", status: "ready", approval: "approved", check: { status: "ready" }, approvedAt: "2026-11-12T10:00:00.000Z", elapsedMs: 680_000, costCents: 160 });
     const model = card({ run: run({ status: "ready", stop: "proposed" }), row: verified, mayStartTask: true });
     expect(model.state).toBe("verified"); expect(model.chip.state).toBe("done");
-    expect(model.title).toBe("Setup is done. acme/payments can run tasks.");
+    expect(model.title).toBe("Setup approved. Tasks in acme/payments use this setup.");
     expect(model.body).toMatch(/^Approved on .+\. Took 11 min 20 s, cost \$1\.60\.$/u);
     expect(model.primary).toMatchObject({ id: "start_task", label: "Start a task" }); expect(model.secondary.map(action => action.label)).toEqual(["Run setup again"]);
     expect(model.secondary[0]!.hints).toEqual(["Uses up to $4.00 of this project's AI budget.", "Running again doesn't change the setup in use. You approve a new one first."]);

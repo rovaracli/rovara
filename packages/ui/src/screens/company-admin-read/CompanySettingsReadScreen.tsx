@@ -22,6 +22,7 @@ import { ReadState, readIsStale } from "./ReadState.js";
 import { Chevron, Fact, Facts, ReadSection, Rows, Stamp } from "./parts.js";
 import { companyReadKey, settingsReader, useCompanyRead, type ReadScope } from "./read-model.js";
 import { ALLOWED_LIST_NAME } from "../admin/projects/allowed-list-name.js";
+import { CompanyIdFact } from "./CompanyIdFact.js";
 import { POLICY_NOT_ENFORCED } from "./company-policy-words.js";
 
 type Rule = { text: string; priority: "required" | "preferred" };
@@ -196,6 +197,7 @@ export function CompanySettingsReadScreen() {
    <section className="rv-car-card" aria-labelledby="company-settings-summary"><h2 id="company-settings-summary">Company</h2><p className="rv-car-lede">Shown in the nav, in invites and in Slack messages.</p>
     <Facts>
      <Fact label="Company name"><VisibleText text={scope.company} /></Fact>
+     <CompanyIdFact orgId={scope.orgId} />
      <Fact label="Your role">{scope.role === "owner" ? "Owner" : "Admin"}</Fact>
     </Facts>
    </section>

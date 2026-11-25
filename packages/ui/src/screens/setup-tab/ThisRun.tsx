@@ -10,7 +10,7 @@ import type { SetupTabData } from "./use-setup-tab.js";
 import { AddressAsks, type Decisions } from "./AddressAsks.js";
 import { durationWords } from "./setup-card.js";
 import { ADDRESSES, RUN } from "./setup-tab-text.js";
-import { CommandBox, SteerBox } from "../setup/RunControls.js";
+import { SteerBox } from "../setup/RunControls.js";
 
 function Chevron() { return <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" /></svg>; }
 
@@ -59,7 +59,7 @@ function Log({ journal, running, open, onToggle, onRead, failed, reading }: { jo
 }
 
 /**
- * "This run" (3.8): the facts in one line, the steps (omitted: the server sends no step names, and no line says so), the log folded, and, while a run goes, "Help Rovara along" with the two expert boxes. The addresses a run
+ * "This run" (3.8): the facts in one line, the steps (omitted: the server sends no step names, and no line says so), the log folded, and, while a run goes, "Help Rovara along" with the steer box (there is no box to run a command: hosted Rovara Code serves no such route). The addresses a run
  * asked for are decided above; once none is open they come here as a fold.
  */
 export function ThisRun({ project, data, decisions, setDecisions, logOpen, onLogToggle, mayAct, running, last = false, note, heading, children }: { project: string; /** Replaces the heading ("The run behind the setup in use") and says in one line what is not in this log. */ heading?: string; note?: string; /** The run is a finished one beside a setup in use (verified, broken later): its heading says "Last run", never "This run". */ last?: boolean; data: SetupTabData; decisions: Decisions; setDecisions: (change: (now: Decisions) => Decisions) => void; logOpen: boolean; onLogToggle: (open: boolean) => void; mayAct: boolean; running: boolean; children?: ReactNode }) {
@@ -81,7 +81,6 @@ export function ThisRun({ project, data, decisions, setDecisions, logOpen, onLog
         <summary><Chevron /><strong>{RUN.help}</strong></summary>
         <div className="rv-setup-fold-body">
           {data.run?.sessionId !== undefined && <SteerBox sessionId={data.run.sessionId} />}
-          <CommandBox project={project} onRan={() => { data.refresh(); }} />
         </div>
       </details>}
     </div>
