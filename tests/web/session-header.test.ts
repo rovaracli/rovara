@@ -23,6 +23,12 @@ it("offers follow and sharing only from explicit server actions", () => {
  expect(screen.getByRole("button", { name: "Follow" })).toBeTruthy();expect(screen.queryByRole("button", { name: "Share" })).toBeNull();expect(screen.queryByRole("button", { name: "Take over" })).toBeNull();f.unmount();
  const other = renderUi(h(SessionHeader, { session: sessionFixture(), onAction: () => undefined }));expect(screen.getByRole("button", { name: "Share" })).toBeTruthy();other.unmount();
 });
+it("shows the owner-left words as plain text, never as HTML or Markdown", () => {
+ const words = "<b>Priya</b> **left** the project";
+ const f = renderUi(h(SessionHeader, { session: sessionFixture({ you: { level: "view", owner: false, following: false, actions: ["watch"], ownerLeft: words } }), onAction: () => undefined }));
+ const node = screen.getByTestId("session-owner-left");expect(node.textContent).toBe(words);expect(node.querySelector("b")).toBeNull();expect(node.querySelector("strong")).toBeNull();f.unmount();
+ renderUi(h(SessionHeader, { session: sessionFixture(), onAction: () => undefined }));expect(screen.queryByTestId("session-owner-left")).toBeNull();
+});
 it("shows at most five named viewers and the remaining count", () => { const session = sessionFixture({ viewingNow: Array.from({ length: 7 }, (_, i) => ({ developerId: String(i).repeat(64), name: "Viewer " + i })) });const f = renderUi(h(SessionHeader, { session, onAction: () => undefined }));expect(screen.getByRole("group", { name: "7 people viewing" }).querySelectorAll('[data-avatar]')).toHaveLength(5);expect(screen.getByText("+2")).toBeTruthy();f.unmount(); });
 it("opens only the bare caller confirmation link for approvals and paused budget", () => {
  const f = fakeHost(async () => ({ status: 200, body: meFixture() })), confirmUrl = "https://cell.example/v1/app/approve/apr_aaaaaaaaaaaaaaaaaaaa";
