@@ -38,6 +38,12 @@ function parameterSamples(s: CheckScope): Record<string, string> {
     ProductKeysKeyArn: `arn:${s.partition}:kms:${s.region}:${s.account}:key/11111111-1111-4111-8111-111111111111`,
     ProductKeysMacKeyArn: `arn:${s.partition}:kms:${s.region}:${s.account}:key/22222222-2222-4222-8222-222222222222`,
     GitHubConnectionArn: `arn:${s.partition}:codeconnections:${s.region}:${s.account}:connection/33333333-3333-4333-8333-333333333333`,
+    // The release actions stack (cloud-release-actions.ts): another account stands for beta; the price fetch roles are under the gateway's role path.
+    CloudConnectionArn: `arn:${s.partition}:codeconnections:${s.region}:${s.account}:connection/55555555-5555-4555-8555-555555555555`,
+    ArtifactBucketName: "sample-release-pipeline-artifacts-bucket",
+    BetaAccountId: "210987654321",
+    ProductionPriceFetchTaskRoleArn: `arn:${s.partition}:iam::${s.account}:role/rovara-cloud/${s.env}/gateway/SAMPLE-PriceFetchTaskRole9E75F49-SAMPLE0000AA`,
+    ProductionPriceFetchExecutionRoleArn: `arn:${s.partition}:iam::${s.account}:role/rovara-cloud/${s.env}/gateway/SAMPLE-PriceFetchExecutionRole81-SAMPLE0000AA`,
   };
 }
 
@@ -338,9 +344,13 @@ export function boundaryViolations(stacks: readonly StackTemplate[], scope: Chec
     const allows = boundary.filter((b) => b.Effect === "Allow");
     const denies = boundary.filter((b) => b.Effect === "Deny");
     const allowed = allows.some((b) => (b.Action as string[]).some((a) => covers(a, c.action)) && (b.Resource as string[]).some((r) => coversResource(r, c.resource)) && conditionWithin(c.condition, b.Condition as ResolvedCondition | undefined));
-    const denied = denies.find((b) => (b.Action as string[]).some((a) => overlaps(a, c.action, true)) && (b.Resource as string[]).some((r) => overlaps(r, c.resource, false)));
+    // A Deny with a condition applies to a request only when the condition holds, which a static check cannot always know. A Bool Deny (ecs:enable-execute-command) is
+    // left out here (its text is pinned by a test). Any other conditional Deny is evaluated as if it applied: a case it could touch is reported, never passed; a Deny
+    // that touches no case at all (the KMS deny outside S3: no role is granted any KMS action) costs nothing.
+    const bool = (b: Statement): boolean => b.Condition !== undefined && Object.keys(b.Condition as object).every((operator) => operator === "Bool");
+    const denied = denies.filter((b) => !bool(b)).find((b) => (b.Action as string[]).some((a) => overlaps(a, c.action, true)) && (b.Resource as string[]).some((r) => overlaps(r, c.resource, false)));
     if (!allowed) violations.push({ ...rest, reason: "not allowed by the boundary" });
-    else if (denied !== undefined) violations.push({ ...rest, reason: `denied by the boundary's ${denied.Sid ?? "Deny"}` });
+    else if (denied !== undefined) violations.push({ ...rest, reason: `denied by the boundary's ${denied.Sid ?? "Deny"}${denied.Condition === undefined ? "" : " (conditional: counted as applying)"}` });
   }
   return violations;
 }

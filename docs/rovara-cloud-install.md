@@ -140,11 +140,11 @@ again after a change to `cloud-release-pipeline.ts`.
 
 ### Beta: a pipeline that deploys into another account
 
-Beta Cloud (`app.beta.rovara.dev`, on beta Code at `https://beta.rovara.dev`) lives in the beta account, `233082642592`. Its
-pipeline, `rovara-cloud-beta-pipeline`, runs in the production account, `944937319445`, which holds the GitHub connection. This is
+Beta Cloud (`app.beta.rovara.dev`, on beta Code at `https://beta.rovara.dev`) lives in the beta account. Its
+pipeline, `rovara-cloud-beta-pipeline`, runs in the production account, which holds the GitHub connection. This is
 how Rovara Code's beta release works too (Rovara-cloud#269).
 
-- `CLOUD_PIPELINE_DEPLOY_ACCOUNTS` in `cloud-release-pipeline.ts` names beta's account.
+- `CLOUD_PIPELINE_SEPARATE_ACCOUNT_ENVS` in `cloud-release-pipeline.ts` says beta deploys into another account; the account itself is never in git: pass `-c agentxAccount=<beta account>` when you deploy the pipeline stack by hand.
 - The deploy job passes `-c agentxAccount=<that account>`, so `cdk deploy` goes through beta's CDK bootstrap roles.
 - The release check reads the web stack's address through beta's lookup role.
 - The pipeline's role boundary allows exactly those roles.
@@ -152,7 +152,7 @@ how Rovara Code's beta release works too (Rovara-cloud#269).
 The beta account's bootstrap must trust the production account. Run this once, as the beta account:
 
 ```sh
-npx cdk bootstrap aws://233082642592/us-east-1 --trust 944937319445 --trust-for-lookup 944937319445 \
+npx cdk bootstrap aws://<beta account>/us-east-1 --trust <production account> --trust-for-lookup <production account> \
   --cloudformation-execution-policies arn:aws:iam::aws:policy/AdministratorAccess
 ```
 
@@ -300,3 +300,7 @@ The command scans every page of both tables with consistent reads. Companies con
 **The release pipeline reads the recorded result, not the tables** (Rovara-cloud#313). The deploy job runs `--check --release-stack "${STACK_PREFIX}-web" --lookup-role <deploy account's CDK lookup role> --marker /rovara-cloud/<env>/release-checks/agent-own-key-backfill` before its deploy. The CDK lookup role is denied `kms:Decrypt`, so it can't scan the Companies or ProductKeys tables (both encrypted with KMS keys); it reads the web stack (`CodeUrl` plus `/v1/auth`, `CompanyTableName`, `ProductKeysTableName`) and the SSM String parameter the operator's last `--check ... --record` wrote. The release passes only if that record names this stack's own issuer and both tables, zero pending companies and a valid time; a missing, other-install, pending or malformed record blocks it. `--record` writes only after a run with zero candidates, and holds identifiers and counts only (issuer, table names, companies scanned, time), never company ids. Re-run the `--check ... --record` line after the backfill and before the first release of each environment; it needs an operator session that can read both tables. For cross-account beta, the parameter and the lookup role are in the deploy account.
 
 After installation, prove on staging that a backfilled own-key company still uses that source, an explicit choice is unchanged, and an unconnected company defaults to company-billed Rovara AI under its caps. Sol and lead 4 Opus review the exact committed SHA before rollout.
+
+## The single release pipeline's Cloud actions stack (`rovara-cloud-release-actions`)
+
+The CodeBuild projects (`release-cloud-beta`, `release-cloud-production`) and roles that run the stage CLI (`ops/pipeline/stage.ts`) for the single release pipeline live in this stack, in the release account (`infra/lib/cloud-release-actions.ts`). It is deployed once by hand, by change set, BEFORE the public pipeline names its projects; the pipeline never deploys it. `-c rovaraCloudReleaseActions=<the environment the release account runs>` makes it; the parameters (no defaults, no account is committed) are the two GitHub connections, the public pipeline's `ArtifactBucketName` output, `BetaAccountId`, and the two exact price fetch roles of the production gateway. Afterwards: (1) the beta release role's `PrimaryBuildRoleArn` is the `BetaBuildRoleArn` output; (2) beta's gateway image repository gets the read-only repository policy printed by `betaGatewayPullPolicy` for the `ProductionBuildRoleArn` output; (3) the public pipeline is redeployed with the two project names from the outputs. Read the change set before executing it. Keep `codebuild:StartBuild`, `codebuild:UpdateProject`, `codepipeline:UpdatePipeline` and `iam:PassRole` of the two build roles to a small named set: whoever can run code as the beta build role owns beta, and the production build role is effectively administrator of the release account: through the bootstrap deploy role it can change any stack there (including the public pipeline's and this stack), which is inherent to running `cdk deploy` from the stage and is why that production stage only runs after the approval. Both roles may write anywhere in the pipeline's shared artifact bucket (see the DONE record, S2).

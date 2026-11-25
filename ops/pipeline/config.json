@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "about": "Layout of the one release pipeline's Cloud steps (L2): trunk, release tags, stack names, profile, build commands. Names only; settings are in switches.json. A layout move changes this file, never the code.",
+  "trunkBranches": ["cloud/next"],
+  "releaseTagPattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$",
+  "bootstrapQualifier": "hnb659fds",
+  "ssmPrefix": "/rovara-cloud/{env}/release",
+  "ssmChecksPrefix": "/rovara-cloud/{env}/release-checks",
+  "stackNames": {
+    "gateway": "rovara-cloud-{env}-gateway",
+    "web": "rovara-cloud-{env}-web",
+    "app": "rovara-cloud-{env}-app",
+    "gatewayImages": "rovara-cloud-{env}-gateway-images"
+  },
+  "stackIds": { "gateway": "RovaraModelGateway", "web": "RovaraCloudWeb", "app": "RovaraCloudApp" },
+  "environments": {
+    "beta": { "profile": "rovara-cloud-beta" },
+    "production": { "profile": null }
+  },
+  "build": {
+    "common": ["npm ci", "npx tsc -b infra", "npx tsc -b packages/model-gateway"],
+    "web": ["npm run build:web"]
+  },
+  "releaseCheck": { "paths": ["/app", "/v1/web/me"], "intervalSeconds": 1 }
+}

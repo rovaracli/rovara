@@ -14,6 +14,7 @@ import * as app from "../../infra/lib/app.js";
 import * as cloudApp from "../../infra/lib/cloud-app.js";
 import { CLOUD_AI_SOURCE_KINDS_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
 import * as pipeline from "../../infra/lib/cloud-release-pipeline.js";
+import * as releaseActions from "../../infra/lib/cloud-release-actions.js";
 import * as gateway from "../../infra/lib/model-gateway.js";
 import { PRODUCTION_SOURCE_KINDS as CONTRACT_PRODUCTION_SOURCE_KINDS, productionSourceKindsAllowed } from "../../packages/contracts/src/model-sources.js";
 import {
@@ -119,7 +120,7 @@ describe("the loader's names equal the infra constants they repeat", () => {
   });
 
   it("every cdk context app.ts reads is covered by a key of the row (a new context needs a new key here)", () => {
-    const modules: Record<string, unknown>[] = [app, cloudApp, pipeline, gateway];
+    const modules: Record<string, unknown>[] = [app, cloudApp, pipeline, releaseActions, gateway];
     const source = readFileSync(new URL("../../infra/lib/app.ts", import.meta.url), "utf8");
     const read = [...source.matchAll(/tryGetContext\(([A-Za-z_]+|"[A-Za-z]+")\)/gu)].map((m) => m[1]!);
     expect(read.length).toBeGreaterThanOrEqual(12);
@@ -129,8 +130,8 @@ describe("the loader's names equal the infra constants they repeat", () => {
       if (hit === undefined) throw new Error(`cannot resolve ${name}`);
       return hit;
     });
-    // The pipeline context is the pipeline stack's own selector, not a gateway or web setting.
-    const covered = new Set<string>([...Object.values(CONTEXT_KEYS), pipeline.CLOUD_PIPELINE_CONTEXT_KEY]);
+    // The pipeline and release-actions contexts are those stacks' own selectors, not gateway or web settings.
+    const covered = new Set<string>([...Object.values(CONTEXT_KEYS), pipeline.CLOUD_PIPELINE_CONTEXT_KEY, releaseActions.CLOUD_RELEASE_ACTIONS_CONTEXT_KEY]);
     for (const key of resolved) expect(covered.has(key), `app.ts reads ${key}`).toBe(true);
     // And the other way: each key of the row that is a context is read by app.ts.
     for (const key of [...GATEWAY_ROW_CONTEXT, ...WEB_ROW_CONTEXT]) expect(resolved, key).toContain(CONTEXT_KEYS[key]);
@@ -147,7 +148,7 @@ describe("each row against CLOUD_PIPELINE_SWITCHES and the PRODUCTION_SOURCE_KIN
       const row = file.environments[name];
       expect(pipeline.CLOUD_PIPELINE_SWITCHES[name], name).toEqual({ productAi: true, aiSourceKinds: row.aiSourceKinds });
       // A row names the placeholder exactly when the pipeline deploys into another account (the id itself lives in neither this file nor the test).
-      expect(pipeline.pipelineDeployAccount(name) === undefined ? null : DEPLOY_ACCOUNT_PLACEHOLDER, name).toBe(row.deployAccount);
+      expect(pipeline.CLOUD_PIPELINE_SEPARATE_ACCOUNT_ENVS.includes(name) ? DEPLOY_ACCOUNT_PLACEHOLDER : null, name).toBe(row.deployAccount);
       // The web deploy's `-c` arguments the pipeline builds today are the same switches this file produces for the web stack.
       const web = contextArgs(name, "web", filled, SIGNED_IN);
       for (const arg of pipeline.pipelineDeployContext(name)) {

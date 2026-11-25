@@ -6,13 +6,15 @@ import { Template } from "aws-cdk-lib/assertions";
 import { describe, expect, it } from "vitest";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { CDK_BOOTSTRAP_ASSUMED_ROLES, CDK_BOOTSTRAP_QUALIFIER, applyCloudBoundary, cloudBoundaryStatements } from "../../infra/lib/cloud-boundary.js";
-import { CLOUD_PIPELINE_DEPLOY_ACCOUNTS, CloudReleasePipelineStack, DEPLOY_ACCOUNT_CONTEXT_KEY, pipelineDeployAccount } from "../../infra/lib/cloud-release-pipeline.js";
+import { CLOUD_PIPELINE_SEPARATE_ACCOUNT_ENVS, CloudReleasePipelineStack, DEPLOY_ACCOUNT_CONTEXT_KEY, pipelineDeployAccount } from "../../infra/lib/cloud-release-pipeline.js";
 
-const BETA = "233082642592";
-const OWN = "111111111111";
+// Fake ids only: the repository has a public copy, and the real account is given when the pipeline stack is deployed by hand (-c agentxAccount).
+const BETA = "123456789012";
+const OWN = "210987654321";
 
 const buildCommands = (environmentName: string) => {
-  const template = Template.fromStack(new CloudReleasePipelineStack(new App(), "RovaraCloudPipeline", { environmentName, env: { region: "us-east-1", account: OWN } }));
+  const context = environmentName === "beta" ? { [DEPLOY_ACCOUNT_CONTEXT_KEY]: BETA } : {};
+  const template = Template.fromStack(new CloudReleasePipelineStack(new App({ context }), "RovaraCloudPipeline", { environmentName, env: { region: "us-east-1", account: OWN } }));
   const project = Object.values(template.findResources("AWS::CodeBuild::Project")).map((each) => each.Properties as { Name: string; Source: { BuildSpec: string | { "Fn::Join": [string, unknown[]] } } }).find((each) => each.Name === `rovara-cloud-${environmentName}-deploy`)!;
   const source = project.Source.BuildSpec;
   const text = typeof source === "string" ? source : source["Fn::Join"][1].map((part) => (typeof part === "string" ? part : "<token>")).join("");
@@ -22,11 +24,17 @@ const buildCommands = (environmentName: string) => {
 const bootstrapRoles = (account: string) => CDK_BOOTSTRAP_ASSUMED_ROLES.map((role) => `arn:aws:iam::${account}:role/cdk-${CDK_BOOTSTRAP_QUALIFIER}-${role}-${account}-us-east-1`);
 
 describe("Cloud release pipeline: the account it deploys into", () => {
-  it("names beta's account and no other", () => {
-    expect(CLOUD_PIPELINE_DEPLOY_ACCOUNTS).toEqual({ beta: BETA });
-    expect(pipelineDeployAccount("beta")).toBe(BETA);
+  it("says only beta deploys into another account, takes that account from the context, and refuses it elsewhere or malformed", () => {
+    expect(CLOUD_PIPELINE_SEPARATE_ACCOUNT_ENVS).toEqual(["beta"]);
+    expect(pipelineDeployAccount("beta", BETA)).toBe(BETA);
     for (const env of ["production", "staging"]) expect(pipelineDeployAccount(env)).toBeUndefined();
-    expect(() => pipelineDeployAccount("beta", { beta: "12" })).toThrow(/12 digits/u);
+    expect(() => pipelineDeployAccount("beta")).toThrow(/not in git/u);
+    expect(() => pipelineDeployAccount("beta", "12")).toThrow(/12-digit/u);
+    expect(() => pipelineDeployAccount("production", BETA)).toThrow(/own account/u);
+  });
+
+  it("refuses to synthesize beta's pipeline without the account (nothing to guess it from)", () => {
+    expect(() => new CloudReleasePipelineStack(new App(), "RovaraCloudPipeline", { environmentName: "beta", env: { region: "us-east-1", account: OWN } })).toThrow(/pass -c agentxAccount/u);
   });
 
   it("beta's deploy goes into beta's account and reads the live address through beta's lookup role", () => {

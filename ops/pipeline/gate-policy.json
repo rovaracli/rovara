@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "about": "Gates that must exist for each phase (exit 21 when one is missing). The protected-resource gate (lane L3) is required for change sets: if its file were ever missing, every run would stop with exit 21 after the change sets are previewed and before any is executed, adoption runs included. A lane that adds a gate adds its name here, one line, and says so in its DONE file. Other gates found in ops/pipeline/gates also run; a failing one stops the step.",
+  "required": {
+    "preflight": ["own-key-backfill", "gitleaks", "deployed-drift", "rollback-floor"],
+    "change-sets": ["change-set-integrity", "protected", "rollback-floor"],
+    "gateway-live": ["gateway-runprice", "gateway-settled"],
+    "proof": ["gateway-digest-equal", "price-freshness"]
+  }
+}
