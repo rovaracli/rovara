@@ -72,6 +72,8 @@ export const SessionViewSchema = z
     you: z.object({ level: z.enum(SESSION_LEVELS), owner: z.boolean(), following: z.boolean(), actions: z.array(SessionActionSchema).max(SESSION_ACTIONS.length), mayMerge: z.literal(true).optional(), coOwner: z.literal(true).optional(),
       /** Set (the words table's `OWNER_LEFT_PROJECT_WORDS`) only where the task's owner no longer holds the task's project and the reader is not the owner. Plain words. */
       ownerLeft: z.string().min(1).max(400).optional(),
+      /** Set (Rovara Code's words table `chargedToWords`, "Charged to <name>") only for a reader who may see the task's money, on a task that is not ended. Accepted so Cloud stays compatible with Code's TASK-TAKEOVER; Cloud does not show it yet. Same bounds as Code's (1 to 260). */
+      chargedTo: z.string().min(1).max(260).optional(),
       /** Live buttons: `ask` / `fix` are present (true) only when the install's switch is on AND the reader may use the feature on this session (the routes' own gate). Both absent: the key is left out. */
       live: z.object({ ask: z.literal(true).optional(), fix: z.literal(true).optional() }).strict().optional() }).strict(),
     link: LinkSchema,
