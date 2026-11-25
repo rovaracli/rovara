@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "about": "Per-environment settings that the gateway and web stacks read from cdk context or a stack parameter, kept in code instead of in a hand-typed command. One row per environment, never shared. Non-secret values only (names, urls, switches). No AWS account id is ever written here (this file is committed to a public copy): `deployAccount` is null (the pipeline's own account) or the placeholder ${DEPLOY_ACCOUNT}, which the loader resolves at deploy time from the signed-in account (sts get-caller-identity of the deploy role) and checks against the expected account the stage holds outside git (ROVARA_EXPECTED_DEPLOY_ACCOUNT); it refuses when either is missing or they differ. A null in an optional key means the context is not passed at all. A key named in a row's `pending` list is a REQUIRED value that has not been read yet: it is null here, and the loader refuses to use that row until it is filled. Beta and production were both read from the live stacks (templates and parameters, read-only, 2026-11-24; production by the production session). A value not read yet is never guessed: it stays null and is listed in `pending`.",
+  "environments": {
+    "beta": {
+      "region": "us-east-1",
+      "deployAccount": "${DEPLOY_ACCOUNT}",
+      "codeUrl": "https://lznfb0pf48.execute-api.us-east-1.amazonaws.com",
+      "aiSourceKinds": "openai",
+      "productAi": "on",
+      "rovaraAi": "on",
+      "rovaraAiExempt": null,
+      "rovaraAiDisabled": null,
+      "bedrockByo": null,
+      "offeredPrices": "on",
+      "providerSecretNames": "generated",
+      "pending": []
+    },
+    "production": {
+      "region": "us-east-1",
+      "deployAccount": null,
+      "codeUrl": "https://3m38w35kz2.execute-api.us-east-1.amazonaws.com",
+      "aiSourceKinds": "openai",
+      "productAi": "on",
+      "rovaraAi": "on",
+      "rovaraAiExempt": null,
+      "rovaraAiDisabled": null,
+      "bedrockByo": null,
+      "offeredPrices": "on",
+      "providerSecretNames": "generated",
+      "pending": []
+    }
+  }
+}
