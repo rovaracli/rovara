@@ -297,7 +297,7 @@ describe("the rollback-floor gate: the `code` group", () => {
     const floors = parseFloors(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8"));
     expect(floors.floors.filter((f) => f.group === "code")).toEqual([]);
     expect((JSON.parse(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8")) as { floors: object }).floors).toHaveProperty("code");
-    expect(floors.floors.map((f) => f.group).sort()).toEqual(["gateway", "web"]);
+    expect(floors.floors.map((f) => f.group).sort()).toEqual(["gateway", "gateway", "web", "web"]);
   });
 });
 

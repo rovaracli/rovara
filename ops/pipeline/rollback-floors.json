@@ -7,12 +7,20 @@
       {
         "sha": "fbe943520414def8b15b1cdb5b28eff48eec4fc6",
         "reason": "web train 11: while Code is at 0.5.49 or newer it sends timeoutSeconds and price-band tokens that earlier Cloud trains do not accept"
+      },
+      {
+        "sha": "159d568458a628178415385db299ae62510cabd6",
+        "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
       }
     ],
     "gateway": [
       {
         "sha": "465e372f105b7d413db71259eaa020b499a3796c",
         "reason": "gateway source of image 2cc25438 (price bands, quota-aware routing, failed-call settle): older gateway code has no price bands and wrongly handles stored no_quota records"
+      },
+      {
+        "sha": "159d568458a628178415385db299ae62510cabd6",
+        "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
       }
     ]
   },
@@ -31,18 +39,6 @@
       "sha": "debd9aa1bebc550ecf10a0eb8d35d22f0f96a68c",
       "when": "Code train 27 is live in the environment",
       "reason": "Cloud never goes below v0.13.19 once Code train 27 is live"
-    },
-    {
-      "group": "web",
-      "tag": "BEDROCK-BYO-CHECK-FIXES",
-      "when": "the Cloud release with BEDROCK-BYO-CHECK-FIXES is merged: set sha to its merge commit and move this row to floors.web (the web Lambda builds the store from the same package)",
-      "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
-    },
-    {
-      "group": "gateway",
-      "tag": "BEDROCK-BYO-CHECK-FIXES",
-      "when": "the Cloud release with BEDROCK-BYO-CHECK-FIXES is merged: set sha to the Cloud commit whose gateway source carries it and move this row to floors.gateway (the gateway process reads the same documents)",
-      "reason": "older readers reject the stored Bedrock model state no_answer and read the whole company product-AI document as unavailable (company Bedrock settings, the agents' own-Bedrock calls and every project that links to it)"
     },
     {
       "group": "code",
