@@ -19,7 +19,8 @@
 // changes nothing (not even the expiry) and a later notice never un-ends a task. The row expires after ENDED_TASK_RETENTION_SECONDS.
 //
 // Calls already admitted when the notice lands are stopped by the server's existing recheck: they are not left to finish, and they settle under the
-// existing aborted-call rule (failed-call.ts: the whole hold, or what was used on a route that settles failed calls), never twice and never left open.
+// cut-call rule (DEC 254zzz521, GATEWAY-CUT-ACTUAL): on the company's own key the call settles at the provider's complete usage when already read,
+// else at an estimate of use (cutCallMicros); a call that may still be reasoning without streaming keeps the hold. Never twice and never left open.
 //
 // Every other answer is fixed: 401 an unsigned call, 400 a body that is not exactly the contract or a task id that is not a task id, 413 over TASK_ENDED_BODY_MAX,
 // 405 not a POST, 429 busy, 503 when the record cannot be written (Code sends the notice again). Nothing from the request, the token or the store is echoed.
