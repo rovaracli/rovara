@@ -57,7 +57,7 @@ describe("rollback floors file: tolerant read", () => {
 
   it("the committed file parses, names full shas, carries the floors the plan lists and pins the digest below the gateway floor", () => {
     const floors = parseFloors(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8"));
-    expect(floors.floors.map((f) => f.group).sort()).toEqual(["gateway", "gateway", "web", "web"]);
+    expect(floors.floors.map((f) => f.group).sort()).toEqual(["code", "gateway", "gateway", "web", "web"]);
     expect(floors.floors.every((f) => f.sha !== null && f.reason.length > 20)).toBe(true);
     expect(floors.floors.find((f) => f.group === "web")!.sha!.startsWith("fbe943520")).toBe(true);
     expect(floors.belowFloorDigests.map((d) => d.digest.slice(0, 15))).toEqual(["sha256:68af1b9e"]);
@@ -65,18 +65,14 @@ describe("rollback floors file: tolerant read", () => {
     expect(floors.ignored).toEqual([]);
   });
 
-  it("enforces the Bedrock no_answer floor in the web and gateway groups at the Cloud merge of BEDROCK-BYO-CHECK-FIXES, and keeps the Code row pending until the Code half merges (older readers fail the whole company document)", () => {
+  it("enforces the Bedrock no_answer floor in all three groups (web and gateway at the Cloud train commit, Code at the Code merge of BEDROCK-BYO-CHECK-FIXES); nothing of it is pending (older readers fail the whole company document)", () => {
     const floors = parseFloors(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8"));
     const enforced = floors.floors.filter((floor) => /no_answer/u.test(floor.reason));
-    expect(enforced.map((floor) => floor.group).sort()).toEqual(["gateway", "web"]);
-    for (const floor of enforced) {
-      expect(floor.sha).toBe("59edd60f2bff237a42a06380222269264e6889d5");
-      expect(floor.reason).toMatch(/whole company product-AI document/u);
-    }
-    const rows = floors.pending.filter((row) => row.tag === "BEDROCK-BYO-CHECK-FIXES");
-    expect(rows.map((row) => row.group)).toEqual(["code"]);
-    expect(rows[0]!.when).toMatch(/merged: set sha/u);
-    expect(rows[0]!.sha).toBeNull();
+    expect(enforced.map((floor) => floor.group).sort()).toEqual(["code", "gateway", "web"]);
+    for (const floor of enforced) expect(floor.reason).toMatch(/whole company product-AI document/u);
+    expect(enforced.filter((floor) => floor.group !== "code").every((floor) => floor.sha === "59edd60f2bff237a42a06380222269264e6889d5")).toBe(true);
+    expect(enforced.find((floor) => floor.group === "code")!.sha).toBe("5e6c41b127a3be962f8e9790f98dc6420b0f3c1e");
+    expect(floors.pending.filter((row) => row.tag === "BEDROCK-BYO-CHECK-FIXES")).toEqual([]);
   });
 });
 

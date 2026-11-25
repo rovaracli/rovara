@@ -292,12 +292,12 @@ describe("the rollback-floor gate: the `code` group", () => {
     expect(JSON.parse(run.state.files["out/gates/preflight-rollback-floor.json"]!)).toMatchObject({ result: "fail", failures: [expect.stringMatching(/below the code floor/u)] });
   });
 
-  it("the committed floors file keeps a `code` group (empty until the controller names a Code floor) and the Cloud floors unchanged", async () => {
+  it("the committed floors file keeps a `code` group, whose one floor is the Code merge of BEDROCK-BYO-CHECK-FIXES, and the Cloud floors", async () => {
     const { readFileSync } = await import("node:fs");
     const floors = parseFloors(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8"));
-    expect(floors.floors.filter((f) => f.group === "code")).toEqual([]);
+    expect(floors.floors.filter((f) => f.group === "code").map((f) => f.sha)).toEqual(["5e6c41b127a3be962f8e9790f98dc6420b0f3c1e"]);
     expect((JSON.parse(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8")) as { floors: object }).floors).toHaveProperty("code");
-    expect(floors.floors.map((f) => f.group).sort()).toEqual(["gateway", "gateway", "web", "web"]);
+    expect(floors.floors.map((f) => f.group).sort()).toEqual(["code", "gateway", "gateway", "web", "web"]);
   });
 });
 
