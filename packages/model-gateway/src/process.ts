@@ -35,6 +35,7 @@ import { kmsProductKeyService, ProductKeySealer, type KmsLike, type ProductKeyFi
 import { createSignedTokenVerifier } from "./token.js";
 import { createEvalAuthorityHandler, EVAL_AUTHORITY_PATH, EVAL_AUTHORITY_TOKEN_KIND } from "./eval-authority.js";
 import { createEvalCapHandler, EVAL_CAP_PATH, EVAL_CAP_TOKEN_KIND } from "./eval-cap.js";
+import { createTaskEndedHandler, TASK_ENDED_PATH, TASK_ENDED_TOKEN_KIND } from "./task-ended-notice.js";
 import { COMPANY_INSTRUCTIONS_PATH, COMPANY_INSTRUCTIONS_TOKEN_KIND, CompanyStoredInstructions, createCompanyInstructionsHandler, type CompanyInstructionsSource } from "./company-instructions.js";
 import { createOfferedModelsHandler, offeredModelPrice, OFFERED_MODELS_PATH, parseDisabledAgentModels, SERVICE_TOKEN_KIND } from "./offered-models.js";
 import { createUpkeepCapReadHandler, UPKEEP_CAP_READ_PATH, UPKEEP_CAP_READ_TOKEN_KIND } from "./upkeep-cap-read.js";
@@ -345,6 +346,8 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     transports: deps.answers.transports ?? { gemini: createGeminiTransport(), vertex: createVertexTransport(), openai: createOpenAiTransport() },
     ...(deps.answers.monthDefaultMicros === undefined ? {} : { monthDefaultMicros: deps.answers.monthDefaultMicros }),
   });
+  // The ended-task record: the server reads it on every agent call; the task-ended notice (task-ended-notice.ts) is the only writer.
+  const endedTasks = new DynamoEndedTasks(db, config.tables.markers, now);
   const handlerDeps: GatewayDependencies = {
     rovaraAiSetting: new InstallRovaraAi(db, config.tables.companies, now),
     ...(companyKeys === undefined ? {} : { runPriceReady: () => prices.runPriceSnapshotVersion() }),
@@ -352,7 +355,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     // without that evidence keep legacy provisional settlement; nothing is inferred from a token.
     chargeReceipts: { source: (_claims, _model, resolved) => resolved },
     verifyToken: createTaskTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }),
-    ended: new DynamoEndedTasks(db, config.tables.markers), meter, caps, prices, now,
+    ended: endedTasks, meter, caps, prices, now,
     // The busy answer is counted from its log line (overrun_busy); the process needs no metrics permission.
     metrics: { overrunBusy: () => undefined },
     modelLimits,
@@ -439,6 +442,11 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
     verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, COMPANY_INSTRUCTIONS_TOKEN_KIND),
     rules: deps.companyInstructions ?? new CompanyStoredInstructions(db, config.tables.companies), now,
   });
+  // Code tells the gateway a task ended (closed or merged): the record above, written once and never undone (task-ended-notice.ts), signed with the task key.
+  const taskEnded = createTaskEndedHandler({
+    verify: createSignedTokenVerifier({ registry: new StaticInstallRegistry([config.install]), readJwks: createJwksReader(deps.fetch ?? fetch), now }, TASK_ENDED_TOKEN_KIND),
+    ended: endedTasks, log: (line) => log({ ...line }), now,
+  });
   const inFlight = new Set<Promise<void>>();
   let draining = false;
   const refuse = (res: ServerResponse) => { res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store", connection: "close" }); res.end(UNAVAILABLE); };
@@ -453,6 +461,7 @@ export async function startServe(config: ServeConfig, deps: ServeDependencies = 
       : UPKEEP_CAP_READ_PATH.test(req.url ?? "") ? upkeepCapRead
       : evalAuthority !== undefined && path === EVAL_AUTHORITY_PATH ? evalAuthority
       : path === COMPANY_INSTRUCTIONS_PATH ? companyInstructions
+      : path === TASK_ENDED_PATH ? taskEnded
       : path === EVAL_CAP_PATH ? evalCap : undefined;
     const running = (service !== undefined ? service(req, res) : handler(req, res)).catch(() => { if (!res.headersSent) refuse(res); else res.destroy(); });
     inFlight.add(running); void running.finally(() => inFlight.delete(running));

@@ -33,6 +33,7 @@ export * from "./learning-route.js";
 export * from "./answers-route.js";
 export * from "./upkeep-cap.js";
 export * from "./upkeep-cap-read.js";
+export * from "./task-ended-notice.js";
 export * from "./deploy.js";
 export * from "./aws.js";
 export * from "./dynamo.js";

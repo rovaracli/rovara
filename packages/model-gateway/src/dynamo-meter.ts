@@ -8,7 +8,7 @@ import { validCaps, type Caps } from "./caps.js";
 import { GATEWAY_COMPANY_KEY_PREFIX, GATEWAY_LEDGER_INDEXES, GATEWAY_METER_INDEXES, GATEWAY_OPEN_PARTITION, GATEWAY_PENDING_PARTITION } from "./deploy.js";
 import { CALL_HARD_CEILING_MS } from "./provider.js";
 import { TransactionRefused, type Dynamo, type Expr, type Item, type Plain, type TransactAction } from "./dynamo.js";
-import type { EndedTasks } from "./ended.js";
+import type { EndedTaskRecorder, EndedTasks } from "./ended.js";
 import { SWEEP_AFTER_MAX_MS, validLine } from "./meter.js";
 import type { BillLine, CorrectionInput, CorrectionResult, EstimatedCall, EstimatedSettlement, ExpiryInput, Meter, MeterItem, MeterRow, MeterScope, Reservation, ReserveInput, ReserveResult } from "./meter.js";
 import { COMPANY, PERSON, PROJECT, TASK, TASK_TOKEN_SECONDS, record, whole } from "./model-gateway-token.js";
@@ -26,7 +26,7 @@ import { MEDIA_USAGE_KEYS, type TokenUsage } from "./usage.js";
  *   ledger table  CO#[iss,cid] / CALL#<id>       one per settled call; an estimated call is "pending" (in both pending
  *                                                indexes) until corrected or expired
  *   markers table CO#[iss,cid] / INFLIGHT        the company's one estimated-price call in flight (expires)
- *                 CO#[iss,cid] / ENDED#<task>    an ended task (written by the task-ended notice, a later lane)
+ *                 CO#[iss,cid] / ENDED#<task>    an ended task (written by the task-ended notice, task-ended-notice.ts; expires)
  *
  * Every write that moves money is one conditional transaction, so two servers never lose or double an update: a reservation
  * adds to each row only while the row is still under its cap; a settle moves a hold to spend only while the hold is open; a
@@ -771,9 +771,28 @@ function parsePosition(cursor: string | undefined, scope: string): readonly [num
   return [parsed[1], parsed[2]];
 }
 
-/** The ended-task list in the markers table. A read that fails throws, and the server stops the call (fail closed). */
-export class DynamoEndedTasks implements EndedTasks {
-  constructor(private readonly db: Dynamo, private readonly table: string) {}
+/**
+ * How long an ended-task row is kept (DynamoDB TTL on `expiresAt`, epoch seconds). A task token lives TASK_TOKEN_SECONDS (900 s) and a call at most
+ * CALL_HARD_CEILING_MS, so no call of an ended task can still be admitted or streaming a day after its end; seven days is the margin for a
+ * notice that is redelivered late (it only writes the row again: the task is still ended).
+ */
+export const ENDED_TASK_RETENTION_SECONDS = 7 * 24 * 3600;
+
+/**
+ * The ended-task list in the markers table. A read that fails throws, and the server stops the call (fail closed).
+ * Readers look only at whether the row exists (every other attribute is ignored), so the row may grow new attributes.
+ */
+export class DynamoEndedTasks implements EndedTasks, EndedTaskRecorder {
+  constructor(private readonly db: Dynamo, private readonly table: string, private readonly now: () => number = Date.now) {}
+  /**
+   * Records that a task ended: one conditional put that only writes where no row exists, so a repeat notice changes nothing (not even the expiry) and
+   * a task is never un-ended. Returns whether this call wrote the row. A fault throws (the notice is then answered 503 and sent again).
+   */
+  async record(issuer: string, company: string, task: string, signal?: AbortSignal): Promise<boolean> {
+    if (typeof issuer !== "string" || issuer.length === 0 || issuer.length > 2048 || !COMPANY.test(company) || !TASK.test(task)) throw new AwsNotSentError();
+    const at = this.now();
+    return this.db.put(this.table, { pk: companyPartition(issuer, company), sk: `ENDED#${task}`, task, endedAt: at, expiresAt: Math.floor(at / 1000) + ENDED_TASK_RETENTION_SECONDS }, (e) => `attribute_not_exists(${e.name("pk")})`, signal === undefined ? {} : { signal });
+  }
   async isEnded(issuer: string, company: string, task: string, signal?: AbortSignal): Promise<boolean> {
     if (typeof issuer !== "string" || issuer.length === 0 || issuer.length > 2048 || !COMPANY.test(company) || !TASK.test(task)) throw new AwsNotSentError();
     const item = await this.db.get(this.table, { pk: companyPartition(issuer, company), sk: `ENDED#${task}` }, { consistent: false, ...(signal === undefined ? {} : { signal }) });
