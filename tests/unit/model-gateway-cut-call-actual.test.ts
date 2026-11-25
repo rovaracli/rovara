@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { denyNetwork } from "./model-gateway-no-network.js";
 import { call, claims, MemorySink, mint, now, requestBody, scope, setup, sse } from "./model-gateway-fixture.js";
 import { translatedAnswer } from "../../packages/model-gateway/src/agent-openai.js";
-import { cutCallMicros, FAILED_CALL_INPUT_BYTES_PER_TOKEN, FAILED_CALL_OUTPUT_BYTES_PER_TOKEN, failedCallMicros } from "../../packages/model-gateway/src/failed-call.js";
+import { mayReasonUnseen, cutCallMicros, FAILED_CALL_INPUT_BYTES_PER_TOKEN, FAILED_CALL_OUTPUT_BYTES_PER_TOKEN, failedCallMicros } from "../../packages/model-gateway/src/failed-call.js";
 import { serializeEndpointConnection } from "../../packages/model-gateway/src/endpoint-source.js";
 import { SnapshotPriceSource } from "../../packages/model-gateway/src/price-index.js";
 import { answerRateQuote, RATE_QUOTE_AUDIENCE } from "../../packages/model-gateway/src/rate-quote.js";
@@ -48,7 +48,8 @@ const chatFrames = (sent: Sent, family: Family): Buffer[] => {
 };
 const hang = (): Promise<never> => new Promise<never>(() => undefined);
 
-async function world(family: Family, durable = false) {
+/** `reasoning`: the call CAN reason without streaming it (a reasoning model, or a request that asks for thinking). */
+async function world(family: Family, durable = false, reasoning = false) {
   const reached = { done: false };
   const forwarded: ProviderRequest[] = [];
   let frames: Buffer[] = [];
@@ -72,9 +73,9 @@ async function world(family: Family, durable = false) {
     } };
   } else {
     const provider = family === "endpoint" ? "openai" : "openrouter";
-    const catalogModel = family === "endpoint" ? "gpt-5-mini" : model;
+    const catalogModel = family === "endpoint" ? (reasoning ? "gpt-5-mini" : "gpt-4.1-mini") : model;
     const source = { kind: "company_key" as const, id: `saved_${family}`, name: "Company AI", provider, connectionRevision: "r1" };
-    const tariff = { model, route: "fixture", pricing: { prompt: "0.000001", completion: "0.000002", internal_reasoning: "0", request: "0", input_cache_read: "0", input_cache_write: "0" }, max_completion_tokens: 2048, reasoning: { mode: "disabled" as const }, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "offline fixture, not a production tariff" };
+    const tariff = { model, route: "fixture", pricing: { prompt: "0.000001", completion: "0.000002", internal_reasoning: "0", request: "0", input_cache_read: "0", input_cache_write: "0" }, max_completion_tokens: 2048, reasoning: reasoning ? { mode: "bounded" as const, max_tokens: 1_024 } : { mode: "disabled" as const }, verifiedAt: now - 1, expiresAt: now + 60_000, evidence: "offline fixture, not a production tariff" };
     const prices = new SnapshotPriceSource({ load: async () => ({ version: 9, sources: { litellm: { fetchedAt: now - 100, count: 1, entries: [{ provider, model: catalogModel, kind: "chat", inputMicrosPerMTok: 1_000_000, outputMicrosPerMTok: 2_000_000 }] } } }), save: async () => false }, { now: () => now, overrides: [], openRouterTariffs: [tariff] });
     await prices.reload();
     const endpoint = { scheme: "openai_compatible" as const, baseUrl: "https://llm.example.com/v1", key: "fixture-endpoint-key-123456789", models: [{ name: model, catalog: { provider, modelId: catalogModel } }] };
@@ -96,9 +97,10 @@ async function world(family: Family, durable = false) {
   const lines = (family === "anthropic_key" || family === "bedrock_byo") ? anthropicFrames : (s: Sent) => chatFrames(s, family);
   /** Send the request, let the provider send `sent`, then cut the call (the client leaves). */
   async function cut(sent: Sent, max = 4_096) {
+    const thinking = reasoning && (family === "anthropic_key" || family === "bedrock_byo") ? { thinking: { type: "enabled", budget_tokens: 1_024 } } : {};
     frames = lines(sent);
     const controller = new AbortController(); const sink = new MemorySink();
-    const body = Buffer.from(JSON.stringify({ ...requestBody, model, max_tokens: max, stream: true, messages: [{ role: "user", content: "Please read a.ts and tell me what it exports. ".repeat(20) }] }));
+    const body = Buffer.from(JSON.stringify({ ...requestBody, ...thinking, model, max_tokens: max, stream: true, messages: [{ role: "user", content: "Please read a.ts and tell me what it exports. ".repeat(20) }] }));
     const done = handleGateway(w.deps, { method: "POST", url: "/v1/messages", headers: { "content-type": "application/json", "x-api-key": token }, body: (async function* () { yield body; })(), signal: controller.signal }, sink);
     for (let i = 0; i < 400 && !reached.done; i++) await new Promise((r) => setTimeout(r, 5));
     expect(reached.done).toBe(true);
@@ -248,34 +250,95 @@ describe("a cut call on a route whose reader does not count progress charges the
     const rows = await w.read();
     return { micros: rows[0]!.spentMicros, estimated: rows[0]!.estimatedMicros, held: w.held(), logs: w.deps };
   }
-  const gemini = (transport: ProviderTransport) => async () => {
+  const gemini = (transport: ProviderTransport, thinking = false) => async () => {
     const g = await productGateway({ transport });
     const reserve = vi.spyOn(g.productMeter, "reserve");
-    return { deps: g.deps, url: streamPath, body: { ...geminiBody, generationConfig: { maxOutputTokens: 8_192 } }, token: mint(), read: () => g.productMeter.read(productScope), held: () => reserve.mock.calls[0]![0].estimateMicros };
+    return { deps: g.deps, url: streamPath, body: { ...geminiBody, generationConfig: { maxOutputTokens: 8_192, thinkingConfig: { thinkingBudget: thinking ? 1_024 : 0 } } }, token: mint(), read: () => g.productMeter.read(productScope), held: () => reserve.mock.calls[0]![0].estimateMicros };
   };
-  it("product Gemini stream: after N chunks it settles above the input-only figure (0 chunks), estimated, below the hold", async () => {
+  const runLearning = (chunks: number, reasoningModel = false, effort?: string) => cutAfter(chunks, openAiChunk, async (transport) => {
+    const keys = { connected: async () => true, keyFor: async () => "openai-key", vertexTarget: async () => undefined, refused: async () => undefined };
+    const agentMeter = new LearningMeter(() => now);
+    const learningMeter = new LearningMeter(() => now, undefined, undefined, { combineCompanyWith: agentMeter });
+    const companyCaps = new FixedCapsSource({ task: 1_000_000_000, personMonth: 1_000_000_000, projectMonth: 1_000_000_000, companyMonth: 1_000_000_000 });
+    const learning = createLearningRoutes({ keys, meter: learningMeter, companyCaps, lessons: { isOn: async () => true }, modelLimits: { maxOutputTokens: () => 8192 }, transport, transports: { openai: transport } });
+    const g = setup({ meter: agentMeter, caps: companyCaps, keys: { keyFor: async () => { throw new Error("install key must not be read"); } }, learning });
+    const reserve = vi.spyOn(learningMeter, "reserve");
+    const model = reasoningModel ? "gpt-5-mini" : "gpt-4.1-mini";
+    return { deps: g.deps, url: "/v1/learning/openai/chat/completions", body: { model, messages: [{ role: "user", content: "reflect" }], max_completion_tokens: 4_096, stream: true, ...(effort === undefined ? {} : { reasoning_effort: effort }) }, token: mint({ stp: LEARNING_STEP, mdl: [model] }), read: () => learningMeter.read({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid }), held: () => reserve.mock.calls[0]![0].estimateMicros };
+  });
+  const bytesOf = (n: number, chunk: (i: number) => Buffer) => Array.from({ length: n }, (_, i) => chunk(i).length).reduce((x, y) => x + y, 0);
+  it("product Gemini stream (thinking off): the bytes received are output at ONE byte a token (two micro-dollars each at $2 a million), estimated, below the hold", async () => {
     const none = await cutAfter(0, geminiChunk, (t) => gemini(t)());
     const some = await cutAfter(10, geminiChunk, (t) => gemini(t)());
-    expect(some.micros).toBeGreaterThan(none.micros + 1_000);
+    expect(some.micros - none.micros).toBe(2 * bytesOf(10, geminiChunk));
     expect(some.micros).toBeLessThan(some.held);
     expect(some.estimated).toBe(some.micros);
     expect(none.estimated).toBe(none.micros);
   });
-  it("learning OpenAI stream (the company's own key): after N chunks it settles above the input-only figure, estimated, below the hold", async () => {
-    const run = (chunks: number) => cutAfter(chunks, openAiChunk, async (transport) => {
-      const keys = { connected: async () => true, keyFor: async () => "openai-key", vertexTarget: async () => undefined, refused: async () => undefined };
-      const agentMeter = new LearningMeter(() => now);
-      const learningMeter = new LearningMeter(() => now, undefined, undefined, { combineCompanyWith: agentMeter });
-      const companyCaps = new FixedCapsSource({ task: 1_000_000_000, personMonth: 1_000_000_000, projectMonth: 1_000_000_000, companyMonth: 1_000_000_000 });
-      const learning = createLearningRoutes({ keys, meter: learningMeter, companyCaps, lessons: { isOn: async () => true }, modelLimits: { maxOutputTokens: () => 8192 }, transport, transports: { openai: transport } });
-      const g = setup({ meter: agentMeter, caps: companyCaps, keys: { keyFor: async () => { throw new Error("install key must not be read"); } }, learning });
-      const reserve = vi.spyOn(learningMeter, "reserve");
-      const model = "gpt-5-mini";
-      return { deps: g.deps, url: "/v1/learning/openai/chat/completions", body: { model, messages: [{ role: "user", content: "reflect" }], max_completion_tokens: 4_096, stream: true }, token: mint({ stp: LEARNING_STEP, mdl: [model] }), read: () => learningMeter.read({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid }), held: () => reserve.mock.calls[0]![0].estimateMicros };
-    });
-    const none = await run(0); const some = await run(10);
-    expect(some.micros).toBeGreaterThan(none.micros + 1_000);
+  it("product Gemini stream with thinking on (cannot be priced: the hidden thoughts are never streamed): the HOLD, estimated, with or without chunks", async () => {
+    for (const chunks of [0, 10]) {
+      const out = await cutAfter(chunks, geminiChunk, (t) => gemini(t, true)());
+      expect(out.micros).toBe(out.held); expect(out.estimated).toBe(out.held);
+    }
+  });
+  it("product Gemini 2.5 with no thinkingConfig thinks by default: the hold", async () => {
+    const out = await cutAfter(10, geminiChunk, async (t) => { const w = await gemini(t)(); return { ...w, body: { ...geminiBody, generationConfig: { maxOutputTokens: 8_192 } } }; });
+    expect(out.micros).toBe(out.held);
+  });
+  it("learning OpenAI stream, a non-reasoning model: the bytes received at one byte a token, estimated, below the hold", async () => {
+    const none = await runLearning(0); const some = await runLearning(5);
+    expect(some.micros - none.micros).toBe(2 * bytesOf(5, openAiChunk));
     expect(some.micros).toBeLessThan(some.held);
     expect(some.estimated).toBe(some.micros);
+  });
+  it("learning OpenAI stream, a reasoning model (gpt-5), or any model with reasoning_effort: the hold (the reasoning is billed and never streamed)", async () => {
+    for (const out of [await runLearning(10, true), await runLearning(10, false, "low"), await runLearning(0, true)]) { expect(out.micros).toBe(out.held); expect(out.estimated).toBe(out.held); }
+  });
+});
+
+describe.each(FAMILIES)("a cut call that CAN reason without streaming it (%s)", (family) => {
+  it("no usage read: the HOLD (the hidden reasoning is billed and unknowable), marked estimated, even after output streamed", async () => {
+    const w = await world(family, false, true);
+    for (const sent of [{ kind: "nothing" }, { kind: "text", text: TEXT }] as Sent[]) {
+      const out = await w.cut(sent);
+      const last = out.rows.map((r) => r.spentMicros);
+      expect(last.every((v) => v >= out.held)).toBe(true);
+      expect(estimatedOf(out.rows).every((v) => v > 0)).toBe(true);
+    }
+  });
+  it("usage read in full (it counts the reasoning tokens): settles at the ACTUAL usage, not the hold", async () => {
+    const w = await world(family, false, true);
+    const out = await w.cut({ kind: "complete", text: TEXT });
+    const actual = family === "openrouter" ? 1_234 : 1_000 + 40;
+    expect(spent(out.rows).every((s) => s === actual)).toBe(true);
+    expect(estimatedOf(out.rows).every((s) => s === 0)).toBe(true);
+  });
+});
+
+describe("mayReasonUnseen decides by code, from the request and the model", () => {
+  const bytes = (v: unknown) => Buffer.from(JSON.stringify(v));
+  it("table", () => {
+    expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ messages: [] }))).toBe(false);
+    expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ thinking: { type: "disabled" } }))).toBe(false);
+    expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ thinking: { type: "enabled", budget_tokens: 1_024 } }))).toBe(true);
+    expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ thinking: { type: "adaptive" } }))).toBe(true);
+    expect(mayReasonUnseen("bedrock", "claude-haiku-4-5", bytes({ messages: [] }))).toBe(false);
+    expect(mayReasonUnseen("bedrock", "claude-haiku-4-5", bytes({ additionalModelRequestFields: { thinking: { type: "enabled" } } }))).toBe(true);
+    expect(mayReasonUnseen("bedrock", "zai.glm-5", bytes({ messages: [] }))).toBe(true);
+    expect(mayReasonUnseen("openrouter", "vendor/model", bytes({ reasoning: { enabled: false } }))).toBe(false);
+    expect(mayReasonUnseen("openrouter", "vendor/model", bytes({ reasoning: { enabled: true, max_tokens: 1_024 } }))).toBe(true);
+    expect(mayReasonUnseen("openrouter", "vendor/model", bytes({}))).toBe(true);
+    expect(mayReasonUnseen("openai", "gpt-4.1-mini", bytes({}))).toBe(false);
+    expect(mayReasonUnseen("openai", "gpt-4.1-mini", bytes({ reasoning_effort: "low" }))).toBe(true);
+    expect(mayReasonUnseen("openai", "gpt-5-mini", bytes({}))).toBe(true);
+    expect(mayReasonUnseen("openai", "gpt-5.1", bytes({ reasoning_effort: "none" }))).toBe(false);
+    expect(mayReasonUnseen("openai", "o4-mini", bytes({}))).toBe(true);
+    expect(mayReasonUnseen("gemini", "gemini-2.5-flash", bytes({}))).toBe(true);
+    expect(mayReasonUnseen("gemini", "gemini-2.5-flash", bytes({ generationConfig: { thinkingConfig: { thinkingBudget: 0 } } }))).toBe(false);
+    expect(mayReasonUnseen("vertex", "gemini-2.5-pro", bytes({ generationConfig: { thinkingConfig: { thinkingBudget: 0 } } }))).toBe(true);
+    expect(mayReasonUnseen("gemini", "gemini-2.0-flash", bytes({}))).toBe(false);
+    expect(mayReasonUnseen("gemini", "gemini-3-pro", bytes({}))).toBe(true);
+    expect(mayReasonUnseen("anthropic", "x", Buffer.from("not json"))).toBe(true);
+    expect(mayReasonUnseen("somewhere", "x", bytes({}))).toBe(true);
   });
 });

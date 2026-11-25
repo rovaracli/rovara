@@ -32,7 +32,7 @@ import { AnswerBrokeError, CALL_HARD_CEILING_MS, callDurationMs, MAX_RESPONSE_BY
 import { AUTH_ERROR, TASK_TOKEN_SECONDS, consumeReviewerGrant, type TaskClaims, type TaskTokenVerifier } from "./token.js";
 import { closeReviewSession, REVIEW_SESSION_CLOSE_GRACE_MS, REVIEW_SESSION_SECONDS, type ReviewerGrantStore } from "./reviewer-grants.js";
 import { hasUsage, settleAmount, validUsage } from "./reported-cost.js";
-import { cutCallMicros, failedCallPhase, providerErrorReason, type FailedCallCause, type FailedCallPhase, type ProviderErrorReason, type StreamProgress } from "./failed-call.js";
+import { cutCallMicros, failedCallPhase, FAILED_CALL_RECEIVED_BYTES_PER_TOKEN, mayReasonUnseen, providerErrorReason, type FailedCallCause, type FailedCallPhase, type ProviderErrorReason, type StreamProgress } from "./failed-call.js";
 import type { ResolvedPrice } from "./price.js";
 import type { EstimatedSettlement } from "./meter.js";
 import type { TokenUsage } from "./usage.js";
@@ -651,7 +651,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
   // How a call that failed after it was sent ended (failed-call.ts): who stopped it, how far it got, and what the hold counted as input.
   let failure: { cause: FailedCallCause; phase: FailedCallPhase } | undefined;
   let providerFault = false; let stoppedByUs = false; let received = 0; let streamed = false;
-  let failureInput: { bytes: number; fixedTokens: number; media: MediaEstimate | undefined; plainInput: boolean } | undefined;
+  let failureInput: { bytes: number; fixedTokens: number; media: MediaEstimate | undefined; plainInput: boolean; reasoningUnseen: boolean } | undefined;
   let answerBroke = false;
   // The settle, run once: early for a route that sends its cost in the head, else in the finally. Its result says what was written.
   let settled: { ok: boolean; micros: number; estimated: boolean } | undefined; let settling = false;
@@ -700,8 +700,8 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
       // after the send; every other route (the company's own key): a call WE cut (cutCallMicros), the one place the task-end cut, a client disconnect and the deadline settle.
       let failedMicros: number | undefined;
       if (failure !== undefined && cost > 0 && !completed && settlementUsage === undefined && !failedWithReportedCost && settlementPrice !== undefined && failureInput !== undefined) {
-        const measured = usage?.actualInputTokens?.();
-        failedMicros = cutCallMicros({ ownBedrock: route.settlesFailedCalls === true, ...failure, inputBytes: failureInput.bytes, fixedInputTokens: failureInput.fixedTokens, media: failureInput.media, ...(measured === undefined ? {} : { inputTokens: measured }), outputBytes: failure.phase === "after_output" ? ((progress) => Math.max(progress?.outputBytes ?? 0, progress === undefined || !streamed ? received : 0))(streamProgress()) : 0, wholeAnswer: !streamed && provider !== undefined, price: settlementPrice, plainInput: failureInput.plainInput, reservationMicros: reservedMicros });
+        const measured = usage?.actualInputTokens?.(); const progress = streamProgress();
+        failedMicros = cutCallMicros({ ownBedrock: route.settlesFailedCalls === true, ...failure, inputBytes: failureInput.bytes, fixedInputTokens: failureInput.fixedTokens, media: failureInput.media, ...(measured === undefined ? {} : { inputTokens: measured }), outputBytes: failure.phase === "after_output" ? Math.max(progress?.outputBytes ?? 0, progress === undefined || !streamed ? received : 0) : 0, ...(progress === undefined ? { outputBytesPerToken: FAILED_CALL_RECEIVED_BYTES_PER_TOKEN } : {}), reasoningUnseen: failureInput.reasoningUnseen, wholeAnswer: !streamed && provider !== undefined, price: settlementPrice, plainInput: failureInput.plainInput, reservationMicros: reservedMicros });
       }
       if (failedMicros !== undefined) {
         cost = failedMicros; estimated = failedMicros > 0;
@@ -927,7 +927,7 @@ export async function handleGateway(deps: GatewayDependencies, request: GatewayR
     if (grant !== undefined && (!customerReview || session === undefined)) held = reserved.reservation;
     reservedMicros = estimate;
     streamed = guarded.streaming;
-    failureInput = { bytes: guarded.bytes.length - (guarded.images?.dataBytes ?? 0) - (guarded.media?.dataBytes ?? 0), fixedTokens: guarded.images?.tokens ?? 0, media: guarded.media, plainInput: guarded.inputBounded && !guarded.usesPromptCache };
+    failureInput = { bytes: guarded.bytes.length - (guarded.images?.dataBytes ?? 0) - (guarded.media?.dataBytes ?? 0), fixedTokens: guarded.images?.tokens ?? 0, media: guarded.media, plainInput: guarded.inputBounded && !guarded.usesPromptCache, reasoningUnseen: mayReasonUnseen(route.provider, guarded.model, guarded.bytes) };
     // One non-overlapping, deadline-bounded poll also stops streams stalled between chunks.
     const pollEnded = async (): Promise<void> => {
       try { if (await taskEnded()) abort(); } catch { abort(); }

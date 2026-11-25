@@ -61,8 +61,10 @@ it.each(["mid_stream", "after_stream", "never"] as const)("a reviewed row (haiku
  const held = (receipt as unknown as { originalReservationMicros: { value: number } }).originalReservationMicros.value;
  // Before expiry the usage is rated at the row (final). If the row (and so the signed run price) ends during the call, the gateway cuts the call (a deadline cut, DEC 254zzz521):
  //   after_stream: the provider's complete usage was already read, so it settles at that ACTUAL usage at the admitted row price (never below the token cost);
- //   mid_stream: nothing was read yet, so it settles at an ESTIMATE OF USE (the input sent), marked estimated, never the whole hold and never above it.
+ //   mid_stream: nothing was read yet. A row whose reasoning is bounded CAN bill reasoning that is never streamed, so it cannot be priced: the hold stands (awaiting_usage).
+ //   A row with reasoning disabled settles at an ESTIMATE OF USE (the input sent), marked estimated, never the whole hold and never above it.
  if (when !== "mid_stream") expect(receipt.amountMicros.value).toBeGreaterThanOrEqual(floor);
  if (when !== "mid_stream") expect(receipt).toMatchObject({ status: "final", usage: { state: "available" } });
+ else if (tariff.reasoning.mode === "bounded") { expect(receipt).toMatchObject({ status: "awaiting_usage", usage: { state: "unavailable" } }); expect(receipt.amountMicros.value).toBe(held); }
  else { expect(receipt).toMatchObject({ status: "estimated", reason: "missing_usage", neverConfirmed: true, usage: { state: "unavailable" } }); expect(receipt.amountMicros.value).toBeGreaterThan(0); expect(receipt.amountMicros.value).toBeLessThan(held); }
 });

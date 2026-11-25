@@ -31,6 +31,8 @@ import type { ResolvedPrice } from "./price.js";
 export const FAILED_CALL_INPUT_BYTES_PER_TOKEN = 4;
 /** Answer bytes per output token seen on a stream that broke. Every token is at least a byte; real text is 3 to 4, so this charges about double the visible text. */
 export const FAILED_CALL_OUTPUT_BYTES_PER_TOKEN = 2;
+/** Bytes per output token when the answer is counted from the RAW bytes received (a reader that counts no progress): framing and escapes are in the bytes, and a token is at least a byte, so this never under-counts. */
+export const FAILED_CALL_RECEIVED_BYTES_PER_TOKEN = 1;
 
 export type FailedCallPhase = "before_events" | "before_output" | "after_output";
 /** Who stopped the call: the provider's stream (or connection), WE did (abort, deadline, task ended), or something in the gateway (a scan hit, an unreadable whole answer). */
@@ -70,6 +72,8 @@ export interface FailedCallInput {
   inputTokens?: number | undefined;
   /** Answer bytes seen (zero before output). */
   outputBytes: number;
+  /** Bytes per output token for `outputBytes`; absent: FAILED_CALL_OUTPUT_BYTES_PER_TOKEN. */
+  outputBytesPerToken?: number;
   price: ResolvedPrice; plainInput: boolean; reservationMicros: number;
 }
 
@@ -82,7 +86,7 @@ export function failedCallMicros(input: FailedCallInput): number | undefined {
   if (input.phase === "before_events" && input.cause === "provider") return 0;
   const measured = input.inputTokens !== undefined && Number.isSafeInteger(input.inputTokens) && input.inputTokens > 0;
   const inputTokens = measured ? input.inputTokens! : Math.ceil(input.inputBytes / FAILED_CALL_INPUT_BYTES_PER_TOKEN) + (input.fixedInputTokens ?? 0);
-  const outputTokens = input.phase === "after_output" ? Math.ceil(input.outputBytes / FAILED_CALL_OUTPUT_BYTES_PER_TOKEN) : 0;
+  const outputTokens = input.phase === "after_output" ? Math.ceil(input.outputBytes / (input.outputBytesPerToken ?? FAILED_CALL_OUTPUT_BYTES_PER_TOKEN)) : 0;
   let micros: number;
   // The hold's own arithmetic (dearest applicable input rate; tiers by size), over the estimated counts.
   try { micros = estimateCall(inputTokens, outputTokens, input.price, 0, input.plainInput, measured ? undefined : input.media); } catch { return input.reservationMicros; }
@@ -97,7 +101,41 @@ export function failedCallMicros(input: FailedCallInput): number | undefined {
  * `undefined`: this rule does not settle the call (a provider-broken stream on a company's own key, a gateway fault, a whole non-streaming
  * answer whose head arrived): the caller keeps the hold, marked estimated, as before.
  */
-export function cutCallMicros(input: FailedCallInput & { /** The route is Bedrock on Rovara's own account (`GatewayRoute.settlesFailedCalls`). */ ownBedrock: boolean }): number | undefined {
-  if (!input.ownBedrock && input.cause !== "aborted") return undefined;
+export function cutCallMicros(input: FailedCallInput & { /** The route is Bedrock on Rovara's own account (`GatewayRoute.settlesFailedCalls`). */ ownBedrock: boolean; /** The call can bill reasoning that is never streamed (`mayReasonUnseen`): not knowable, the hold stands. */ reasoningUnseen?: boolean }): number | undefined {
+  if (!input.ownBedrock && (input.cause !== "aborted" || input.reasoningUnseen === true)) return undefined;
   return failedCallMicros(input);
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const REASONING_FAMILY: Record<string, RegExp> = { openai: /^(?:o\d|gpt-5|gpt-oss)/u, gemini: /gemini-(?:2\.5|[3-9])/u };
+/**
+ * Can this request make the model bill reasoning tokens that are never streamed? Decided by CODE from the request the provider receives
+ * (its reasoning / thinking parameters) and the model's identity, never from answer text. A cut call that may have reasoned and whose
+ * complete usage was not read cannot be priced: what the provider billed for hidden reasoning is unknowable, so the hold stands.
+ * Unknown (an unreadable body, an unknown provider, a model that is not Claude on Bedrock): true.
+ *   anthropic / Claude: only an enabled or adaptive `thinking`.   OpenRouter: unless the request turns reasoning off (`reasoning.enabled: false`).
+ *   OpenAI-shaped: a `reasoning_effort` other than "none", else the reasoning model families (o-series, gpt-5, gpt-oss).
+ *   Gemini: `thinkingConfig` (a budget of 0 turns thinking off, except on Pro), else gemini 2.5 and later.
+ */
+export function mayReasonUnseen(provider: string, model: string, bytes: Uint8Array): boolean {
+  let body: unknown;
+  try { body = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { return true; }
+  if (!isRecord(body)) return true;
+  const name = model.toLowerCase();
+  const thinkingOn = (value: unknown): boolean => isRecord(value) ? value.type !== "disabled" : value !== undefined;
+  const effort = body.reasoning_effort;
+  switch (provider) {
+    case "anthropic": return thinkingOn(body.thinking);
+    case "bedrock": return !/claude/u.test(name) || thinkingOn(body.thinking) || (isRecord(body.additionalModelRequestFields) && thinkingOn(body.additionalModelRequestFields.thinking));
+    case "openrouter": return !(isRecord(body.reasoning) && body.reasoning.enabled === false);
+    case "openai": return (effort !== undefined && effort !== "none") || (effort === undefined && REASONING_FAMILY.openai!.test(name));
+    case "gemini": case "vertex": {
+      if (effort !== undefined) return effort !== "none";
+      const config = isRecord(body.generationConfig) ? body.generationConfig : undefined;
+      const thinking = config?.thinkingConfig;
+      if (isRecord(thinking)) return !(thinking.thinkingBudget === 0 && !name.includes("pro"));
+      return REASONING_FAMILY.gemini!.test(name);
+    }
+    default: return true;
+  }
 }
