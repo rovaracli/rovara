@@ -4,22 +4,23 @@ This file holds the real values behind the placeholders in the public docs (`doc
 `docs/maintainers-release.md`, `docs/specs/rovara-e2e-runtimes/m1-live-acceptance.md` in Rovara Code).
 It is private. Do not copy these values into the public repository, public issues or pull requests.
 Owner decision 2026-11-18: the public docs carry placeholders and history is not rewritten.
+No AWS account id is written in this repository either (it has a public CI copy): read the release account id from the owner's private notes, or from `aws sts get-caller-identity` under the release role, and substitute it where `<release-account-id>` appears below.
 Later (owner decision, not done): move the release resources into their own AWS account, separate
 from staging, before production customers (see DEFERRED-CHECKS.md).
 
 | Placeholder | Value |
 | --- | --- |
-| `<release-account-id>` | `944937319445` (today the same account as staging and the live-test installations; region `us-east-1`) |
-| `<codeconnections-arn>` | `arn:aws:codeconnections:us-east-1:944937319445:connection/7e76074b-e840-439f-b94c-6806a2bf9513` (GitHub connection, already authorized) |
+| `<release-account-id>` | not written here (today the same account as staging and the live-test installations; region `us-east-1`) |
+| `<codeconnections-arn>` | `arn:aws:codeconnections:us-east-1:<release-account-id>:connection/<connection-id>` (GitHub connection, already authorized) |
 
 ## Resources in the release account
 
 - ECR Public repositories `agentx-worker` and `agentx-slack`, registry alias `i7z2k3a8` (the alias is
   public: it is in image URLs).
-- Publish role `arn:aws:iam::944937319445:role/agentx-github-release` (GitHub OIDC, version tags only).
+- Publish role `arn:aws:iam::<release-account-id>:role/agentx-github-release` (GitHub OIDC, version tags only).
 - Installer bucket `rovara-installer-us-east-1` (public read of objects by design; the publish role writes).
 - Release pipeline stack `AgentXReleasePipeline`, deployed with `--parameters GitHubConnectionArn=<the ARN above>`.
-- Account-level check for the installer bucket: `aws s3control get-public-access-block --account-id 944937319445`
+- Account-level check for the installer bucket: `aws s3control get-public-access-block --account-id <release-account-id>`
   (use the staging guard script `staging-aws.sh` for any AWS call; us-east-1 is the release region, us-west-2 is staging).
 
 ## Rules

@@ -25,19 +25,19 @@ const A = claims.cid; const B = `org_${"b".repeat(20)}`;
 const CLAUDE = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
 const TABLES = { meter: "gw-meter", ledger: "gw-ledger", markers: "gw-markers", prices: "gw-prices", companies: "cloud-companies" };
 const PRODUCT = { keys: "gw-product-keys", meter: "gw-pmeter", ledger: "gw-pledger", markers: "gw-pmarkers", stages: "gw-stages" };
-const KEY_ARN = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-000000000000";
-const MAC_ARN = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-0000000000aa";
-const EXT_ARN = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-0000000000bb";
-const BROKER = "arn:aws:iam::944937319445:role/RovaraBedrockBroker-staging";
+const KEY_ARN = "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-000000000000";
+const MAC_ARN = "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-0000000000aa";
+const EXT_ARN = "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-0000000000bb";
+const BROKER = "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging";
 const roleOf = (cid: string) => `arn:aws:iam::${cid === A ? "111111111111" : "222222222222"}:role/RovaraBedrockInvoke-${cid}`;
 const ENV = {
   [GATEWAY_ENV.mode]: "serve", AWS_REGION: "us-west-2", [GATEWAY_ENV.port]: "8080",
   [GATEWAY_ENV.installIssuer]: claims.iss, [GATEWAY_ENV.installJwksUrl]: `${claims.iss}/.well-known/jwks.json`, [GATEWAY_ENV.installTaskKids]: kid,
   [GATEWAY_ENV.meterTable]: TABLES.meter, [GATEWAY_ENV.ledgerTable]: TABLES.ledger, [GATEWAY_ENV.markersTable]: TABLES.markers, [GATEWAY_ENV.pricesTable]: TABLES.prices, [GATEWAY_ENV.companyTable]: TABLES.companies,
-  [GATEWAY_ENV.anthropicKeySecret]: "arn:aws:secretsmanager:us-west-2:944937319445:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf",
+  [GATEWAY_ENV.anthropicKeySecret]: "arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf",
   [GATEWAY_ENV.productKeysTable]: PRODUCT.keys, [GATEWAY_ENV.productKeysKey]: KEY_ARN, [GATEWAY_ENV.productMeterTable]: PRODUCT.meter,
   [GATEWAY_ENV.productLedgerTable]: PRODUCT.ledger, [GATEWAY_ENV.productMarkersTable]: PRODUCT.markers, [GATEWAY_ENV.evalStagesTable]: PRODUCT.stages,
-  [GATEWAY_ENV.vertexFederationRole]: "arn:aws:iam::944937319445:role/vertex", [GATEWAY_ENV.productMacKey]: MAC_ARN, [GATEWAY_ENV.agentKeys]: "company",
+  [GATEWAY_ENV.vertexFederationRole]: "arn:aws:iam::123456789012:role/vertex", [GATEWAY_ENV.productMacKey]: MAC_ARN, [GATEWAY_ENV.agentKeys]: "company",
   [GATEWAY_ENV.bedrockBrokerRole]: BROKER, [GATEWAY_ENV.bedrockExternalIdKey]: EXT_ARN,
 };
 const macKey = randomBytes(32);

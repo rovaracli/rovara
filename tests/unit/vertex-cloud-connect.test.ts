@@ -13,7 +13,7 @@ import type { ProbeResult } from "../../packages/model-gateway/src/product-verte
 import { answerVertexCheck, createVertexCheckHandler, gatewayVertexCheck, serviceCallLimiter, SERVICE_CALL_OPEN, SERVICE_CALL_PER_MINUTE, SERVICE_CALL_AT_HEADER, SERVICE_CALL_MAC_HEADER, SERVICE_CALL_SKEW_MS, serviceCallMessage, VERTEX_CHECK_PATH, type MacSigner, type MacVerifier } from "../../packages/model-gateway/src/service-call.js";
 import { A, B, ISS, START, world, write } from "./product-ai-world.js";
 
-const MAC_KEY = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-0000000000aa";
+const MAC_KEY = "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-0000000000aa";
 const GATEWAY = "https://gateway.example.test";
 // Fake service accounts, built at runtime so no email-shaped text sits in the source (the public CI copy's token check).
 const RUNNER_ACCOUNT = ["evals-runner", "acme-evals.iam.gserviceaccount.com"].join("@");

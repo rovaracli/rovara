@@ -24,8 +24,8 @@ import { caps, claims, jwk, keys, kid, mint, now, scope as agentScope } from "./
 import { geminiAnswer, geminiBody, geminiKey, maintainer, pid, productScope, streamPath } from "./model-gateway-product-fixture.js";
 import { WireDynamo } from "./model-gateway-wire-dynamo.js";
 
-const KEY_ARN = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-000000000000";
-const VERTEX_ROLE = "arn:aws:iam::944937319445:role/rovara-cloud-staging-gateway-VertexFederationRole-ABC";
+const KEY_ARN = "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-000000000000";
+const VERTEX_ROLE = "arn:aws:iam::123456789012:role/rovara-cloud-staging-gateway-VertexFederationRole-ABC";
 const TABLES = { meter: "gw-meter", ledger: "gw-ledger", markers: "gw-markers", prices: "gw-prices", companies: "cloud-companies" };
 const PRODUCT = { keys: "gw-product-keys", meter: "gw-pmeter", ledger: "gw-pledger", markers: "gw-pmarkers", stages: "gw-stages" };
 const LEARNING = { meter: "gw-lmeter", ledger: "gw-lledger", markers: "gw-lmarkers" };
@@ -33,13 +33,13 @@ const BASE = {
   [GATEWAY_ENV.mode]: "serve", AWS_REGION: "us-west-2", [GATEWAY_ENV.port]: "8080",
   [GATEWAY_ENV.installIssuer]: claims.iss, [GATEWAY_ENV.installJwksUrl]: `${claims.iss}/.well-known/jwks.json`, [GATEWAY_ENV.installTaskKids]: kid,
   [GATEWAY_ENV.meterTable]: TABLES.meter, [GATEWAY_ENV.ledgerTable]: TABLES.ledger, [GATEWAY_ENV.markersTable]: TABLES.markers, [GATEWAY_ENV.pricesTable]: TABLES.prices, [GATEWAY_ENV.companyTable]: TABLES.companies,
-  [GATEWAY_ENV.anthropicKeySecret]: "arn:aws:secretsmanager:us-west-2:944937319445:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf",
+  [GATEWAY_ENV.anthropicKeySecret]: "arn:aws:secretsmanager:us-west-2:123456789012:secret:rovara-cloud/staging/model-gateway/provider/anthropic-AbCdEf",
 };
 const PRODUCT_ENV = {
   [GATEWAY_ENV.productKeysTable]: PRODUCT.keys, [GATEWAY_ENV.productKeysKey]: KEY_ARN, [GATEWAY_ENV.productMeterTable]: PRODUCT.meter,
   [GATEWAY_ENV.productLedgerTable]: PRODUCT.ledger, [GATEWAY_ENV.productMarkersTable]: PRODUCT.markers, [GATEWAY_ENV.evalStagesTable]: PRODUCT.stages,
 };
-const MAC_KEY_ARN = "arn:aws:kms:us-west-2:944937319445:key/00000000-0000-4000-8000-0000000000aa";
+const MAC_KEY_ARN = "arn:aws:kms:us-west-2:123456789012:key/00000000-0000-4000-8000-0000000000aa";
 const LEARNING_ENV = { [GATEWAY_ENV.learningMeterTable]: LEARNING.meter, [GATEWAY_ENV.learningLedgerTable]: LEARNING.ledger, [GATEWAY_ENV.learningMarkersTable]: LEARNING.markers };
 
 /** A KMS that wraps data keys with an in-memory key, bound to the encryption context, and names the key it was given. */
@@ -81,7 +81,7 @@ describe("deployed product settings: off unless configured, all or none", () => 
     expect(refusedBy({ ...BASE, ...LEARNING_ENV })).toBe(GATEWAY_ENV.productKeysTable);
     expect(refusedBy({ ...BASE, [GATEWAY_ENV.vertexFederationRole]: VERTEX_ROLE })).toBe(GATEWAY_ENV.productKeysTable);
     expect(refusedBy({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.productKeysKey]: "alias/product" })).toBe(GATEWAY_ENV.productKeysKey);
-    expect(refusedBy({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.vertexFederationRole]: "arn:aws:iam::944937319445:role/*" })).toBe(GATEWAY_ENV.vertexFederationRole);
+    expect(refusedBy({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.vertexFederationRole]: "arn:aws:iam::123456789012:role/*" })).toBe(GATEWAY_ENV.vertexFederationRole);
     // PRODUCT-VERTEX-CLOUD-CONNECT: the MAC key that verifies Cloud's calls, only with the product route AND Vertex.
     expect((readGatewayConfig({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.vertexFederationRole]: VERTEX_ROLE, [GATEWAY_ENV.productMacKey]: MAC_KEY_ARN }) as ServeConfig).product?.macKeyArn).toBe(MAC_KEY_ARN);
     expect(refusedBy({ ...BASE, ...PRODUCT_ENV, [GATEWAY_ENV.productMacKey]: MAC_KEY_ARN })).toBe(GATEWAY_ENV.productMacKey);

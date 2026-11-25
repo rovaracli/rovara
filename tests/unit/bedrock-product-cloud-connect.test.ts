@@ -8,7 +8,7 @@ import { bedrockModelPresets, bedrockSetupCommand, type BedrockConnection } from
 import { ROVARA_AI_US_MODELS } from "../../packages/model-gateway/src/agent-ai.js";
 import { A, B, world, write } from "./product-ai-world.js";
 
-const BROKER = "arn:aws:iam::944937319445:role/RovaraBedrockBroker-staging";
+const BROKER = "arn:aws:iam::123456789012:role/RovaraBedrockBroker-staging";
 const TEMPLATE = "https://raw.githubusercontent.com/PrepLabsAI/Rovara/0123456789abcdef0123456789abcdef01234567/docs/bedrock/rovara-bedrock-role.json";
 const ROLE = (cid: string, n = "") => `arn:aws:iam::${cid === A ? "111111111111" : "222222222222"}:role/RovaraBedrockInvoke-${cid}${n}`;
 const SONNET = "us.anthropic.claude-sonnet-5-5";

@@ -1,16 +1,18 @@
 // NO ACCOUNT IDS IN COMMITTED FILES (controller rule, 2026-11-24): the Cloud repository has a public copy with full history. No real AWS account id may be
-// written in the pipeline's code, its infra or its contract tests; the stage resolves the account at run time and checks it against one given from outside git.
-// Every text file under the roots is scanned (binary files by content, and the named lockfiles, are skipped). The only 12-digit tokens allowed are the three
+// written in the pipeline's code, its infra, its tests (contract, unit, web), its docs or its packages (contracts and product source included); the stage resolves the account at run time and checks it against one given from outside git.
+// Every text file under the roots is scanned (binary files by content, the named lockfiles and tsc's .tsbuildinfo output are skipped). The only 12-digit tokens allowed are the three
 // documented fakes, one repeated digit, and the exact file+token pairs in KNOWN_NON_ACCOUNTS below, each with its reason.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const FAKE_ACCOUNTS = new Set(["123456789012", "210987654321", "111122223333"]);
-const ROOTS = ["infra/lib", "tests/contract", "ops/pipeline"];
+const ROOTS = ["infra/lib", "tests/contract", "tests/unit", "tests/web", "ops/pipeline", "docs", "packages"];
 const UUID = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/gu;
 const SKIPPED_NAMES = new Set(["package-lock.json", "npm-shrinkwrap.json", "yarn.lock", "pnpm-lock.yaml"]);
 const SKIPPED_DIRS = new Set(["node_modules", "dist"]);
+/** Build output that tsc writes beside the sources (hashes and sizes, not text anyone wrote). */
+const SKIPPED_SUFFIXES = [".tsbuildinfo"];
 
 /** Exact file and token, with why it is not an account id. A token listed here is allowed in that file only. */
 export const KNOWN_NON_ACCOUNTS: ReadonlyArray<{ file: string; token: string; reason: string }> = [
@@ -21,11 +23,16 @@ export const KNOWN_NON_ACCOUNTS: ReadonlyArray<{ file: string; token: string; re
   { file: "tests/contract/test-env-dependency.test.ts", token: "222233334444", reason: "a patterned placeholder account in sample ARNs" },
   { file: "tests/contract/test-environment-contract.test.ts", token: "222233334444", reason: "a patterned placeholder account in sample ARNs" },
   { file: "tests/contract/test-environment-contract.test.ts", token: "999900001111", reason: "a patterned placeholder account in sample ARNs" },
+  { file: "packages/audit-verifier/test/timestamp.spec.ts", token: "060480808001", reason: "DER hex of an object identifier" },
+  { file: "packages/audit-verifier/test/timestamp.spec.ts", token: "491231235959", reason: "an ASN.1 time string (end of the X.509 date range)" },
+  { file: "packages/audit-verifier/test/timestamp.spec.ts", token: "500101000000", reason: "an ASN.1 time string" },
+  { file: "tests/unit/model-gateway-openrouter-policy.test.ts", token: "000001234567", reason: "the digits of a decimal price string (0.000001234567)" },
   // This file names the tokens above, so it is allowed to hold exactly them.
   { file: "tests/contract/pipeline-no-account-ids.test.ts", token: "060480808001", reason: "names the allowed token" },
   { file: "tests/contract/pipeline-no-account-ids.test.ts", token: "491231235959", reason: "names the allowed token" },
   { file: "tests/contract/pipeline-no-account-ids.test.ts", token: "500101000000", reason: "names the allowed token" },
   { file: "tests/contract/pipeline-no-account-ids.test.ts", token: "222233334444", reason: "names the allowed token" },
+  { file: "tests/contract/pipeline-no-account-ids.test.ts", token: "000001234567", reason: "names the allowed token" },
   { file: "tests/contract/pipeline-no-account-ids.test.ts", token: "999900001111", reason: "names the allowed token" },
 ];
 
@@ -40,7 +47,7 @@ function walk(dir: string): string[] {
 /** A file is scanned unless it is a named lockfile or has a NUL byte (a binary). Extension never decides: .yml, .yaml, .js, .txt and the rest are all text. */
 export function isScanned(path: string, content: Buffer): boolean {
   const name = path.split("/").pop() ?? path;
-  return !SKIPPED_NAMES.has(name) && !content.includes(0);
+  return !SKIPPED_NAMES.has(name) && !SKIPPED_SUFFIXES.some((suffix) => name.endsWith(suffix)) && !content.includes(0);
 }
 
 /** 12-digit tokens in a text that are not allowed in this file (UUIDs removed first). */
@@ -55,8 +62,8 @@ export function accountLikeTokens(path: string, text: string): string[] {
   return found;
 }
 
-describe("no real AWS account id in the pipeline's files", () => {
-  it("holds no 12-digit token in infra/lib, tests/contract or ops/pipeline except the documented ones", () => {
+describe("no real AWS account id in the pipeline's, tests', docs' or packages' files", () => {
+  it("holds no 12-digit token in infra/lib, tests/contract, tests/unit, tests/web, ops/pipeline, docs or packages except the documented ones", () => {
     const found: string[] = [];
     for (const root of ROOTS) {
       for (const path of walk(root)) {
@@ -75,6 +82,7 @@ describe("no real AWS account id in the pipeline's files", () => {
   it("scans every kind of text file, and skips only lockfiles and binaries", () => {
     for (const name of ["buildspec.yml", "buildspec.yaml", "a.js", "notes.txt", "x.sh", "y.mjs", "z.md", "w.json", "v.ts", "noextension"]) expect(isScanned(`ops/pipeline/${name}`, Buffer.from("text")), name).toBe(true);
     expect(isScanned("ops/pipeline/package-lock.json", Buffer.from("text"))).toBe(false);
+    expect(isScanned("packages/contracts/tsconfig.tsbuildinfo", Buffer.from("text"))).toBe(false);
     expect(isScanned("ops/pipeline/image.png", Buffer.from([137, 80, 0, 71]))).toBe(false);
   });
 
