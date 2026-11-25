@@ -1,10 +1,12 @@
-// REMOVED-MEMBER-ANSWER (Cloud half; security investigation, RED TESTS FIRST, no fix; Code's half is tests/journeys/removed-member-answer.test.ts and tests/unit/removed-member-refresh.test.ts on the Code branch).
+// MEMBERSHIP-READ-FAILS-SAFE (Cloud half; was REMOVED-MEMBER-ANSWER; Code's half is tests/journeys/removed-member-answer.test.ts and tests/unit/removed-member-refresh.test.ts on the Code branch).
 // Cloud's real handler and CodeClient over a pretend Code that answers EXACTLY as Code's own journeys recorded (briefs/arch-cleanup/REMOVED-MEMBER-ANSWER-FINDINGS.md has the table), and the answer then goes
 // through the app's REAL api client and query cache (tests/web/served-read.test.ts' way), with the task's data already on screen:
 //   removed member (membership stamped revoked): every read 401 AUTH_REQUIRED at Code's sign-in check, the access check 401, the refresh 400 invalid_grant;
 //   a failed membership read in Code: a read 401 AUTH_REQUIRED (the sign-in check) or 401 UNAUTHENTICATED (the engine's own), a refresh 400 invalid_grant AND the session revoked, or the access check 5xx;
 //   a person with no company (membership row absent): the access check 200 with no company, the refresh 200, every read 401 AUTH_REQUIRED.
-// Rules held here: a removed member is signed out and no private data stays; a failure of Code's own store never signs a member out; and "This isn't available on this Rovara Code yet" is never the answer to a 401.
+// Rules held here: a removed member is signed out and no private data stays; a failure of Code's own store never signs a member out (Code answers 503 for it, and Cloud's own access check answering a 5xx after a
+// second 401 is a retryable 503 too); a real 401 after the refresh still ends the sign-in. The 501 "This isn't available on this Rovara Code yet" answer to a persisting 401 (the engine's UNAUTHENTICATED, a person
+// with no company) is NOT this lane's (T1a/T1b): it is characterized here, not changed.
 import { z } from "zod";
 import { QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
@@ -114,7 +116,7 @@ describe("a member with a task screen open and Code's answers (as Code's own jou
     expect(await w.signedIn()).toBe(true);
   });
 
-  it("(control, the answer Code SHOULD give) a failed refresh read answered 503: Cloud keeps the sign-in, answers a retryable 503 and the screen keeps its data marked stale, with no sign-in redirect", async () => {
+  it("(Code after MEMBERSHIP-READ-FAILS-SAFE) a membership read that failed during the REFRESH is answered 503 by Code: Cloud keeps the sign-in, answers a retryable 503 and the screen keeps its data marked stale, with no sign-in redirect", async () => {
     const w = setUp({ reads: [CODE_ANSWER.signInRefusedAtFront], refreshes: [CODE_ANSWER.refreshUnavailable], accesses: [CODE_ANSWER.accessOk] });
     await w.start();
     const answer = await w.read();
@@ -125,33 +127,38 @@ describe("a member with a task screen open and Code's answers (as Code's own jou
     expect(screen.sentToSignIn.mock.calls.length).toBe(0);
   });
 
-  it("RED: one failed membership read during the REFRESH (Code revokes the session and answers 400 invalid_grant): the member must not be signed out", async () => {
-    const w = setUp({ reads: [CODE_ANSWER.signInRefusedAtFront], refreshes: [CODE_ANSWER.refreshRefused], accesses: [CODE_ANSWER.accessOk] });
-    await w.start();
-    const answer = await w.read();
-    const screen = await screenAfter(answer);
-    expect({ answer: answer.status, signedInAtCloud: await w.signedIn(), sentToSignIn: screen.sentToSignIn.mock.calls.length, dataKept: screen.keptData }, `Code was asked: ${w.trail.join(" -> ")}`)
-      .toEqual({ answer: 503, signedInAtCloud: true, sentToSignIn: 0, dataKept: true });
+  it("the read is refused twice (the failed read lasts past the refresh) and Cloud's own access check then answers a 5xx: a retryable 503, the sign-in is kept, and the screen keeps its data marked stale (no sign-in redirect)", async () => {
+    for (const status of [500, 502, 503, 429, 408]) {
+      const w = setUp({ reads: [CODE_ANSWER.signInRefusedAtFront], refreshes: [() => CODE_ANSWER.refreshRenewed(1)], accesses: [() => json(status, { error: { code: "RUNTIME_UNAVAILABLE", message: "try again" } })] });
+      await w.start();
+      const answer = await w.read();
+      expect({ status, answer: answer.status, signedInAtCloud: await w.signedIn() }, `Code was asked: ${w.trail.join(" -> ")}`).toEqual({ status, answer: 503, signedInAtCloud: true });
+      expect((answer.body as { error: { code: string } }).error.code).toBe("RUNTIME_UNAVAILABLE");
+      const screen = await screenAfter(answer);
+      expect({ status, keptData: screen.keptData, sentToSignIn: screen.sentToSignIn.mock.calls.length }).toEqual({ status, keptData: true, sentToSignIn: 0 });
+    }
   });
 
-  it("RED: the read is refused twice (the failed read lasts past the refresh) and Cloud's own access check then answers 503: the member must not be signed out by a 5xx", async () => {
-    const w = setUp({ reads: [CODE_ANSWER.signInRefusedAtFront], refreshes: [() => CODE_ANSWER.refreshRenewed(1)], accesses: [CODE_ANSWER.unavailable] });
-    await w.start();
-    const answer = await w.read();
-    expect({ answer: answer.status, signedInAtCloud: await w.signedIn() }, `Code was asked: ${w.trail.join(" -> ")}`).toEqual({ answer: 503, signedInAtCloud: true });
+  it("a REAL 401 after the refresh still ends the sign-in: the read is refused twice and Code's access check itself answers 401 (and a 403 from it too): signed out, data wiped, sent to sign in", async () => {
+    for (const status of [401, 403]) {
+      const w = setUp({ reads: [CODE_ANSWER.signInRefusedAtFront], refreshes: [() => CODE_ANSWER.refreshRenewed(1)], accesses: [() => json(status, { error: { code: "AUTH_REQUIRED", message: "no" } })] });
+      await w.start();
+      const answer = await w.read();
+      expect({ status, answer: answer.status, signedInAtCloud: await w.signedIn() }, `Code was asked: ${w.trail.join(" -> ")}`).toEqual({ status, answer: 401, signedInAtCloud: false });
+      const screen = await screenAfter(answer);
+      expect({ keptData: screen.keptData, sentToSignIn: screen.sentToSignIn.mock.calls.length }).toEqual({ keptData: false, sentToSignIn: 1 });
+    }
   });
 
   it.each([
-    ["the engine's own 401 UNAUTHENTICATED repeats after the refresh and the access check passes (Code's engine could not read the membership)", { reads: [CODE_ANSWER.engineUnauthenticated], refreshes: [() => CODE_ANSWER.refreshRenewed(1)], accesses: [CODE_ANSWER.accessOk] }],
-    ["a person with no company (no membership row): the access check passes with no company, the refresh works, every read is 401", { reads: [CODE_ANSWER.signInRefusedAtFront], refreshes: [() => CODE_ANSWER.refreshRenewed(1)], accesses: [CODE_ANSWER.accessWithNoCompany] }],
-  ] as const)("RED: %s: a 401 is never answered 'This isn't available on this Rovara Code yet.' (501 NOT_ON_CODE_YET)", async (_name, script) => {
+    ["the engine's own 401 UNAUTHENTICATED repeats after the refresh and the access check passes", { reads: [CODE_ANSWER.engineUnauthenticated], refreshes: [() => CODE_ANSWER.refreshRenewed(1)], accesses: [CODE_ANSWER.accessOk] }],
+    ["a person with no company: the access check passes with no company, the refresh works, every read is 401", { reads: [CODE_ANSWER.signInRefusedAtFront], refreshes: [() => CODE_ANSWER.refreshRenewed(1)], accesses: [CODE_ANSWER.accessWithNoCompany] }],
+  ] as const)("(characterized, NOT this lane: T1a/T1b) %s: Cloud answers 501 NOT_ON_CODE_YET, unchanged", async (_name, script) => {
     const w = setUp({ reads: [...script.reads], refreshes: [...script.refreshes], accesses: [...script.accesses] });
     await w.start();
     const answer = await w.read();
     const body = answer.body as { error?: { code?: string; message?: string } };
-    const screen = await screenAfter(answer);
-    expect({ status: answer.status, code: body.error?.code, words: body.error?.message, dataKeptOnScreen: screen.keptData }, `Code was asked: ${w.trail.join(" -> ")}`)
-      .not.toMatchObject({ status: 501, code: "NOT_ON_CODE_YET", words: NOT_ON_CODE });
+    expect({ status: answer.status, code: body.error?.code, words: body.error?.message }, `Code was asked: ${w.trail.join(" -> ")}`).toEqual({ status: 501, code: "NOT_ON_CODE_YET", words: NOT_ON_CODE });
   });
 
   it("(what the screen does today with that 501) the app keeps the earlier private data on screen, marked stale ('Reconnecting'), and does not send the person to sign in: right for a member whose read failed, wrong for anyone whose access has ended", async () => {
