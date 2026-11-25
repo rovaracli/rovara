@@ -36,7 +36,7 @@ const TEXT = "p".repeat(98);
 const anthropicFrames = (sent: Sent): Buffer[] => {
   if (sent.kind === "nothing") return [];
   const input = sent.kind === "text" ? sent.inputTokens ?? 0 : 1_000;
-  const head = [sse("message_start", { message: { usage: { input_tokens: input, output_tokens: 0 } } }), sse("content_block_start", { index: 0, content_block: { type: "text", text: "" } }), sse("content_block_delta", { index: 0, delta: { type: "text_delta", text: sent.kind === "nothing" ? "" : sent.text } })];
+  const head = [sse("message_start", { message: { usage: { input_tokens: input, output_tokens: 0 } } }), sse("content_block_start", { index: 0, content_block: { type: "text", text: "" } }), sse("content_block_delta", { index: 0, delta: { type: "text_delta", text: sent.text } })];
   return sent.kind === "text" ? head : [...head, sse("content_block_stop", { index: 0 }), sse("message_delta", { usage: { output_tokens: 20 } }), sse("message_stop")];
 };
 /** Chat Completions SSE for the OpenAI-shaped families (OpenRouter, the company's endpoint). */
@@ -113,8 +113,8 @@ async function world(family: Family, durable = false, reasoning = false, modelOv
   }
   return { ...w, meter, cut, reserve, settle, settleV2, forwarded };
 }
-const spent = (rows: Array<{ spentMicros: number }>) => rows.map((r) => r.spentMicros);
-const estimatedOf = (rows: Array<{ estimatedMicros: number }>) => rows.map((r) => r.estimatedMicros);
+const spent = (rows: readonly { spentMicros: number }[]) => rows.map((r) => r.spentMicros);
+const estimatedOf = (rows: readonly { estimatedMicros: number }[]) => rows.map((r) => r.estimatedMicros);
 
 describe.each(FAMILIES)("a cut call on the company's own key (%s)", (family) => {
   const ownKeyReceipt = family === "anthropic_key" ? undefined : true;
@@ -238,7 +238,7 @@ describe("what does not change", () => {
 describe("a cut call on a route whose reader does not count progress charges the output received", () => {
   const geminiChunk = (n: number) => Buffer.from(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: "g".repeat(400) + n }] } }] })}\r\n\r\n`);
   const openAiChunk = () => Buffer.from(`data: ${JSON.stringify({ choices: [{ delta: { content: "o".repeat(400) } }] })}\n\n`);
-  async function cutAfter(chunks: number, chunk: (n: number) => Buffer, start: (transport: ProviderTransport) => Promise<{ deps: GatewayDependencies; url: string; body: unknown; token: string; read: () => Promise<Array<{ spentMicros: number; estimatedMicros: number }>>; held: () => number }>) {
+  async function cutAfter(chunks: number, chunk: (n: number) => Buffer, start: (transport: ProviderTransport) => Promise<{ deps: GatewayDependencies; url: string; body: unknown; token: string; read: () => Promise<readonly { spentMicros: number; estimatedMicros: number }[]>; held: () => number }>) {
     const reached = { done: false };
     const transport: ProviderTransport = async () => ({ status: 200, body: (async function* () { for (let i = 0; i < chunks; i++) yield chunk(i); reached.done = true; await hang(); })() });
     const w = await start(transport);
