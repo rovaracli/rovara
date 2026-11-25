@@ -22,6 +22,7 @@ import { ReadState, readIsStale } from "./ReadState.js";
 import { Chevron, Fact, Facts, ReadSection, Rows, Stamp } from "./parts.js";
 import { companyReadKey, settingsReader, useCompanyRead, type ReadScope } from "./read-model.js";
 import { ALLOWED_LIST_NAME } from "../admin/projects/allowed-list-name.js";
+import { POLICY_NOT_ENFORCED } from "./company-policy-words.js";
 
 type Rule = { text: string; priority: "required" | "preferred" };
 type Settings = ReturnType<ReturnType<typeof settingsReader>["parse"]>;
@@ -180,6 +181,7 @@ export function CompanySettingsReadScreen() {
      </div>
     </section>}
    <section className="rv-car-card" aria-labelledby="company-settings-policy"><h2 id="company-settings-policy">Company policy</h2>
+    <p className="rv-car-note" data-testid="company-policy-not-enforced">{POLICY_NOT_ENFORCED}</p>
     <Facts>
      <Fact label="Who may start work">{settings.start === undefined ? <HeldState /> : settings.start.allow ? "Starting tasks is on for the company. Project access, estimates and other checks still apply." : "New tasks are paused."}</Fact>
      {settings.start !== undefined && <Fact label="Largest estimate without asking">{settings.start.maxEstimateUsd === undefined ? "No limit" : <Money usd={settings.start.maxEstimateUsd} />}</Fact>}
