@@ -6,6 +6,9 @@
  * (SECURITY_WARNING STRING_LIKE_OPERATOR_WITH_ARN_CONDITION_KEYS) and Bool on the String key ecs:enable-execute-command (WARNING TYPE_MISMATCH), which no template test, cfn-lint or
  * change set shows. This file only reads templates and judges findings; the AWS call is injected (infra/bin/cloud-iam-validate.ts makes it), so tests need no AWS.
  *
+ * Covered: managed and inline policies of AWS::IAM::Policy / ManagedPolicy, a role's inline Policies, and role trust policies. NOT covered yet: bucket, key and queue (resource)
+ * policies, and AWS::IAM::RolePolicy; a stack that grants through those is not validated by this step.
+ *
  * A template's intrinsics are replaced by well-formed sample values (the analyzer needs a valid ARN, not the real one): findings about a sample (REDUNDANT_RESOURCE between two
  * parameters that both got the same sample) are suggestions and never block.
  */
@@ -92,6 +95,8 @@ export interface ValidationResult { readonly name: string; readonly findings: Fi
 
 /** Validates every file; the run fails when any result has a blocking finding or any document still holds an intrinsic. */
 export function validateAll(files: readonly PolicyFile[], validator: Validator, blocking: readonly string[] = DEFAULT_BLOCKING): ValidationResult[] {
+  // Nothing to validate is a failed run, never a pass: an empty synth or a mistyped context would otherwise print PASS having checked nothing.
+  if (files.length === 0) throw new Error("no IAM policy documents were found to validate (empty synth, or a mistyped --context / LIGHT_GATE_AWS_SHAPES): nothing was checked, so this is not a pass");
   return files.map((file) => {
     const left = unresolvedIntrinsics(file.document);
     if (left.length > 0) throw new Error(`${file.name}: not validated: the document still holds ${[...new Set(left)].join(", ")}`);

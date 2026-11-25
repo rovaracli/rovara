@@ -46,6 +46,7 @@ if (contexts.length > 0) {
 }
 
 const files = stacks.flatMap((s) => policyFiles(s.stackName, s.template, scope));
+if (files.length === 0) { process.stderr.write(`cloud-iam-validate: FAIL: no IAM policy documents in ${stacks.length} stacks (empty synth, or a mistyped --context / --cdk-out): nothing was checked\n`); process.exit(1); }
 const outDir = one("--out") ?? mkdtempSync(join(tmpdir(), "cloud-iam-policies-"));
 mkdirSync(outDir, { recursive: true });
 const path = (file: PolicyFile): string => join(outDir, `${file.name.replace(/[^A-Za-z0-9._-]/gu, "_")}.json`);
@@ -55,11 +56,14 @@ if (!flag("--aws")) { process.stdout.write("cloud-iam-validate: --aws not given:
 
 const [command, ...prefix] = (process.env.CLOUD_IAM_AWS ?? "aws").split(/\s+/u).filter((x) => x !== "");
 const blocking = (one("--fail-on") ?? DEFAULT_BLOCKING.join(",")).split(",");
-const results = validateAll(files, (file) => {
-  const run = spawnSync(command!, [...prefix, ...validatePolicyArguments(file.kind, path(file))], { encoding: "utf8", env: { ...process.env, AWS_MAX_ATTEMPTS: "1", AWS_PAGER: "" } });
-  if (run.status !== 0) throw new Error(`${file.name}: validate-policy failed (exit ${run.status}): ${(run.stderr ?? "").trim().slice(0, 300)}`);
-  return parseFindings(run.stdout);
-}, blocking);
+let results: ReturnType<typeof validateAll>;
+try {
+  results = validateAll(files, (file) => {
+    const run = spawnSync(command!, [...prefix, ...validatePolicyArguments(file.kind, path(file))], { encoding: "utf8", env: { ...process.env, AWS_MAX_ATTEMPTS: "1", AWS_PAGER: "" } });
+    if (run.status !== 0) throw new Error(`${file.name}: validate-policy failed (exit ${run.status}): ${(run.stderr ?? "").trim().slice(0, 300)}`);
+    return parseFindings(run.stdout);
+  }, blocking);
+} catch (error) { process.stderr.write(`cloud-iam-validate: FAIL: ${(error as Error).message}\n`); process.exit(1); }
 let failed = 0;
 for (const r of results) {
   process.stdout.write(`${r.blocking.length > 0 ? "FAIL" : "ok  "} ${r.name}: ${r.findings.length} findings, ${r.blocking.length} blocking\n`);

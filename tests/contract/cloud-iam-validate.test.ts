@@ -31,6 +31,13 @@ describe("Cloud IAM gate: Access Analyzer validation of the synthesized policies
     expect(() => validateAll([{ name: "x", kind: "identity", document: { Statement: [{ Resource: { "Fn::Cidr": [] } }] } }], () => [])).toThrow(/Fn::Cidr/u);
   });
 
+  it("zero documents is a failed run, never a pass (an empty synth or a mistyped context checked nothing)", () => {
+    let calls = 0;
+    expect(() => validateAll([], () => { calls += 1; return []; })).toThrow(/no IAM policy documents.*not a pass/u);
+    expect(calls).toBe(0);
+    expect(policyFiles("empty", { Resources: {} }, scope)).toEqual([]);
+  });
+
   it("fails on ERROR, SECURITY_WARNING and a TYPE_MISMATCH warning, and not on other warnings or suggestions", () => {
     expect(DEFAULT_BLOCKING).toEqual(["ERROR", "SECURITY_WARNING", "TYPE_MISMATCH"]);
     const findings = [finding("ERROR", "INVALID_ACTION"), finding("SECURITY_WARNING", "STRING_LIKE_OPERATOR_WITH_ARN_CONDITION_KEYS"), finding("WARNING", "TYPE_MISMATCH"), finding("WARNING", "MISSING_VERSION"), finding("SUGGESTION", "REDUNDANT_RESOURCE")];
