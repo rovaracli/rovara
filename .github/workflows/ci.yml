@@ -18,6 +18,12 @@ on:
 permissions:
   contents: read
 
+# The pinned gitleaks the secret-scan gate's real tests need: the same version as the release pipeline (infra/lib/cloud-release-actions.ts), and the sha256 gitleaks publishes for the linux x64
+# archive (gitleaks_8.30.1_checksums.txt; its arm64 line equals the pipeline's pinned hash). A new version needs a new hash here and there. Downloaded once per run by the `gitleaks` job.
+env:
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+
 # A newer run on the same ref supersedes the one in progress (owner decision "CI cost", 2026-11-02): a second manual run of a branch, or a new push to a pull
 # request, cancels the first one's remaining jobs, so no runner minutes are spent on a commit nobody is waiting for. This includes a manual run: dispatch a
 # branch again only when you mean to replace the run in progress. A run of cloud/next itself is never cancelled by a later push: each merge keeps its own verdict.
@@ -60,6 +66,26 @@ jobs:
       - name: Markdown-only change
         if: steps.scope.outputs.docs_only == 'true'
         run: echo "Only Markdown that no test reads changed; typecheck, the stricter type check, lint and tests are skipped."
+
+  # Downloads the pinned gitleaks archive ONCE per run and checks it against the sha256 above; the eight test shards restore it from the cache (and each checks the hash again, so a bad cache
+  # entry can never be used; a shard that finds no archive downloads it itself and says so). Without gitleaks the secret-scan gate's real tests FAIL in CI (tests/support/gitleaks-required.ts).
+  gitleaks:
+    needs: scope
+    if: needs.scope.outputs.docs_only != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cached gitleaks archive
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/gitleaks.tar.gz
+          key: gitleaks-linux-x64-${{ env.GITLEAKS_VERSION }}-${{ env.GITLEAKS_SHA256 }}
+      - name: Download gitleaks
+        run: |
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          if [ -f "$archive" ] && echo "${GITLEAKS_SHA256}  $archive" | sha256sum -c -; then exit 0; fi
+          curl -fsSL -o "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $archive" | sha256sum -c -
 
   # The gate for every expensive job below: the type check (tsc -b) and the stricter type check. Nothing in it needs more than the TypeScript compiler.
   checks:
@@ -128,7 +154,7 @@ jobs:
   # the count, change the list: the shard total below comes from it. Four shards took 49 to 61 minutes each on the private repo's 2 vCPU runners (run 41332313193: one hit
   # the 60-minute limit), so there were six; on the public copy's free runners there are eight (DEC 235a), the gate for Cloud pull requests: the same total runner minutes, less waiting. They wait for `checks`, so a type error stops them before they start.
   test:
-    needs: [scope, checks]
+    needs: [scope, checks, gitleaks]
     if: needs.scope.outputs.docs_only != 'true'
     name: test (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
@@ -148,6 +174,25 @@ jobs:
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           df -h /
+      # The secret-scan gate's tests run the real gitleaks (tests/contract/pipeline-gitleaks-bypass.test.ts) and FAIL in CI when it is missing (tests/support/gitleaks-required.ts).
+      # The `gitleaks` job downloaded the archive once; it is restored from the cache and checked against the pinned sha256 again before it is unpacked.
+      - name: Restore gitleaks archive
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/gitleaks.tar.gz
+          key: gitleaks-linux-x64-${{ env.GITLEAKS_VERSION }}-${{ env.GITLEAKS_SHA256 }}
+      - name: Install gitleaks
+        run: |
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          if ! { [ -f "$archive" ] && echo "${GITLEAKS_SHA256}  $archive" | sha256sum -c -; }; then
+            echo "::warning::the gitleaks archive was not in this run's cache; downloading it in this job"
+            curl -fsSL -o "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+            echo "${GITLEAKS_SHA256}  $archive" | sha256sum -c -
+          fi
+          mkdir -p "$RUNNER_TEMP/gitleaks-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/gitleaks-bin" gitleaks
+          echo "$RUNNER_TEMP/gitleaks-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/gitleaks-bin/gitleaks" version
       - uses: actions/setup-node@v5
         with:
           node-version-file: .node-version
@@ -247,7 +292,7 @@ jobs:
 
   # The one check a pull request needs. It runs even when a job before it failed or was cancelled.
   local:
-    needs: [scope, checks, lint, test, release, browser]
+    needs: [scope, checks, gitleaks, lint, test, release, browser]
     if: >-
       always() && github.event.pull_request.draft != true && (
       (github.repository != 'PrepLabsAI/Rovara-cloud' && (github.event_name != 'push' || github.repository == 'rovaracli/rovara'))
