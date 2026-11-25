@@ -9,8 +9,8 @@ import { GATEWAY_COMPANY_KEY_PREFIX, GATEWAY_LEDGER_INDEXES, GATEWAY_METER_INDEX
 import { CALL_HARD_CEILING_MS } from "./provider.js";
 import { TransactionRefused, type Dynamo, type Expr, type Item, type Plain, type TransactAction } from "./dynamo.js";
 import type { EndedTasks } from "./ended.js";
-import { SWEEP_AFTER_MAX_MS, validLine } from "./meter.js";
-import type { BillLine, CorrectionInput, CorrectionResult, EstimatedCall, EstimatedSettlement, ExpiryInput, Meter, MeterItem, MeterRow, MeterScope, Reservation, ReserveInput, ReserveResult } from "./meter.js";
+import { checkRunReceipt, RUN_CALLS_MAX, runKeyPrefix, SWEEP_AFTER_MAX_MS, validLine, validRunScope } from "./meter.js";
+import type { BillLine, CorrectionInput, CorrectionResult, EstimatedCall, EstimatedSettlement, ExpiryInput, Meter, MeterItem, MeterRow, MeterScope, Reservation, ReserveInput, ReserveResult, RunChargesRead, RunScope } from "./meter.js";
 import { COMPANY, PERSON, PROJECT, TASK, TASK_TOKEN_SECONDS, record, whole } from "./model-gateway-token.js";
 import type { PendingPage } from "./pending-page.js";
 import { CORRECTION_RUN_MAX, CORRECTION_RUN_MS, DAY_MS, PENDING_RETENTION_DAYS } from "./price-constants.js";
@@ -23,6 +23,8 @@ import { MEDIA_USAGE_KEYS, type TokenUsage } from "./usage.js";
  *
  *   meter table   CO#[iss,cid] / ROW#[item...]   spend rows (task; person, project, company per month)
  *                 CO#[iss,cid] / HOLD#<id>       one per reservation: open, then settled (kept, never deleted)
+ *                 CO#[iss,cid] / RUN#[task,run]#<id>  one per reservation made for a run (ReserveInput.run), written in the SAME transaction as its hold:
+ *                                                the run's calls are the items under one prefix (runCharges). Calls held before this item existed have none.
  *   ledger table  CO#[iss,cid] / CALL#<id>       one per settled call; an estimated call is "pending" (in both pending
  *                                                indexes) until corrected or expired
  *   markers table CO#[iss,cid] / INFLIGHT        the company's one estimated-price call in flight (expires)
@@ -225,6 +227,7 @@ export class DynamoMeter implements Meter {
     if (input.provisional !== undefined && !validProvisionalContext(input.provisional)) return { ok: false, reason: "busy" };
     if (input.line !== undefined && !validLine(input.line)) return { ok: false, reason: "busy" };
     if (input.review !== undefined && !(typeof input.review.jti === "string" && /^[0-9a-f-]{36}$/u.test(input.review.jti))) return { ok: false, reason: "busy" };
+    if (input.run !== undefined && (!validRunScope(input.scope, input.run.operationId) || (input.charge !== undefined && input.charge.receipt.operationId !== input.run.operationId))) return { ok: false, reason: "busy" };
     // Fail closed: a combined meter without the combined company cap holds nothing.
     if (this.#combined !== undefined && caps.combinedCompanyMonth === undefined) return { ok: false, reason: "busy" };
     const now = this.#now();
@@ -296,6 +299,8 @@ export class DynamoMeter implements Meter {
         ...(input.line === undefined ? {} : { line: { source: input.line.source, charge: input.line.charge, model: input.line.model } }),
         ...(input.review === undefined ? {} : { review: input.review.jti }),
       } });
+      // The run's index item: in the hold's own transaction, so a hold that exists is always found by its run (GATEWAY-RUN-CHARGES-ROUTE). Read tolerantly: only `callId` is read.
+      if (input.run !== undefined) actions.push({ kind: "Put", table: this.#t.meter, item: { pk, sk: `${runKeyPrefix(scope.tid, input.run.operationId)}${id}`, callId: id, createdAt: now }, condition: (e) => `attribute_not_exists(${e.name("pk")})` });
       if (expiresSeconds !== undefined) {
         const expires = expiresSeconds;
         actions.push({ kind: "Put", table: this.#markers, item: { pk, sk: INFLIGHT, owner: id, expiresSeconds: expires, expiresAt: expires },
@@ -324,6 +329,38 @@ export class DynamoMeter implements Meter {
       return { ok: true, reservation };
     }
     return { ok: false, reason: "busy" };
+  }
+
+  /**
+   * One run's calls (Meter.runCharges): the `RUN#` items under the run's prefix name every hold taken for it; each hold says whether the call is still open (its receipt is then the hold's own, `awaiting_usage`),
+   * else the ledger row holds the call's latest receipt. Every read is consistent. A hold with no index item cannot exist (one transaction); an index item with no hold, a closed hold with no ledger receipt, or a
+   * receipt that is not this run's makes the whole read unreadable (a throw), never a smaller figure.
+   */
+  async runCharges(scope: RunScope, operationId: string): Promise<RunChargesRead> {
+    if (!validRunScope(scope, operationId)) throw new Error("run charges unavailable");
+    const pk = companyPartition(scope.iss, scope.cid), low = runKeyPrefix(scope.tid, operationId);
+    const rows = await this.#db.query(this.#t.meter, { limit: RUN_CALLS_MAX + 1, key: (e) => `${e.name("pk")} = ${e.value(pk)} AND ${e.name("sk")} BETWEEN ${e.value(low)} AND ${e.value(`${low.slice(0, -1)}$`)}` });
+    if (rows.length === 0) return { found: false };
+    if (rows.length > RUN_CALLS_MAX) throw new Error("run charges unavailable");
+    const ids = rows.map((row) => { const id = row.callId; if (typeof id !== "string" || !/^[0-9a-f-]{36}$/u.test(id) || row.sk !== `${low}${id}`) throw new Error("run charges unavailable"); return id; });
+    let complete = true;
+    const receipts: ChargeReceiptV1[] = [];
+    for (let at = 0; at < ids.length; at += 8) {
+      receipts.push(...await Promise.all(ids.slice(at, at + 8).map(async (id) => {
+        const hold = readHold(await this.#db.get(this.#t.meter, { pk, sk: `HOLD#${id}` }), this.#combined !== undefined);
+        if (hold === undefined || hold.scope.iss !== scope.iss || hold.scope.cid !== scope.cid || hold.scope.tid !== scope.tid) throw new Error("run charges unavailable");
+        if (hold.status === "open") {
+          // Still open (or a settle that has not landed): the run is not complete.
+          if (hold.charge === undefined) throw new Error("run charges unavailable");
+          complete = false;
+          return checkRunReceipt(readSettlementReceipt(hold.charge.receipt), scope, operationId, id);
+        }
+        const call = await this.#db.get(this.#t.ledger, { pk, sk: `CALL#${id}` });
+        if (call === undefined || call.receipt === undefined) throw new Error("run charges unavailable");
+        return checkRunReceipt(readSettlementReceipt(call.receipt), scope, operationId, id);
+      })));
+    }
+    return { found: true, complete, receipts };
   }
 
   /**

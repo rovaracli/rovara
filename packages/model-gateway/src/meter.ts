@@ -48,6 +48,11 @@ export interface ReserveInput {
    * whose gateway task died is then settled at what the session really debited, not at the whole ceiling. Absent: every other hold, as before.
    */
   review?: { jti: string };
+  /**
+   * GATEWAY-RUN-CHARGES-ROUTE: the run (the task token's `op`) this call belongs to. The hold is then findable by (company, task, run) in the SAME transaction that takes it, so a read
+   * of one run's charges (`runCharges`) can never miss a call that holds money. Absent: the hold is not part of any run's record (an eval stage's, the checks').
+   */
+  run?: { operationId: string };
 }
 /**
  * One billable line (DEC 240b). `charge` "customer": on the company's bill; "exempt": the operator-named founders' test company
@@ -82,6 +87,28 @@ export interface Meter {
   correct(input: CorrectionInput): Promise<CorrectionResult>;
   /** The rows this call's scope counts on, this month. `upkeep: true` adds the project's upkeep row (zero when it has none yet). */
   read(scope: MeterScope, options?: { upkeep?: true }): Promise<readonly MeterRow[]>;
+  /**
+   * GATEWAY-RUN-CHARGES-ROUTE: every call held for one run (`ReserveInput.run`) of one task of one company, as the gateway's own charge receipts. `{ found: false }` only when no call was ever held for the
+   * run. Throws when any part does not read (a call with no receipt, a record of another company, task or run, too many calls): a figure is never built from part of a run.
+   */
+  runCharges?(scope: RunScope, operationId: string): Promise<RunChargesRead>;
+}
+export interface RunScope { iss: string; cid: string; tid: string }
+/** `complete`: no call of the run holds an open reservation. `receipts` has one (the latest revision) per call, an open call's as the hold wrote it (`awaiting_usage`). */
+export type RunChargesRead = { found: false } | { found: true; complete: boolean; receipts: ChargeReceiptV1[] };
+/** The most calls one run's read serves; a run with more is unreadable (a 503), never a partial figure. */
+export const RUN_CALLS_MAX = 500;
+const RUN_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+/** The run's calls are found under this key prefix (the meter table's `RUN#<json [task, run]>#<call id>` items; the last character is "#", the range's end is the same text with "$"). */
+export const runKeyPrefix = (taskId: string, operationId: string): string => `RUN#${JSON.stringify([taskId, operationId])}#`;
+export const validRunScope = (scope: unknown, operationId: unknown): scope is RunScope => {
+  const s = record(scope);
+  return s !== undefined && typeof s.iss === "string" && s.iss.length > 0 && s.iss.length <= 2048 && typeof s.cid === "string" && COMPANY.test(s.cid) && typeof s.tid === "string" && TASK.test(s.tid) && typeof operationId === "string" && RUN_UUID.test(operationId);
+};
+/** One call's receipt must be this run's own (company, task, run, call): anything else makes the whole read unreadable. */
+export function checkRunReceipt(r: ChargeReceiptV1, scope: RunScope, operationId: string, callId: string): ChargeReceiptV1 {
+  if (r.issuer !== scope.iss || r.companyId !== scope.cid || r.taskId !== scope.tid || r.operationId !== operationId || r.callId !== callId) throw new Error("run charges unavailable");
+  return r;
 }
 export interface EstimatedSettlement { provider: string; model: string; kind: PriceKind; usage?: TokenUsage; settledAt: number; priceVersion?: number }
 export interface EstimatedCall extends MeterScope {
@@ -144,6 +171,8 @@ export class InMemoryMeter implements Meter {
   readonly #receipts = new Map<string, { routeClass?: RouteClass; receipt: ChargeReceiptV1; kind: PriceKind; targets: Target[]; amount: number; held: boolean; cutoffAt?: number; provisional?: ProvisionalEstimate; neverConfirmed?: true }>();
   readonly #adjustments = new Map<string, { receipt: ChargeReceiptV1; deltaMicros: number }>();
   readonly #billed = new Map<string, BilledCall>();
+  /** GATEWAY-RUN-CHARGES-ROUTE: the calls held for each run, by JSON [iss, cid, task, run] (the Dynamo meter's `RUN#` items). */
+  readonly #runs = new Map<string, string[]>();
   constructor(private readonly now: () => number = Date.now, private readonly conflict: () => boolean = () => false, private readonly beforeWrite: (operation: "settle" | "correct" | "expire", rows?: MeterRow[]) => void | Promise<void> = () => undefined, options: InMemoryMeterOptions = {}) {
     if (options.combineCompanyWith !== undefined && (options.combineCompanyWith === this || options.combineCompanyWith.#partner !== undefined)) throw new Error("meter unavailable");
     this.#partner = options.combineCompanyWith;
@@ -166,6 +195,7 @@ export class InMemoryMeter implements Meter {
     if (input.provisional !== undefined && !validProvisionalContext(input.provisional)) return { ok: false, reason: "busy" };
     if (input.line !== undefined && !validLine(input.line)) return { ok: false, reason: "busy" };
     if (input.review !== undefined && !(typeof input.review.jti === "string" && /^[0-9a-f-]{36}$/u.test(input.review.jti))) return { ok: false, reason: "busy" };
+    if (input.run !== undefined && (!validRunScope(input.scope, input.run.operationId) || (input.charge !== undefined && input.charge.receipt.operationId !== input.run.operationId))) return { ok: false, reason: "busy" };
     // Fail closed: a combined meter without the combined company cap holds nothing.
     if (this.#partner !== undefined && caps.combinedCompanyMonth === undefined) return { ok: false, reason: "busy" };
     const clock = Math.floor(this.now() / 1000);
@@ -212,6 +242,7 @@ export class InMemoryMeter implements Meter {
       const reservation = Object.freeze({ id: input.charge?.receipt.callId ?? randomUUID(), ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }) });
       for (const target of items) { const row = this.#row(target, scope); this.#store(target).set(target.key, { ...row, reservedMicros: row.reservedMicros + estimateMicros, committed: row.committed + estimateMicros }); }
       if (expiresSeconds !== undefined) this.#inFlight.set(companyKey, { owner: reservation.id, expiresSeconds });
+      if (input.run !== undefined) { const runKey = JSON.stringify([scope.iss, scope.cid, scope.tid, input.run.operationId]); this.#runs.set(runKey, [...(this.#runs.get(runKey) ?? []), reservation.id]); }
       if (customerSource !== undefined && sourceKey !== undefined) this.#stops.set(sourceKey, { source: customerSource, stopped: false, ...sourceStop, inFlight: reservation.id });
       this.#open.set(reservation.id, { ...(input.routeClass === undefined ? {} : { routeClass: input.routeClass }), ...(customerSource === undefined ? {} : { customerSource }), ...(input.provisional === undefined ? {} : { provisional: structuredClone(input.provisional) }), ...(input.charge === undefined ? {} : { charge: structuredClone(input.charge) }), month, ...(input.appliedMaxOutputTokens === undefined ? {} : { appliedMaxOutputTokens: input.appliedMaxOutputTokens }), scope: { ...scope }, estimate: estimateMicros, targets: items, ...(input.line === undefined ? {} : { line: { ...input.line } }) });
       return { ok: true, reservation };
@@ -260,6 +291,21 @@ export class InMemoryMeter implements Meter {
     this.#open.delete(reservation.id);
     const companyKey = JSON.stringify([open.scope.iss, open.scope.cid]);
     if (this.#inFlight.get(companyKey)?.owner === reservation.id) this.#inFlight.delete(companyKey);
+  }
+  async runCharges(scope: RunScope, operationId: string): Promise<RunChargesRead> {
+    if (!validRunScope(scope, operationId)) throw new Error("run charges unavailable");
+    const ids = this.#runs.get(JSON.stringify([scope.iss, scope.cid, scope.tid, operationId]));
+    if (ids === undefined || ids.length === 0) return { found: false };
+    if (ids.length > RUN_CALLS_MAX) throw new Error("run charges unavailable");
+    let complete = true;
+    const receipts = ids.map((id) => {
+      const open = this.#open.get(id);
+      if (open !== undefined) { complete = false; if (open.charge === undefined) throw new Error("run charges unavailable"); return checkRunReceipt(structuredClone(open.charge.receipt), scope, operationId, id); }
+      const stored = this.#receipts.get(JSON.stringify([scope.iss, scope.cid, id]));
+      if (stored === undefined) throw new Error("run charges unavailable");
+      return checkRunReceipt(structuredClone(stored.receipt), scope, operationId, id);
+    });
+    return { found: true, complete, receipts };
   }
   async settleV2(input: SettleV2): Promise<void> {
     const r = readSettlementReceipt(input.receipt);
