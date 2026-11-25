@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { discoverGates, mergeGateRecords, runPhase } from "../../ops/pipeline/lib/gates.ts";
 import { gate as integrity } from "../../ops/pipeline/gates/change-set-integrity.gate.ts";
 import { gate as backfill } from "../../ops/pipeline/gates/own-key-backfill.gate.ts";
-import { gate as gitleaks, configExtras } from "../../ops/pipeline/gates/gitleaks.gate.ts";
+import { gate as gitleaks, WORK_NAMES, configExtras, describeFindings } from "../../ops/pipeline/gates/gitleaks.gate.ts";
 import { readFileSync } from "node:fs";
 import { countRows } from "../../ops/pipeline/lib/changesets.ts";
 import type { ChangeRow, ChangeSetRecord, Gate, GateInput, Manifest, PipelineEnv } from "../../ops/pipeline/types.ts";
@@ -199,6 +199,87 @@ describe("pipeline stage CLI: gate gitleaks", () => {
     const extra = world(["a.ts"], ["a.ts", "b.ts"]);
     expect((await gitleaks.run(input({ phase: "preflight", state: extra }))).failures?.[0]).toMatch(/1 extra/);
     expect((await gitleaks.run(input({ phase: "preflight", state: world(["a.ts", "d/b.ts"], ["d/b.ts", "a.ts"]) }))).result).toBe("pass");
+  });
+
+  it("fails on a tracked node_modules/ directory or a gitleaks config other than the root one, before it scans (the default config skips both)", async () => {
+    for (const [path, text] of [["node_modules/x/index.js", /under node_modules\//], ["packages/a/node_modules/y.js", /under node_modules\//], ["sub/gitleaks.toml", /gitleaks config other than the root/], ["gitleaks.toml", /gitleaks config other than the root/], ["docs/.gitleaks.toml", /gitleaks config other than the root/], ["x/My-GitLeaks.TOML", /gitleaks config other than the root/]] as const) {
+      const state = gitleaksState();
+      state.exec = (cmd, args) => (cmd === "git" && args.includes("ls-tree") ? { code: 0, stdout: `a.ts\0${path}\0`, stderr: "" } : { code: 0, stdout: "", stderr: "" });
+      const result = await gitleaks.run(input({ phase: "preflight", state }));
+      expect(result.result, path).toBe("fail");
+      expect(result.failures?.join("\n"), path).toMatch(text);
+      expect(state.calls.some((c) => c.startsWith("exec gitleaks")), path).toBe(false);
+    }
+    // the root .gitleaks.toml and a path that merely contains the words are fine
+    const ok = gitleaksState();
+    ok.exec = (cmd, args) => (cmd === "git" && args.includes("ls-tree") ? { code: 0, stdout: ".gitleaks.toml\0src/node_modules_note.ts\0", stderr: "" } : cmd === "bash" && args.includes("list") ? { code: 0, stdout: "./.gitleaks.toml\0./src/node_modules_note.ts\0", stderr: "" } : { code: 0, stdout: "", stderr: "" });
+    expect((await gitleaks.run(input({ phase: "preflight", state: ok }))).result).toBe("pass");
+  });
+
+  it("scans a second copy of every tracked file under neutral names with the same config, and reports a finding there by its tracked path", async () => {
+    const state = gitleaksState();
+    expect((await gitleaks.run(input({ phase: "preflight", state }))).result).toBe("pass");
+    const copy = state.calls.find((c) => c.startsWith("exec node -e") && c.includes("ARCHIVE_MAGIC"))!;
+    expect(copy).toContain('padStart(5, "0") + ".txt"');
+    expect(copy).toContain('Buffer.from("\\n"), body');
+    expect(copy).toContain("/w/gitleaks-tree /w/gitleaks-as-text /w/gitleaks-as-text-map.tsv /w/gitleaks-archives.txt");
+    expect(state.calls.filter((c) => c.startsWith("exec gitleaks"))).toEqual([
+      "exec gitleaks dir --no-banner --redact --exit-code 1 --ignore-gitleaks-allow --config /p/.gitleaks.toml -i /w/gitleaks-no-ignore /w/gitleaks-tree",
+      "exec gitleaks dir --no-banner --redact --exit-code 1 --ignore-gitleaks-allow --config /p/.gitleaks.toml -i /w/gitleaks-no-ignore --report-format json --report-path /w/gitleaks-as-text-report.json /w/gitleaks-as-text",
+    ]);
+    // the first scan is clean and the second finds something: the gate fails and names the tracked path, not the neutral name
+    const found = gitleaksState();
+    let scans = 0;
+    found.exec = (cmd) => (cmd === "gitleaks" ? ((scans += 1) === 2 ? { code: 1, stdout: "", stderr: "leaks found: 1" } : { code: 0, stdout: "", stderr: "" }) : { code: 0, stdout: "", stderr: "" });
+    found.files["/w/gitleaks-as-text-map.tsv"] = "00001.txt\ta.ts\n00002.txt\tassets/logo.svg\n";
+    found.files["/w/gitleaks-as-text-report.json"] = JSON.stringify([{ RuleID: "github-pat", File: "/w/gitleaks-as-text/00002.txt", StartLine: 7, Secret: "REDACTED" }]);
+    const result = await gitleaks.run(input({ phase: "preflight", state: found }));
+    expect(result.result).toBe("fail");
+    expect(result.failures?.[0]).toMatch(/second scan.*github-pat assets\/logo\.svg:6/);
+    // an archive the copy step listed fails the gate before the second scan
+    const archived = gitleaksState();
+    archived.files["/w/gitleaks-archives.txt"] = "dist/a.zip\nb/c.tgz\n";
+    const archivedResult = await gitleaks.run(input({ phase: "preflight", state: archived }));
+    expect(archivedResult.failures?.[0]).toMatch(/tracks 2 archive file\(s\) by content \(dist\/a\.zip, b\/c\.tgz\)/);
+    expect(archived.calls.filter((c) => c.startsWith("exec gitleaks")).length).toBe(1);
+    // the copy failing, and gitleaks missing on the second run, fail too
+    const broken = gitleaksState();
+    broken.exec = (cmd, args) => (cmd === "node" && args.includes("-e") ? { code: 1, stdout: "", stderr: "cp failed" } : { code: 0, stdout: "", stderr: "" });
+    expect((await gitleaks.run(input({ phase: "preflight", state: broken }))).failures?.[0]).toMatch(/could not copy the tree for the second/);
+    expect(describeFindings("not json", "")).toEqual([]);
+    expect(describeFindings(JSON.stringify([{ RuleID: "r", File: "/x/00009.txt", StartLine: 3 }]), "")).toEqual(["r 00009.txt:2"]);
+  });
+
+  it("refuses a work directory whose path holds an allowlisted part (gitleaks would scan nothing under it), and a differently-cased node_modules in the tree", async () => {
+    for (const work of ["/w/node_modules/x", "/Node_Modules", "/w/vendor/run", "/w/gitleaks.toml.d", "/w/a/vendor"]) {
+      const state = gitleaksState();
+      const result = await gitleaks.run(input({ phase: "preflight", state, dirs: { pipeline: "/p", cloud: "/c", out: "/out", work } }));
+      expect(result.result, work).toBe("fail");
+      expect(result.failures?.[0], work).toMatch(/work directory .* has node_modules, vendor or gitleaks\.toml in its path/);
+      expect(state.calls.some((c) => c.startsWith("exec gitleaks") || c.startsWith("exec git ")), work).toBe(false);
+    }
+    const fine = gitleaksState();
+    expect((await gitleaks.run(input({ phase: "preflight", state: fine, dirs: { pipeline: "/p", cloud: "/c", out: "/out", work: "/tmp/rovara-pipeline-1a2b3c4d" } }))).result).toBe("pass");
+    const cased = gitleaksState();
+    cased.exec = (cmd, args) => (cmd === "git" && args.includes("ls-tree") ? { code: 0, stdout: "a.ts\0web/Node_Modules/x.js\0", stderr: "" } : { code: 0, stdout: "", stderr: "" });
+    expect((await gitleaks.run(input({ phase: "preflight", state: cased }))).failures?.join("\n")).toMatch(/under node_modules\//);
+  });
+
+  it("removes its copies of the tree, the map and the report at the end: after a pass, a failure at any step, and a throw", async () => {
+    const rm = (state: ReturnType<typeof gitleaksState>) => state.calls.filter((c) => c.startsWith("exec rm "));
+    const want = `exec rm -rf ${WORK_NAMES.map((n) => `/w/${n}`).join(" ")}`;
+    const pass = gitleaksState();
+    await gitleaks.run(input({ phase: "preflight", state: pass }));
+    expect(rm(pass)).toEqual([want]);
+    expect(WORK_NAMES).toEqual(expect.arrayContaining(["gitleaks-tree", "gitleaks-as-text", "gitleaks-as-text-map.tsv", "gitleaks-as-text-report.json"]));
+    const failed = gitleaksState();
+    failed.exec = (cmd) => (cmd === "gitleaks" ? { code: 1, stdout: "", stderr: "1 leaks found" } : { code: 0, stdout: "", stderr: "" });
+    await gitleaks.run(input({ phase: "preflight", state: failed }));
+    expect(rm(failed)).toEqual([want]);
+    const threw = gitleaksState();
+    threw.exec = (cmd) => { if (cmd === "gitleaks") throw new Error("boom"); return { code: 0, stdout: "", stderr: "" }; };
+    await expect(gitleaks.run(input({ phase: "preflight", state: threw }))).rejects.toThrow("boom");
+    expect(rm(threw)).toEqual([want]);
   });
 
   it("the committed .gitleaks.toml of this repository has no allow entry", () => {
