@@ -6,12 +6,11 @@
       "region": "us-east-1",
       "deployAccount": "${DEPLOY_ACCOUNT}",
       "codeUrl": "https://lznfb0pf48.execute-api.us-east-1.amazonaws.com",
-      "aiSourceKinds": "openai",
+      "aiSourceKinds": "openai,bedrock",
       "productAi": "on",
       "rovaraAi": "on",
       "rovaraAiExempt": null,
       "rovaraAiDisabled": null,
-      "bedrockByo": null,
       "offeredPrices": "on",
       "providerSecretNames": "generated",
       "pending": []
@@ -25,7 +24,6 @@
       "rovaraAi": "on",
       "rovaraAiExempt": null,
       "rovaraAiDisabled": null,
-      "bedrockByo": null,
       "offeredPrices": "on",
       "providerSecretNames": "generated",
       "pending": []

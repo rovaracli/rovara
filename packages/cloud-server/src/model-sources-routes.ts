@@ -15,7 +15,7 @@
 import { recordCloudAction } from "./audit-log.js";
 import { agentSourceAvailability } from "./agent-ai-routes.js";
 import { companyCaller, isCompanyAdmin, refused } from "./company-caller.js";
-import { AGENT_AI_FALLBACK_MAX, CompanyStoreConflict, validAgentAiSource, type AgentAiSource } from "./company-store.js";
+import { AGENT_AI_FALLBACK_MAX, CompanyStoreConflict, explicitAgentChoice, validAgentAiSource, type AgentAiSource } from "./company-store.js";
 import type { Route, RouteAnswer, RouteContext } from "./routes.js";
 
 const BODY_BYTES_MAX = 2_048;
@@ -44,15 +44,15 @@ async function caller(context: RouteContext): Promise<Caller | RouteAnswer> {
 }
 
 async function snapshot(context: RouteContext, who: Caller): Promise<RouteAnswer> {
-  let saved;
-  try { saved = await context.company!.store.agentAi(who.companyId); } catch { return A.unavailable; }
+  let stored, saved;
+  try { stored = await context.company!.store.agentAi(who.companyId); saved = explicitAgentChoice(stored); } catch { return A.unavailable; }
   let listed;
   try { listed = await agentSourceAvailability(context, who.companyId); } catch { return A.unavailable; }
   const order: AgentAiSource[] = saved === undefined ? [] : [saved.source, ...(saved.fallback ?? [])];
   return {
     status: 200,
     body: {
-      orgId: who.companyId, developerId: who.developerId, revision: saved?.version ?? 0, canChange: who.admin, order,
+      orgId: who.companyId, developerId: who.developerId, revision: stored?.version ?? 0, canChange: who.admin, order,
       sources: listed.map((entry) => ({ source: entry.source, available: entry.available, connected: entry.connected, inOrder: order.includes(entry.source) })),
     },
   };

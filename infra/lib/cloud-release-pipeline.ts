@@ -63,7 +63,9 @@ export const CLOUD_PIPELINE_SWITCHES: Readonly<Record<string, Readonly<CloudPipe
   production: Object.freeze({ productAi: true as const, aiSourceKinds: "openai" }),
   // Rovara-cloud#269, #273: beta, on beta Code (its own account). Its gateway is gateway.beta.rovara.dev, and its web stack was
   // switched on by hand with that gateway's ProductKeys* parameters, ModelGatewayUrl and GatewayMeterTableName, as production's was.
-  beta: Object.freeze({ productAi: true as const, aiSourceKinds: "openai" }),
+  // DEC 254zzz524: beta also switches on `bedrock` (a company's own Bedrock for its agents); the beta gateway and web stack are redeployed with
+  // the same -c rovaraAiSourceKinds=openai,bedrock (the two must match).
+  beta: Object.freeze({ productAi: true as const, aiSourceKinds: "openai,bedrock" }),
 });
 /**
  * Rovara-cloud#269: an environment whose Cloud lives in another account. Its pipeline runs in the account that holds the GitHub

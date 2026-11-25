@@ -25,11 +25,10 @@ const gateway = (env: "beta" | "production", extra: Record<string, string> = {})
   return { gateway: Template.fromStack(app.node.findChild("RovaraModelGateway") as Stack).toJSON() as Doc, gatewayImages: Template.fromStack(app.node.findChild("RovaraModelGatewayImages") as Stack).toJSON() as Doc };
 };
 
-// Both rows, plus a gateway with bring-your-own Bedrock on (its key and broker role exist only then).
+// Both rows (the Bedrock broker role and external-id key are part of every product-AI gateway, DEC 254zzz520).
 const variants: Array<[string, Record<string, Doc>]> = [
   ["beta", { ...web("beta"), ...gateway("beta") }],
   ["production", { ...web("production"), ...gateway("production") }],
-  ["beta with bring-your-own Bedrock", gateway("beta", { rovaraModelGatewayBedrockByo: "on" })],
 ];
 
 describe("protected.json against the synthesized stacks", () => {
