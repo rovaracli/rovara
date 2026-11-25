@@ -23,7 +23,7 @@ const LESS_SAFE_WORDS: Record<string, string> = {
 function sourceWords(source: Source): string {
   if (source === "model") return "Rovara's reading of your code";
   if (typeof source === "string") return `Found by the ${source.slice("detector:".length)} detector`;
-  return `${source.path}, line ${String(source.line)}`;
+  return source.path;
 }
 
 /** The source of the value at `field`, if the proposal recorded one. */

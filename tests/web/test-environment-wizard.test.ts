@@ -110,7 +110,8 @@ it("keeps the proposal view and approval while hiding proposal mutations", async
   const region = await section();
   const setupList = within(region).getByRole("list", { name: "Setup commands for web" });
   expect(within(setupList).getByText("npm ci")).toBeTruthy();
-  expect(within(setupList).getByText(/package\.json, line 4/)).toBeTruthy();
+  expect(within(setupList).getByText(/package\.json/)).toBeTruthy();
+  expect(within(setupList).queryByText(/line 4/)).toBeNull();
   const checks = within(region).getByRole("list", { name: "Checks for web" });
   expect(within(checks).getByText("npm test")).toBeTruthy();
   expect(within(checks).getByText("{tests}")).toBeTruthy();

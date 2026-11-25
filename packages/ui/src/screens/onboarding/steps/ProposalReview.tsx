@@ -45,7 +45,7 @@ function valueLines(item: SetupItem): string[] {
 
 function Citations({ item }: { item: SetupItem }) {
   return <ul className="rv-proposal-from" aria-label="Where this came from">{item.proposed.from.map((place, index) => <li key={index}>
-    {place.path === undefined ? <>Rovara concluded this: <VisibleText text={place.note ?? ""} /></> : <><VisibleText text={`${place.repo ?? ""}/${place.path}${place.line === undefined ? "" : `:${String(place.line)}`}`} />{place.quote !== undefined && <> <q><VisibleText text={place.quote} /></q></>}</>}
+    {place.path === undefined ? <>Rovara concluded this: <VisibleText text={place.note ?? ""} /></> : <><VisibleText text={`From ${place.repo === undefined ? "" : `${place.repo}/`}${place.path}`} />{place.quote !== undefined && <> <q><VisibleText text={place.quote} /></q></>}</>}
   </li>)}</ul>;
 }
 
