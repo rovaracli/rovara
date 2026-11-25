@@ -15,6 +15,8 @@ const built = (() => { const dir = mkdtempSync(join(tmpdir(), "cloud-web-answers
 type Json = { Resources: Record<string, { Type: string; Properties: Record<string, unknown> }>; Parameters: Record<string, Record<string, unknown>> };
 const synth = (environmentName: string, productAi?: boolean): Json => Template.fromStack(new CloudWebStack(new App(), "RovaraCloudWeb", {
   environmentName, env: { region: "us-east-1" }, appDirectory: built, code: Code.fromInline("export const handler = async () => ({});"), ...(productAi === undefined ? {} : { productAi }),
+  // DEC 254zzz520: production with product AI names its kinds (the release pipeline passes "openai").
+  ...(environmentName === "production" && productAi === true ? { aiSourceKinds: "openai" } : {}),
 })).toJSON() as Json;
 const serverVariables = (t: Json): Record<string, unknown> => {
   const servers = Object.values(t.Resources).filter((r) => r.Type === "AWS::Lambda::Function" && "COMPANY_TABLE" in ((r.Properties.Environment as { Variables?: object } | undefined)?.Variables ?? {}));

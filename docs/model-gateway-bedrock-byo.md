@@ -8,6 +8,11 @@ under the company's one combined monthly cap; it writes no billable line. The de
 
 Slice 1 is agents; slice 2 (the product route, below) is the customer's tests. Learning and lesson embeddings come later (see the end).
 
+## Two uses, two rules (DEC 254zzz520, DEC 254zzz524)
+
+- **The customer's tests (the product route)** run on a company's saved role in every environment, production included. Nothing but the saved role turns it on.
+- **The company's agents on its own Bedrock (source `bedrock_byo`)** follows the install's source-kind list, the existing per-environment setting (`aiSourceKinds` in `ops/pipeline/switches.json`, `-c rovaraAiSourceKinds`, `GATEWAY_AI_SOURCE_KINDS` and `CLOUD_AI_SOURCE_KINDS`). It is "pre-switch" only on an install that names no source kinds at all (an install from before the switch, `agent-ai.ts` `PRE_SWITCH_ONLY_WITHOUT_KINDS`). An install that names its kinds needs `bedrock` among them. By the owner's DEC 254zzz524 beta and production both name `bedrock` (`PRODUCTION_SOURCE_KINDS` allows it); the beta proof comes first (RF-5-OWNER-STEPS). Where the kind is off, a saved choice of the source is refused at admission and a connected role never becomes the agents' default (they stay on Rovara's AI); Cloud lists it as not available. Where it is on, a connected role is the agents' default when the company has no saved choice and no own Anthropic key (controller R-1), and an agent may use only the models the company picked.
+
 ## The pieces
 
 | Piece | Where |
@@ -20,7 +25,7 @@ Slice 1 is agents; slice 2 (the product route, below) is the customer's tests. L
 | Product route (slice 2): path, guards, usage readers, errors, passthrough transport | `packages/model-gateway/src/product-bedrock.ts`; mounted in `product-route.ts`; bridge `product-bridge.ts` (`PRODUCT_BEDROCK_BRIDGE`) |
 | Project routes (slice 2): own role, link, setup command | `packages/cloud-server/src/product-ai-routes.ts` (`/projects/:name/product-ai/bedrock...`) |
 | Settings routes | `packages/cloud-server/src/bedrock-byo-routes.ts` (`/org/bedrock...`); `agent-ai-routes.ts` lets an admin choose it once connected |
-| Broker role and external-id key | `infra/lib/model-gateway.ts` (`-c rovaraModelGatewayBedrockByo=on`, needs product AI on; refused for production) |
+| Broker role and external-id key | `infra/lib/model-gateway.ts` (made whenever product AI is on, in every environment: no switch, DEC 254zzz520; a company's saved role is what turns it on) |
 | The customer's role template, for the docs site | `docs/bedrock/rovara-bedrock-role.json` (a test holds it equal to `bedrockRoleTemplate()`) |
 
 ## How a company connects

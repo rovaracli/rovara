@@ -154,13 +154,13 @@ describe("C-1 operator command and required release preflight", () => {
     expect(pending.calls.some(call => call[0] === "ssm")).toBe(false);
     expect(pending.stdout).not.toContain("RECORDED");
   });
-  it("discovers metadata-only Anthropic and Bedrock companies on every page for preview, apply and the zero-candidate check", () => {
+  it("discovers metadata-only companies on every page for preview, apply and the zero-candidate check; a Bedrock-only company is scanned but never a candidate (DEC 254zzz525)", () => {
     const rows = [connected(A), connected(B, "bedrock")];
     const cursor = { pk: { S: "last-metadata" }, sk: { S: "row" } };
     const pages = [empty, { value: { Items: [], LastEvaluatedKey: cursor } }, identifiers(rows)];
     const preview = run([...scope, "--dry-run"], pages, rows);
     expect(preview.status).toBe(0);
-    expect(JSON.parse(preview.stdout) as unknown).toMatchObject({ scannedCompanies: 2, count: 2, companies: [{ companyId: A, source: "anthropic_key" }, { companyId: B, source: "bedrock_byo" }] });
+    expect(JSON.parse(preview.stdout) as unknown).toMatchObject({ scannedCompanies: 2, count: 1, companies: [{ companyId: A, source: "anthropic_key" }] });
     expect(preview.offline.choices).toEqual([]);
     expect(preview.offline.calls.every(call => call.operation === "GetItem")).toBe(true);
     const scan = preview.calls[1]!;
@@ -170,10 +170,10 @@ describe("C-1 operator command and required release preflight", () => {
     expect(scan[scan.indexOf("--filter-expression") + 1]).toBe("begins_with(#pk, :prefix) AND (#sk = :learning OR #sk = :company)");
     expect(preview.calls[2]).toContain("--exclusive-start-key");
     const pending = run([...scope, "--check"], pages, rows);
-    expect(pending.status).toBe(1); expect(pending.stdout).toContain('"count":2'); expect(pending.stdout).not.toContain("PASS");
+    expect(pending.status).toBe(1); expect(pending.stdout).toContain('"count":1'); expect(pending.stdout).not.toContain("PASS");
     const applied = run([...scope, "--apply"], pages, rows);
-    expect(applied.status).toBe(0); expect(applied.stdout).toContain('"written":2');
-    expect(applied.offline.choices).toEqual(expect.arrayContaining([expect.objectContaining({ companyId: A, source: "anthropic_key" }), expect.objectContaining({ companyId: B, source: "bedrock_byo" })]));
+    expect(applied.status).toBe(0); expect(applied.stdout).toContain('"written":1');
+    expect(applied.offline.choices).toEqual([expect.objectContaining({ companyId: A, source: "anthropic_key" })]);
     const after = [...rows, ...applied.offline.choices.map(item => ({ table: "companies", item }))];
     const rerun = run([...scope, "--apply"], pages, after);
     expect(rerun.status).toBe(0); expect(rerun.stdout).toContain('"written":0');

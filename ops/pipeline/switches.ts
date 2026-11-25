@@ -9,7 +9,7 @@ export type SwitchesEnvironment = "beta" | "production";
 export const SWITCHES_ENVIRONMENTS: readonly SwitchesEnvironment[] = ["beta", "production"];
 
 /** Repeated from packages/contracts/src/model-sources.ts PRODUCTION_SOURCE_KINDS (a contract test holds the two equal). */
-export const PRODUCTION_SOURCE_KINDS: readonly string[] = ["openai"];
+export const PRODUCTION_SOURCE_KINDS: readonly string[] = ["openai", "bedrock"];
 
 export interface SwitchesRow {
   region: string;
@@ -30,8 +30,6 @@ export interface SwitchesRow {
   rovaraAiExempt: string | null;
   /** `-c rovaraModelGatewayRovaraAiDisabled`: model names, null: not passed (the gateway's default). */
   rovaraAiDisabled: string | null;
-  /** `-c rovaraModelGatewayBedrockByo`: "on" or null (never for production). */
-  bedrockByo: "on" | null;
   /** `-c rovaraModelGatewayOfferedPrices`: "on". */
   offeredPrices: "on";
   /** `-c rovaraModelGatewayProviderSecretNames`: "generated" is the default and is not passed; "fixed" keeps an old environment's fixed names. */
@@ -48,10 +46,10 @@ export interface SwitchesFile {
 
 /** Every key a row must carry (the gateway and web stacks' contexts plus the CodeUrl parameter, region and account). */
 export const ROW_KEYS: readonly string[] = [
-  "region", "deployAccount", "codeUrl", "aiSourceKinds", "productAi", "rovaraAi", "rovaraAiExempt", "rovaraAiDisabled", "bedrockByo", "offeredPrices", "providerSecretNames", "pending",
+  "region", "deployAccount", "codeUrl", "aiSourceKinds", "productAi", "rovaraAi", "rovaraAiExempt", "rovaraAiDisabled", "offeredPrices", "providerSecretNames", "pending",
 ];
 /** The keys that may be null because the context is simply not passed. */
-export const OPTIONAL_NULL_KEYS: readonly string[] = ["deployAccount", "rovaraAiExempt", "rovaraAiDisabled", "bedrockByo"];
+export const OPTIONAL_NULL_KEYS: readonly string[] = ["deployAccount", "rovaraAiExempt", "rovaraAiDisabled"];
 /** The keys that may be listed in `pending` (required, value not read yet). */
 export const PENDING_ALLOWED_KEYS: readonly string[] = ["codeUrl"];
 
@@ -66,14 +64,13 @@ export const CONTEXT_KEYS = {
   rovaraAi: "rovaraModelGatewayRovaraAi",
   rovaraAiExempt: "rovaraModelGatewayRovaraAiExempt",
   rovaraAiDisabled: "rovaraModelGatewayRovaraAiDisabled",
-  bedrockByo: "rovaraModelGatewayBedrockByo",
   offeredPrices: "rovaraModelGatewayOfferedPrices",
   providerSecretNames: "rovaraModelGatewayProviderSecretNames",
 } as const;
 
-type ContextRowKey = "aiSourceKinds" | "productAi" | "rovaraAi" | "rovaraAiExempt" | "rovaraAiDisabled" | "bedrockByo" | "offeredPrices" | "providerSecretNames";
+type ContextRowKey = "aiSourceKinds" | "productAi" | "rovaraAi" | "rovaraAiExempt" | "rovaraAiDisabled" | "offeredPrices" | "providerSecretNames";
 /** The row keys the gateway reads as context, in the order the hand command passed them. */
-export const GATEWAY_ROW_CONTEXT: readonly ContextRowKey[] = ["productAi", "rovaraAi", "rovaraAiExempt", "rovaraAiDisabled", "bedrockByo", "aiSourceKinds", "offeredPrices", "providerSecretNames"];
+export const GATEWAY_ROW_CONTEXT: readonly ContextRowKey[] = ["productAi", "rovaraAi", "rovaraAiExempt", "rovaraAiDisabled", "aiSourceKinds", "offeredPrices", "providerSecretNames"];
 /** The web stack reads fewer: the product AI switch, the source kinds and the exempt list (app.ts). */
 export const WEB_ROW_CONTEXT: readonly ContextRowKey[] = ["productAi", "aiSourceKinds", "rovaraAiExempt"];
 
@@ -118,7 +115,6 @@ export function parseSwitches(raw: string): SwitchesFile {
     if (row.productAi !== "on") throw new Error(`${where}: productAi must be "on"`);
     text(row.rovaraAi, `${where}: rovaraAi`);
     for (const key of ["rovaraAiExempt", "rovaraAiDisabled"]) if (row[key] !== null) text(row[key], `${where}: ${key}`);
-    if (row.bedrockByo !== null && row.bedrockByo !== "on") throw new Error(`${where}: bedrockByo must be "on" or null`);
     if (row.offeredPrices !== "on") throw new Error(`${where}: offeredPrices must be "on"`);
     if (row.providerSecretNames !== "generated" && row.providerSecretNames !== "fixed") throw new Error(`${where}: providerSecretNames must be "generated" or "fixed"`);
     const pending = row.pending;
@@ -136,7 +132,6 @@ export function parseSwitches(raw: string): SwitchesFile {
     // The production rule of the stacks (contracts PRODUCTION_SOURCE_KINDS): only kinds that passed their real-key check. Repeated so a bad row fails on load, not at synth.
     if (name === "production") {
       if (row.rovaraAiExempt !== null) throw new Error(`${where}: exempt companies are for named test environments, never production`);
-      if (row.bedrockByo !== null) throw new Error(`${where}: bring your own Bedrock is for named test environments, never production`);
       const kinds = (row.aiSourceKinds as string).split(",").map((kind) => kind.trim());
       if (kinds.some((kind) => !PRODUCTION_SOURCE_KINDS.includes(kind))) throw new Error(`${where}: production may switch on only these company AI sources: ${PRODUCTION_SOURCE_KINDS.join(", ")}`);
     }

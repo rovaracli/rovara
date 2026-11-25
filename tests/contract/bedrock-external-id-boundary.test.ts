@@ -10,7 +10,7 @@ import { defaultBoundaryStatements, brokerRoleName } from "@agentx/contracts";
 import { buildAgentXApp } from "../../infra/lib/app.js";
 import { BYO_CUSTOMER_EXTERNAL_ID_PATTERN, BYO_CUSTOMER_SESSION_NAME_PATTERN, byoCustomerAssumeConditions, cloudBoundaryStatements } from "../../infra/lib/cloud-boundary.js";
 import { boundaryViolations, conditionWithin, globMatch, type CfnTemplate, type StackTemplate } from "../../infra/lib/cloud-boundary-check.js";
-import { BEDROCK_BYO_CUSTOMER_ROLE_PREFIX, MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, bedrockBrokerRoleName } from "../../infra/lib/model-gateway.js";
+import { BEDROCK_BYO_CUSTOMER_ROLE_PREFIX, MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY, bedrockBrokerRoleName } from "../../infra/lib/model-gateway.js";
 import { BEDROCK_EXTERNAL_ID, bedrockExternalIdMessage } from "../../packages/model-gateway/src/bedrock-byo.js";
 
 const ENV = "staging";
@@ -20,7 +20,7 @@ type Statement = { Sid?: string; Effect: string; Action: string | string[]; Reso
 type Resource = { Type: string; Properties: Record<string, unknown> };
 
 const gateway = (): StackTemplate[] => {
-  const app = buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: ENV, agentxRegion: scope.region, [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on", [MODEL_GATEWAY_BEDROCK_BYO_CONTEXT_KEY]: "on" });
+  const app = buildAgentXApp({ [MODEL_GATEWAY_CONTEXT_KEY]: ENV, agentxRegion: scope.region, [MODEL_GATEWAY_PRODUCT_CONTEXT_KEY]: "on" });
   return ["RovaraModelGatewayImages", "RovaraModelGateway"].map((id) => {
     const stack = app.node.findChild(id) as Stack;
     return { stackName: stack.stackName, template: Template.fromStack(stack).toJSON() as CfnTemplate };

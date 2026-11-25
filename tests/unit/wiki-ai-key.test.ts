@@ -95,13 +95,15 @@ describe("the fact itself (agentAiConnected): yes, no, or cannot tell", () => {
     expect(await ask(context("some_future_source"))).toBeNull();
   });
 
-  it("an unsaved source is unknown on required connection read failures, for either billing class (R-1)", async () => {
+  it("an unsaved source is unknown only when the own-key read fails, for either billing class (R-1, DEC 254zzz525)", async () => {
     for (const exempt of [false, true]) {
-      for (const extra of [{ anthropic: "throws" }, { bedrock: "throws" }] as const) {
-        const c = context(undefined, extra);
-        c.company!.rovaraAiExempt = new Set(exempt ? [A] : []);
-        expect(await ask(c)).toBeNull();
-      }
+      const c = context(undefined, { anthropic: "throws" });
+      c.company!.rovaraAiExempt = new Set(exempt ? [A] : []);
+      expect(await ask(c)).toBeNull();
+      // DEC 254zzz525: a Bedrock role is never part of the default, so an unreadable one is irrelevant (Rovara's AI is the default).
+      const b = context(undefined, { bedrock: "throws" });
+      b.company!.rovaraAiExempt = new Set(exempt ? [A] : []);
+      expect(await ask(b)).toBe(true);
     }
     // Anthropic wins without reading an irrelevant, broken Bedrock connection; absent Bedrock is not a read failure.
     expect(await ask(context(undefined, { anthropic: true, bedrock: "throws" }))).toBe(true);

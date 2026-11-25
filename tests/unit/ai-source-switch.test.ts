@@ -18,7 +18,7 @@ import {
   agentSourceSwitchedOn as cloudSwitchedOn, parseAiSourceKinds as parseCloudKinds,
 } from "../../packages/cloud-server/src/index.js";
 import {
-  AGENT_AI_SOURCES, AGENT_SOURCE_OF_KIND as GATEWAY_SOURCE_OF_KIND, AI_SOURCE_KINDS as GATEWAY_KINDS, PRE_SWITCH_AGENT_SOURCES as GATEWAY_PRE_SWITCH,
+  AGENT_AI_SOURCES, AGENT_SOURCE_OF_KIND as GATEWAY_SOURCE_OF_KIND, resolveAgentSource, AI_SOURCE_KINDS as GATEWAY_KINDS, PRE_SWITCH_AGENT_SOURCES as GATEWAY_PRE_SWITCH,
   agentSourceSwitchedOn as gatewaySwitchedOn, parseAiSourceKinds as parseGatewayKinds, type AgentAiSource,
 } from "../../packages/model-gateway/src/agent-ai.js";
 import { GATEWAY_ENV } from "../../packages/model-gateway/src/deploy.js";
@@ -34,6 +34,7 @@ import { AGENT_CHAT_NOT_OFFERED, AGENT_SOURCE_SWITCHED_OFF } from "../../package
 import { AI_SOURCE_KINDS_CONTEXT_KEY, aiSourceKindsContext, buildAgentXApp } from "../../infra/lib/app.js";
 import { CLOUD_AI_SOURCE_KINDS_ENV, CloudWebStack } from "../../infra/lib/cloud-web.js";
 import { MODEL_GATEWAY_CONTEXT_KEY, MODEL_GATEWAY_ENV, MODEL_GATEWAY_PRODUCT_CONTEXT_KEY } from "../../infra/lib/model-gateway.js";
+import { loadSwitches } from "../../ops/pipeline/switches.js";
 import { answer, call, claims, jwk, kid, mint, now, requestBody, setup } from "./model-gateway-fixture.js";
 import { A, world } from "./product-ai-world.js";
 
@@ -69,6 +70,13 @@ describe("which saved sources a switch lets through", () => {
     it(`${name}: Rovara's AI and the pre-switch sources always; a new source only when its kind is on; anything unknown never`, () => {
       const none = new Set<string>();
       for (const source of ["rovara", "anthropic_key", "bedrock_byo"]) expect(switchedOn(source, none)).toBe(true);
+      // DEC 254zzz520: own Bedrock for the AGENTS is pre-switch only on an install that names no kinds. Once kinds are named (beta and production
+      // always are), it needs `bedrock` among them; the own Anthropic key and Rovara's AI stay exempt.
+      const production = new Set(["openai"]);
+      expect(switchedOn("bedrock_byo", production)).toBe(false);
+      expect(switchedOn("bedrock_byo", new Set(["openai", "bedrock"]))).toBe(true);
+      expect(switchedOn("anthropic_key", production)).toBe(true);
+      expect(switchedOn("rovara", production)).toBe(true);
       for (const source of ["openai_key", "openrouter_key", "custom_endpoint"]) expect(switchedOn(source, none)).toBe(false);
       expect(switchedOn("openai_key", new Set(["openai"]))).toBe(true);
       expect(switchedOn("openrouter_key", new Set(["openai"]))).toBe(false);
@@ -174,6 +182,27 @@ describe("the agent route with the switch (gateway, defence in depth)", () => {
   it("of the sources the store can hold, only the own OpenAI, OpenRouter and endpoint sources (A2, A3) wait for the switch", () => {
     expect(AGENT_AI_SOURCES.filter((source) => !gatewaySwitchedOn(source, new Set()))).toEqual(["openai_key", "openrouter_key", "custom_endpoint"]);
   });
+
+  it("DEC 254zzz520 (production-shaped): a saved own-Bedrock agent source is refused at admission when the install names kinds without `bedrock`, before anything is read, held or sent", async () => {
+    for (const switchedOn of [new Set(["openai"]), new Set(["anthropic", "openai"])]) {
+      const g = gateway("bedrock_byo", switchedOn);
+      const sink = await call(g.deps);
+      expect(sink.status).toBe(AGENT_SOURCE_SWITCHED_OFF.status);
+      expect(JSON.parse(sink.text())).toEqual({ error: { type: AGENT_SOURCE_SWITCHED_OFF.code, message: AGENT_SOURCE_SWITCHED_OFF.message } });
+      expect(g.sent).toEqual([]); expect(g.keys.reads).toEqual([]);
+    }
+    // Not the switch's refusal where it is on (the source is then refused only because this gateway built no Bedrock for it).
+    for (const switchedOn of [undefined, new Set<string>(), new Set(["bedrock"])]) {
+      const sink = await call(gateway("bedrock_byo", switchedOn).deps);
+      expect((JSON.parse(sink.text()) as { error: { message: string } }).error.message).not.toBe(AGENT_SOURCE_SWITCHED_OFF.message);
+    }
+  });
+
+  it("DEC 254zzz525: a connected company Bedrock role never becomes the agents' DEFAULT, whatever the kinds; the default stays Rovara's AI (an own Anthropic key still precedes it)", async () => {
+    const ports = (keyConnected = false) => ({ sources: { sourceFor: async () => undefined }, keys: { connected: async () => keyConnected, bedrockConnected: async () => true } });
+    expect(await resolveAgentSource(ports(), claims.iss, claims.cid)).toEqual({ source: "rovara", via: "default" });
+    expect(await resolveAgentSource(ports(true), claims.iss, claims.cid)).toEqual({ source: "anthropic_key", via: "own_key" });
+  });
 });
 
 class FakeResponse extends EventEmitter {
@@ -238,6 +267,50 @@ describe("AI for your agents with the switch (Cloud)", () => {
     expect(new Set(answers).size).toBe(1);
   });
 
+  it("DEC 254zzz525: a connected Bedrock role never becomes the agents' default, whatever the kinds; only an explicit choice does, and only where `bedrock` is on", async () => {
+    const model = "us.anthropic.claude-sonnet-5-5";
+    const connect = { bedrock: { setup: async () => undefined, command: () => { throw new Error("not used"); }, presets: () => ({}) }, bedrockCheck: async () => ({ result: "ok" as const, models: { [model]: "ready" as const } }) };
+    const body = (expectedRevision: number) => ({ requestId: crypto.randomUUID(), expectedRevision, roleArn: "arn:aws:iam::111111111111:role/RovaraBedrockInvoke-test", region: "us-west-2", models: { "claude-sonnet-5-5": model }, allowGlobal: false });
+    // DEC 254zzz524: the kinds beta names (ops/pipeline/switches.json; production joins in its own commit) are one of the cases, so the row is what is tested.
+    const rowKinds = (env: "beta" | "production") => new Set(loadSwitches().environments[env].aiSourceKinds.split(","));
+    for (const [kinds, billedDefault] of [[new Set(["openai"]), true], [undefined, false], [new Set(["bedrock"]), false], [rowKinds("beta"), false]] as const) {
+      const w = world({ company: true, ...(kinds === undefined ? {} : { aiSourceKinds: kinds }), ...connect });
+      const ada = await w.signIn("ada");
+      // The company's role connects (that is the product route's, DEC 254zzz520) ...
+      expect((await w.call(ada, "PUT", "/org/bedrock", body(0))).status).toBe(200);
+      const read = await w.call(ada, "GET", "/org/agent-ai");
+      expect(read.body).toMatchObject({ bedrockConnected: true, source: null });
+      // ... and the agents stay on Rovara's AI as the default everywhere (the role alone changes nothing); the choice is explicit, and open only where `bedrock` is on.
+      expect(read.body).toMatchObject({ effectiveSource: "rovara", sourceIsDefault: true });
+      const put = await w.call(ada, "PUT", "/org/agent-ai", { expectedVersion: 0, source: "bedrock_byo" });
+      expect(put.status).toBe(billedDefault ? 400 : 200);
+      if (billedDefault) expect(await w.companies.agentAi(A)).toBeUndefined();
+      else {
+        expect(put.body).toMatchObject({ source: "bedrock_byo" });
+        expect(Object.keys(put.body)).not.toContain("sourceIsDefault");
+      }
+    }
+  });
+
+  it("DEC 254zzz525: a bedrock_byo row the old backfill wrote is not a choice: it reads as no choice (Rovara's AI), keeps its version for the next save, and a real save replaces it", async () => {
+    const model = "us.anthropic.claude-sonnet-5-5";
+    const connect = { bedrock: { setup: async () => undefined, command: () => { throw new Error("not used"); }, presets: () => ({}) }, bedrockCheck: async () => ({ result: "ok" as const, models: { [model]: "ready" as const } }) };
+    const w = world({ company: true, aiSourceKinds: new Set(["openai", "bedrock"]), ...connect });
+    const ada = await w.signIn("ada");
+    expect((await w.call(ada, "PUT", "/org/bedrock", { requestId: crypto.randomUUID(), expectedRevision: 0, roleArn: "arn:aws:iam::111111111111:role/RovaraBedrockInvoke-test", region: "us-west-2", models: { "claude-sonnet-5-5": model }, allowGlobal: false })).status).toBe(200);
+    await w.companies.putAgentAi({ companyId: A, source: "bedrock_byo", updatedAt: "2026-11-01T00:00:00.000Z", updatedBy: "backfill:DEC254zzz279" }, 0);
+    const read = await w.call(ada, "GET", "/org/agent-ai");
+    expect(read.body).toMatchObject({ source: null, version: 1, effectiveSource: "rovara", sourceIsDefault: true, bedrockConnected: true });
+    // The order screen shows no order; its revision is the row's.
+    expect((await w.call(ada, "GET", "/org/model-sources")).body).toMatchObject({ order: [], revision: 1 });
+    // A company's own save (the same source, by a person) is then a real choice.
+    const put = await w.call(ada, "PUT", "/org/agent-ai", { expectedVersion: 1, source: "bedrock_byo" });
+    expect(put.status).toBe(200);
+    expect(put.body).toMatchObject({ source: "bedrock_byo", version: 2 });
+    expect(await w.companies.agentAi(A)).toMatchObject({ source: "bedrock_byo", version: 2 });
+    expect((await w.call(ada, "GET", "/org/agent-ai")).body).toMatchObject({ source: "bedrock_byo" });
+  });
+
   it("a kind's name, an unbuilt source, or an own-key source without its key is never choosable, switched on or not", async () => {
     const w = world({ company: true, aiSourceKinds: new Set<string>(CLOUD_KINDS) });
     const ada = await w.signIn("ada", 30);
@@ -290,14 +363,20 @@ describe(`-c ${AI_SOURCE_KINDS_CONTEXT_KEY}`, () => {
     for (const bad of BAD) expect(() => aiSourceKindsContext(bad)).toThrow(`${AI_SOURCE_KINDS_CONTEXT_KEY} must be AI source kinds`);
     expect(() => aiSourceKindsContext(1)).toThrow(AI_SOURCE_KINDS_CONTEXT_KEY);
     expect(() => gatewayEnv({ [AI_SOURCE_KINDS_CONTEXT_KEY]: "openai" })).toThrow("company AI source kinds need the product AI additions");
-    for (const kinds of ["openrouter", "openai,openrouter", "bedrock", "endpoint", "anthropic"]) {
+    for (const kinds of ["openrouter", "openai,openrouter", "bedrock,endpoint", "endpoint", "anthropic", "openai,bedrock,openrouter"]) {
       expect(() => cloudEnv({ [AI_SOURCE_KINDS_CONTEXT_KEY]: kinds }, "production"), kinds).toThrow(PRODUCTION_SOURCE_KINDS_REFUSAL);
       expect(() => gatewayEnv({ ...productOn, [AI_SOURCE_KINDS_CONTEXT_KEY]: kinds }, "production"), kinds).toThrow(PRODUCTION_SOURCE_KINDS_REFUSAL);
     }
   });
 
-  it("Rovara-cloud#308: production may switch on OpenAI, and the same value reaches both stacks", () => {
-    expect(PRODUCTION_SOURCE_KINDS).toEqual(["openai"]);
+  it("Rovara-cloud#308 + DEC 254zzz524: production may switch on OpenAI and the company's own Bedrock (agents), and the same value reaches both stacks", () => {
+    expect(PRODUCTION_SOURCE_KINDS).toEqual(["openai", "bedrock"]);
+    expect(productionSourceKindsAllowed("bedrock")).toBe(true);
+    expect(productionSourceKindsAllowed("openai,bedrock")).toBe(true);
+    expect(productionSourceKindsAllowed("bedrock,endpoint")).toBe(false);
+    const both = { [AI_SOURCE_KINDS_CONTEXT_KEY]: "openai,bedrock" };
+    expect(cloudEnv(both, "production")[CLOUD_AI_SOURCE_KINDS_ENV]).toBe("openai,bedrock");
+    expect(gatewayEnv({ ...productOn, ...both }, "production")[GATEWAY_ENV.aiSourceKinds]).toBe("openai,bedrock");
     expect(productionSourceKindsAllowed(undefined)).toBe(true);
     expect(productionSourceKindsAllowed("")).toBe(true);
     expect(productionSourceKindsAllowed("openai")).toBe(true);

@@ -26,8 +26,8 @@ export const fakeSwitches: SwitchesFile = parseSwitches(JSON.stringify({
   schema: 1,
   about: "test",
   environments: {
-    beta: { region: "us-east-1", deployAccount: "${DEPLOY_ACCOUNT}", codeUrl: "https://beta-code.example.test", aiSourceKinds: "openai", productAi: "on", rovaraAi: "on", rovaraAiExempt: null, rovaraAiDisabled: null, bedrockByo: null, offeredPrices: "on", providerSecretNames: "generated", pending: [] },
-    production: { region: "us-east-1", deployAccount: null, codeUrl: "https://prod-code.example.test", aiSourceKinds: "openai", productAi: "on", rovaraAi: "on", rovaraAiExempt: null, rovaraAiDisabled: null, bedrockByo: null, offeredPrices: "on", providerSecretNames: "generated", pending: [] },
+    beta: { region: "us-east-1", deployAccount: "${DEPLOY_ACCOUNT}", codeUrl: "https://beta-code.example.test", aiSourceKinds: "openai", productAi: "on", rovaraAi: "on", rovaraAiExempt: null, rovaraAiDisabled: null, offeredPrices: "on", providerSecretNames: "generated", pending: [] },
+    production: { region: "us-east-1", deployAccount: null, codeUrl: "https://prod-code.example.test", aiSourceKinds: "openai", productAi: "on", rovaraAi: "on", rovaraAiExempt: null, rovaraAiDisabled: null, offeredPrices: "on", providerSecretNames: "generated", pending: [] },
   },
 }));
 

@@ -41,16 +41,20 @@ export function parseSourceKindsSwitch(value: string | undefined): CustomSourceK
 }
 
 /**
- * Rovara-cloud#308: the company AI source kinds production may switch on, each only after its real-key check passed. Every other kind
- * stays for named test environments. A production deploy naming any other kind is refused before anything is made.
+ * Rovara-cloud#308: the company AI source kinds production may switch on, each only after its real-key check passed. `bedrock` (the
+ * company's own Bedrock for its agents, source `bedrock_byo`) joined by the owner's DEC 254zzz524 (beta proof first); its real-key check
+ * is the beta proof (RF-5-OWNER-STEPS). Every other kind stays for named test environments. A production deploy naming any other kind is refused before anything is made.
  */
-export const PRODUCTION_SOURCE_KINDS: readonly CustomSourceKind[] = ["openai"];
+export const PRODUCTION_SOURCE_KINDS: readonly CustomSourceKind[] = ["openai", "bedrock"];
 /** Whether production may carry this setting: every kind it names is one of PRODUCTION_SOURCE_KINDS (absent or empty: nothing named, allowed). */
 export function productionSourceKindsAllowed(value: string | undefined): boolean {
   return parseSourceKindsSwitch(value).every((kind) => PRODUCTION_SOURCE_KINDS.includes(kind));
 }
 /** The fixed refusal for a production deploy naming a kind production may not switch on. */
 export const PRODUCTION_SOURCE_KINDS_REFUSAL = `production may switch on only these company AI sources: ${PRODUCTION_SOURCE_KINDS.join(", ")}; the others are for named test environments until a Cloud release carries them`;
+
+/** DEC 254zzz520: a production deploy with product AI must name its kinds (an install naming none keeps own Bedrock for the agents on, which production may not have). */
+export const PRODUCTION_SOURCE_KINDS_NAMED_REFUSAL = `production must name its company AI sources (-c rovaraAiSourceKinds=${PRODUCTION_SOURCE_KINDS.join(",")}): an install that names none leaves the agents' own-Bedrock source on`;
 
 /** The wire formats the model proxy serves (docs/learnings/model-sources-spike.md, question 4). */
 export const TRANSPORTS_AT_LAUNCH = ["anthropic-messages", "openai-responses", "openai-completions"] as const;

@@ -9,8 +9,8 @@
 //
 // Never the key, the provider, the source or the model: the answer is a boolean or null, and callers put only that into an answer. The company is the argument; callers take it from Code's live access check,
 // never from the browser. A throw anywhere is "cannot tell" (null), never "missing".
-import { effectiveAgentSource } from "./company-store.js";
-import { anthropicKeyConnected, bedrockForDefault } from "./agent-ai-routes.js";
+import { effectiveAgentSource, explicitAgentChoice } from "./company-store.js";
+import { anthropicKeyConnected } from "./agent-ai-routes.js";
 import { bedrockConnected } from "./bedrock-byo-routes.js";
 import type { RouteContext } from "./routes.js";
 
@@ -18,14 +18,13 @@ export async function agentAiConnected(context: Pick<RouteContext, "company" | "
   const company = context.company;
   if (company === undefined) return null;
   let source: string | undefined;
-  try { source = (await company.store.agentAi(companyId))?.source; } catch { return null; }
+  try { source = explicitAgentChoice(await company.store.agentAi(companyId))?.source; } catch { return null; }
   const asked = context as RouteContext;
   // R-1: presence follows the same own-key/Bedrock/default resolution as admission and the source readout.
   // Only a confirmed absence of connections means Rovara AI; an unreadable connection is unknown.
   if (source === undefined) {
     const keyConnected = await anthropicKeyConnected(asked, companyId);
-    const bedrock = keyConnected === false ? await bedrockForDefault(asked, companyId, await bedrockConnected(asked, companyId)) : null;
-    const effective = effectiveAgentSource({ saved: undefined, exempt: false, keyConnected, bedrockConnected: bedrock });
+    const effective = effectiveAgentSource({ saved: undefined, exempt: false, keyConnected });
     return effective.source === null ? null : true;
   }
   if (source === "rovara") return true;

@@ -187,7 +187,7 @@ Cloud's side (`-c rovaraCloudApp=<env> -c rovaraModelGatewayProductAi=on`; produ
 The release pipeline carries each environment's switches from `CLOUD_PIPELINE_SWITCHES` (`infra/lib/cloud-release-pipeline.ts`):
 staging and production deploy with `-c rovaraModelGatewayProductAi=on` (production since Rovara-cloud#247); a contract test pins both.
 Company AI source kinds (`-c rovaraAiSourceKinds=<kinds>`, DEC 254t) go to both Cloud's server (`CLOUD_AI_SOURCE_KINDS`) and the
-gateway (`GATEWAY_AI_SOURCE_KINDS`), with the same value. Production may name only `openai` (Rovara-cloud#308,
+gateway (`GATEWAY_AI_SOURCE_KINDS`), with the same value. Production may name only `openai` and `bedrock` (Rovara-cloud#308, DEC 254zzz524,
 `PRODUCTION_SOURCE_KINDS` in `packages/contracts/src/model-sources.ts`); every other kind is refused there at synth. An
 environment's `CLOUD_PIPELINE_SWITCHES` entry may carry `aiSourceKinds`, so a release keeps the value its web stack was deployed
 with by hand; the gateway is deployed by hand with the same `-c`. An OpenAI key is tested with one free call to OpenAI
