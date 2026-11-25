@@ -90,6 +90,22 @@ it("the company settings page shows the company id from /me with a Copy button",
  app.close();
 });
 
+it("Company ID is the row label, and Copy uses the host's own copy when it has one", async () => {
+ const copyText = vi.fn(async () => undefined), writeText = vi.fn(async () => undefined);
+ vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+ const app = await mount("/app/admin/settings");
+ await screen.findByTestId("company-id");
+ const row = screen.getByTestId("company-id").closest("div, li")!;
+ expect(row.textContent).toContain("Company ID");
+ (app.host as { copyText?: (text: string) => Promise<void> }).copyText = copyText;
+ fireEvent.click(screen.getByRole("button", { name: "Copy the company ID" }));
+ await waitFor(() => expect(copyText).toHaveBeenCalledWith(identity.org.orgId));
+ expect(writeText).not.toHaveBeenCalled();
+ expect(await screen.findByText("Copied.")).toBeTruthy();
+ expect(screen.queryByRole("alert")).toBeNull();
+ app.close();
+});
+
 it("a failed copy says so in one sentence", async () => {
  vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText: async () => { throw new Error("denied"); } } });
  const app = await mount("/app/admin/settings");
