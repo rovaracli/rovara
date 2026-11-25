@@ -186,7 +186,8 @@ export interface Gate {
 export interface ExecResult { code: number; stdout: string; stderr: string }
 export interface ExecOptions { cwd?: string; env?: Record<string, string | undefined>; input?: string }
 export interface ChangeSetDescription { id: string; status: string; executionStatus: string; statusReason: string | null; rows: ChangeRow[] }
-export interface StackDescription { status: string; parameters: Record<string, string>; outputs: Record<string, string> }
+/** `changeSetId` is the id of the change set the stack last ran (describe-stacks ChangeSetId); `lastUpdatedTime` is its LastUpdatedTime (ISO; null for a stack never updated). */
+export interface StackDescription { status: string; parameters: Record<string, string>; outputs: Record<string, string>; changeSetId: string | null; lastUpdatedTime: string | null }
 
 /** One cdk call: it names every stack it may touch (the cdk stack id selects it, the stack name is what `--parameters` matches) and each stack's own parameters, so a parameter can never be left unprefixed. */
 export interface CdkStackSelection { stackId: string; stackName: string; parameters: Record<string, string> }

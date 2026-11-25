@@ -37,13 +37,17 @@ export interface FakeState {
   tags: Record<string, string>;
   /** branch name -> exists */
   branches: Record<string, boolean>;
-  stacks: Record<string, StackDescription & { templateSha: string }>;
+  stacks: Record<string, Omit<StackDescription, "changeSetId" | "lastUpdatedTime"> & { changeSetId?: string | null; lastUpdatedTime?: string | null; templateSha: string }>;
   /** key stack/name */
   changeSets: Record<string, ChangeSetDescription & { template: string }>;
   /** What `cdk deploy --no-execute` creates per cdk stack id: rows, or null = no changes. */
   plan: Record<string, ChangeRow[] | null>;
-  /** The status a stack ends in after execute (default UPDATE_COMPLETE). */
+  /** The status a stack ends in after execute (default UPDATE_COMPLETE, or CREATE_COMPLETE for a stack still in REVIEW_IN_PROGRESS). */
   executeOutcome: Record<string, string>;
+  /** Eventual consistency: for this many `describe-stacks` reads after an execute, CloudFormation still shows the stack as it was before (a stack name -> reads left). */
+  executeLag: Record<string, number>;
+  /** What describe-stacks showed before the execute, kept while `executeLag` counts down. */
+  lagSnapshot: Record<string, StackDescription>;
   ssm: Record<string, string>;
   files: Record<string, string>;
   dirs: Set<string>;
@@ -52,7 +56,7 @@ export interface FakeState {
   account: string;
   calls: string[];
   now: number;
-  /** Called after an execute, so a test can change the world mid-run. */
+  /** Called after an execute (the change sets are already gone, the stack already points at the executed one), so a test can change the world mid-run. */
   onExecute?: (stack: string) => void;
 }
 
@@ -69,6 +73,8 @@ export function newState(overrides: Partial<FakeState> = {}): FakeState {
     changeSets: {},
     plan: {},
     executeOutcome: {},
+    executeLag: {},
+    lagSnapshot: {},
     ssm: {},
     files: {},
     dirs: new Set(),
@@ -82,8 +88,11 @@ export function newState(overrides: Partial<FakeState> = {}): FakeState {
 }
 
 export function liveStack(state: FakeState, name: string, extra: Partial<StackDescription> = {}): void {
-  state.stacks[name] = { status: "UPDATE_COMPLETE", parameters: {}, outputs: {}, templateSha: `live-${name}`, ...extra };
+  // A stack that was last updated a day ago by some earlier change set (an id no test uses).
+  state.stacks[name] = { status: "UPDATE_COMPLETE", parameters: {}, outputs: {}, templateSha: `live-${name}`, changeSetId: `arn:aws:cloudformation:us-east-1:${FAKE_ACCOUNT}:changeSet/earlier/00000000`, lastUpdatedTime: new Date(state.now - 86_400_000).toISOString(), ...extra };
 }
+
+const describedStack = (s: FakeState["stacks"][string]): StackDescription => ({ status: s.status, parameters: s.parameters, outputs: s.outputs, changeSetId: s.changeSetId ?? null, lastUpdatedTime: s.lastUpdatedTime ?? null });
 
 const STACK_ID_PART: Record<string, "gateway" | "web" | "app"> = { RovaraModelGateway: "gateway", RovaraCloudWeb: "web", RovaraCloudApp: "app" };
 
@@ -116,23 +125,37 @@ export function makePorts(state: FakeState, env: PipelineEnv = "beta"): Ports {
       worktree: (sha40, dir) => { state.calls.push(`git worktree ${sha40.slice(0, 7)} ${dir}`); state.dirs.add(dir); return Promise.resolve(); },
     },
     cfn: {
-      describeStack: (stack) => { const s = state.stacks[stack]; return Promise.resolve(s === undefined ? null : { status: s.status, parameters: s.parameters, outputs: s.outputs }); },
+      describeStack: (stack) => {
+        const s = state.stacks[stack];
+        if (s === undefined) return Promise.resolve(null);
+        const lag = state.executeLag[stack] ?? 0;
+        if (lag > 0 && state.lagSnapshot[stack] !== undefined) { state.executeLag[stack] = lag - 1; return Promise.resolve(state.lagSnapshot[stack]); }
+        return Promise.resolve(describedStack(s));
+      },
       describeChangeSet: (stack, name) => { const c = state.changeSets[`${stack}/${name}`]; return Promise.resolve(c === undefined ? null : { id: c.id, status: c.status, executionStatus: c.executionStatus, statusReason: c.statusReason, rows: c.rows }); },
       templateSha256: (stack, name) => Promise.resolve(state.changeSets[`${stack}/${name}`]?.template ?? "missing"),
       liveTemplateSha256: (stack) => Promise.resolve(state.stacks[stack]?.templateSha ?? null),
       executeChangeSet: (stack, name) => {
         state.calls.push(`cfn execute ${stack} ${name}`);
         const c = state.changeSets[`${stack}/${name}`];
-        if (c === undefined) return Promise.reject(new Error("no such change set"));
-        c.executionStatus = "EXECUTE_COMPLETE";
+        // What CloudFormation answers for a change set that is not there, or is not executable.
+        if (c === undefined) return Promise.reject(new Error("ChangeSetNotFound: no such change set"));
+        if (c.status !== "CREATE_COMPLETE" || c.executionStatus !== "AVAILABLE") return Promise.reject(new Error(`InvalidChangeSetStatus: ${c.status}/${c.executionStatus}`));
         const s = state.stacks[stack];
-        if (s !== undefined) s.status = state.executeOutcome[stack] ?? "UPDATE_COMPLETE";
+        if (s !== undefined && (state.executeLag[stack] ?? 0) > 0) state.lagSnapshot[stack] = describedStack(s);
+        // As real CloudFormation does: executing a change set deletes ALL the change sets of that stack (this one too), and the stack remembers the id of the one it ran.
+        for (const key of Object.keys(state.changeSets)) if (key.startsWith(`${stack}/`)) delete state.changeSets[key];
+        if (s !== undefined) {
+          s.status = state.executeOutcome[stack] ?? (s.status === "REVIEW_IN_PROGRESS" ? "CREATE_COMPLETE" : "UPDATE_COMPLETE");
+          s.changeSetId = c.id;
+          if (s.status.startsWith("UPDATE_")) s.lastUpdatedTime = new Date(state.now).toISOString(); // a created stack has no LastUpdatedTime
+        }
         state.onExecute?.(stack);
         return Promise.resolve();
       },
       deleteChangeSet: (stack, name) => { state.calls.push(`cfn delete ${stack} ${name}`); delete state.changeSets[`${stack}/${name}`]; return Promise.resolve(); },
       listChangeSetNames: (stack) => Promise.resolve(Object.keys(state.changeSets).filter((k) => k.startsWith(`${stack}/`)).map((k) => k.slice(stack.length + 1))),
-      waitSettled: (stack) => Promise.resolve(state.stacks[stack]?.status ?? "ABSENT"),
+      waitSettled: (stack) => ports.cfn.describeStack(stack).then((d) => d?.status ?? "ABSENT"),
     },
     cdk: {
       deployNoExecute: (a) => {
@@ -144,6 +167,8 @@ export function makePorts(state: FakeState, env: PipelineEnv = "beta"): Ports {
           const rows = state.plan[id];
           if (rows === undefined) continue; // cdk "made" nothing (a bug): the change set is absent
           csCounter += 1;
+          // As real CloudFormation does: a change set on a stack that does not exist yet makes the stack a REVIEW_IN_PROGRESS shell that holds it.
+          if (state.stacks[stack] === undefined) state.stacks[stack] = { status: "REVIEW_IN_PROGRESS", parameters: {}, outputs: {}, templateSha: `shell-${stack}` };
           if (rows === null) {
             // What CloudFormation answers for an empty change set (cdk --no-execute leaves it).
             state.changeSets[`${stack}/${a.changeSetName}`] = { id: `empty-${csCounter}`, status: "FAILED", executionStatus: "UNAVAILABLE", statusReason: "The submitted information didn't contain changes. Submit different information to create a change set.", rows: [], template: "" };

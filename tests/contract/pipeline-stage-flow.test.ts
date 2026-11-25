@@ -97,7 +97,70 @@ describe("pipeline stage CLI: beta, step by step", () => {
     const lastGood = parseLastGood(run.state.ssm["/rovara-cloud/beta/release/last-good"]!);
     expect(lastGood).toMatchObject({ env: "beta", cloud: { tag: "v0.13.10", sha: sha("4") }, gateway: { digest: DIGEST_A }, proofGates: ["p1"], previous: { cloudTag: "v0.13.1", cloudSha: sha("1"), gatewayDigest: DIGEST_B }, code: { sha: sha("c") } });
     expect(m.stages.beta!.gates.map((g) => `${g.phase}/${g.name}`).sort()).toEqual(["change-sets/change-set-integrity", "change-sets/change-set-integrity", "gateway-live/g2", "proof/p1"]);
-    expect(run.state.calls.filter((c) => c.startsWith("cfn delete")).length).toBeGreaterThan(0);
+    // CloudFormation deleted every executed stack's change sets itself, so nothing is left to tidy (and nothing is deleted needlessly).
+    expect(Object.keys(run.state.changeSets)).toEqual([]);
+    expect(run.state.calls.filter((c) => c.startsWith("cfn delete"))).toEqual([]);
+  });
+
+  describe("a failed step tidies every change set this run created (the beta adoption incident left the web change set behind)", () => {
+    const names = (state: FakeState): string[] => Object.keys(state.changeSets).sort();
+    const failOnGateway: Gate = { name: "change-set-integrity", phases: ["change-sets"], run: (input) => Promise.resolve(input.changeSets.some((cs) => cs.part === "gateway") ? { result: "fail", failures: ["no"] } : { result: "pass" }) };
+    const toGateway = async (run: Run): Promise<void> => { for (const name of ["preflight", "image"] as StepName[]) await step(run, "beta", name); };
+    const other = (state: FakeState, stack: "web" | "app" | "gateway"): string => {
+      const key = `${stackFor("beta", stack)}/rovara-pipeline-other0000`;
+      state.changeSets[key] = { id: "other", status: "CREATE_COMPLETE", executionStatus: "AVAILABLE", statusReason: null, rows: [], template: "" };
+      return key;
+    };
+
+    it("INCIDENT SHAPE: the gateway change set executes, the stack check then fails, and the web and app change sets previewed in preflight are deleted, not left behind", async () => {
+      const run = newRun(betaWorld());
+      await toGateway(run);
+      expect(names(run.state)).toEqual([`${stackFor("beta", "app")}/${NAME}`, `${stackFor("beta", "web")}/${NAME}`]);
+      const stranger = other(run.state, "web"); // another execution's change set: never touched
+      run.state.onExecute = (stack) => { run.state.stacks[stack]!.changeSetId = "arn:aws:cloudformation:us-east-1:x:changeSet/someone-else/1"; };
+      await failsWith(step(run, "beta", "gateway"), "CHANGE_SET_MISMATCH");
+      expect(names(run.state)).toEqual([stranger]);
+      expect(run.state.calls.filter((c) => c.startsWith("cfn delete")).sort()).toEqual([`cfn delete ${stackFor("beta", "app")} ${NAME}`, `cfn delete ${stackFor("beta", "web")} ${NAME}`]);
+    });
+
+    it("a gateway step refused by its gates deletes the gateway change set too (nothing of this run is left), and never another execution's", async () => {
+      const run = newRun(betaWorld(), { gates: [failOnGateway] });
+      await toGateway(run);
+      const stranger = other(run.state, "gateway");
+      await failsWith(step(run, "beta", "gateway"), "GATE_FAILED");
+      expect(names(run.state)).toEqual([stranger]);
+      expect(executes(run.state)).toEqual([]);
+    });
+
+    it("a later step failing after the gateway executed (gateway-check) deletes the web and app change sets", async () => {
+      const run = newRun(betaWorld(), { gates: [integrity, { name: "g2", phases: ["gateway-live"], run: () => Promise.resolve({ result: "fail", failures: ["not settled"] }) }], required: { preflight: [], "change-sets": ["change-set-integrity"], "gateway-live": ["g2"], proof: [] } });
+      await toGateway(run);
+      await step(run, "beta", "gateway");
+      expect(names(run.state)).toEqual([`${stackFor("beta", "app")}/${NAME}`, `${stackFor("beta", "web")}/${NAME}`]); // the gateway's is gone: it executed
+      await failsWith(step(run, "beta", "gateway-check"), "GATE_FAILED");
+      expect(names(run.state)).toEqual([]);
+    });
+
+    it("never deletes a change set that is executing or has executed (EXECUTE_*), even under this run's name", async () => {
+      const run = newRun(betaWorld());
+      await toGateway(run);
+      run.state.changeSets[`${stackFor("beta", "app")}/${NAME}`]!.executionStatus = "EXECUTE_IN_PROGRESS";
+      run.state.onExecute = (stack) => { run.state.stacks[stack]!.changeSetId = "arn:aws:cloudformation:us-east-1:x:changeSet/someone-else/1"; };
+      await failsWith(step(run, "beta", "gateway"), "CHANGE_SET_MISMATCH");
+      expect(names(run.state)).toEqual([`${stackFor("beta", "app")}/${NAME}`]);
+      expect(run.state.calls.filter((c) => c.startsWith("cfn delete"))).toEqual([`cfn delete ${stackFor("beta", "web")} ${NAME}`]);
+    });
+
+    it("a failed tidy never hides the step's own error", async () => {
+      const run = newRun(betaWorld());
+      await toGateway(run);
+      run.state.onExecute = (stack) => { run.state.stacks[stack]!.changeSetId = "arn:aws:cloudformation:us-east-1:x:changeSet/someone-else/1"; };
+      const ctx = makeCtx(run.state, "beta", "gateway", { inputs: { manifestPath: "/in/manifest.json" }, gates: run.gates, required: run.required });
+      run.state.files["/in/manifest.json"] = run.state.files["out/manifest.json"]!;
+      ctx.ports.cfn.deleteChangeSet = () => Promise.reject(new Error("throttled"));
+      await failsWith(runStep(ctx, gatewayStep), "CHANGE_SET_MISMATCH");
+      expect(names(run.state)).toHaveLength(2); // the delete failed, the run says so in its log and the step's error is the one thrown
+    });
   });
 
   it("records the previous last-good in the next one", async () => {
@@ -192,7 +255,7 @@ describe("pipeline stage CLI: beta, step by step", () => {
     expect(run.state.calls.filter((c) => c.startsWith("cfn delete"))).toEqual([`cfn delete ${stackFor("beta", "app")} ${NAME}`, `cfn delete ${stackFor("beta", "web")} ${NAME}`]);
   });
 
-  it("a cdk failure in the gateway step (the incident: cdk refused a parameter) deletes the change sets this call made and nothing else, then fails the step", async () => {
+  it("a cdk failure in the gateway step (the incident: cdk refused a parameter) deletes the change sets this call made, then every other un-executed change set of this run, then fails the step", async () => {
     const run = newRun(betaWorld());
     await step(run, "beta", "preflight");
     await step(run, "beta", "image");
@@ -202,8 +265,9 @@ describe("pipeline stage CLI: beta, step by step", () => {
     // cdk creates the change set, then dies (a second stack of the call rejected a parameter): the step must clean up what exists
     run.steps = { ...run.steps, gateway: (c, st) => gatewayStep({ ...c, ports: { ...c.ports, cdk: { deployNoExecute: async (a) => { await real.cdk.deployNoExecute(a); throw new StageError("FAILED", "cdk deploy --no-execute failed (exit 1): Parameters: [ImageDigest] do not exist in the template"); } } } }, st) };
     await failsWith(step(run, "beta", "gateway"), "FAILED", /do not exist in the template/);
-    expect(Object.keys(run.state.changeSets).sort()).toEqual([`${stackFor("beta", "app")}/${NAME}`, `${stackFor("beta", "web")}/${NAME}`]); // preflight's stay: they belong to the later web-app step of this execution
-    expect(run.state.calls.slice(original).filter((c) => c.startsWith("cfn delete"))).toEqual([`cfn delete ${gatewayStack} ${NAME}`]);
+    // The step first deletes the change sets of the call that died (the gateway's); the run then deletes everything else of this run that nothing will execute now (preflight's web and app).
+    expect(Object.keys(run.state.changeSets)).toEqual([]);
+    expect(run.state.calls.slice(original).filter((c) => c.startsWith("cfn delete")).sort()).toEqual([`cfn delete ${gatewayStack} ${NAME}`, `cfn delete ${stackFor("beta", "app")} ${NAME}`, `cfn delete ${stackFor("beta", "web")} ${NAME}`].sort());
     expect(executes(run.state)).toEqual([]);
   });
 

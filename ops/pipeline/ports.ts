@@ -39,6 +39,12 @@ const stringMap = (list: unknown, key: string, value: string): Record<string, st
   return out;
 };
 
+/** The CDK bootstrap deploy role's credentials as environment variables (the role every CloudFormation call of the stage CLI runs as, 4.2). Exported so the stage-CLI rehearsal assumes the very same role. */
+export async function assumeDeployRole(aws: Ports["aws"], config: PipelineConfig, region: string, exec8: string, account: string): Promise<Record<string, string>> {
+  const answer = (await aws.json(["sts", "assume-role", "--role-arn", `arn:aws:iam::${account}:role/cdk-${config.bootstrapQualifier}-deploy-role-${account}-${region}`, "--role-session-name", `rovara-pipeline-${exec8}`])) as { Credentials: { AccessKeyId: string; SecretAccessKey: string; SessionToken: string } };
+  return { AWS_ACCESS_KEY_ID: answer.Credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: answer.Credentials.SecretAccessKey, AWS_SESSION_TOKEN: answer.Credentials.SessionToken };
+}
+
 export function createRealPorts(args: RealPortsArgs): Ports {
   const { config, region, profile } = args;
   const baseEnv: Record<string, string | undefined> = { AWS_REGION: region, AWS_DEFAULT_REGION: region, AWS_PAGER: "", ...(profile === null ? {} : { AWS_PROFILE: profile }) };
@@ -65,9 +71,7 @@ export function createRealPorts(args: RealPortsArgs): Ports {
   let creds: { env: Record<string, string>; at: number } | null = null;
   const deployEnv = async (): Promise<Record<string, string>> => {
     if (creds !== null && Date.now() - creds.at < 40 * 60_000) return creds.env;
-    const acct = await sts.account();
-    const answer = (await aws.json(["sts", "assume-role", "--role-arn", `arn:aws:iam::${acct}:role/cdk-${config.bootstrapQualifier}-deploy-role-${acct}-${region}`, "--role-session-name", `rovara-pipeline-${args.exec8}`])) as { Credentials: { AccessKeyId: string; SecretAccessKey: string; SessionToken: string } };
-    creds = { at: Date.now(), env: { AWS_ACCESS_KEY_ID: answer.Credentials.AccessKeyId, AWS_SECRET_ACCESS_KEY: answer.Credentials.SecretAccessKey, AWS_SESSION_TOKEN: answer.Credentials.SessionToken } };
+    creds = { at: Date.now(), env: await assumeDeployRole(aws, config, region, args.exec8, await sts.account()) };
     return creds.env;
   };
   // CloudFormation, always as the deploy role: no profile, so the CLI uses the credential variables above.
@@ -87,7 +91,10 @@ export function createRealPorts(args: RealPortsArgs): Ports {
         const doc = (await cfnJson(["describe-stacks", "--stack-name", stack])) as { Stacks?: Array<Record<string, unknown>> };
         const s = doc.Stacks?.[0];
         if (s === undefined) return null;
-        return { status: String(s.StackStatus), parameters: stringMap(s.Parameters, "ParameterKey", "ParameterValue"), outputs: stringMap(s.Outputs, "OutputKey", "OutputValue") };
+        return {
+          status: String(s.StackStatus), parameters: stringMap(s.Parameters, "ParameterKey", "ParameterValue"), outputs: stringMap(s.Outputs, "OutputKey", "OutputValue"),
+          changeSetId: typeof s.ChangeSetId === "string" ? s.ChangeSetId : null, lastUpdatedTime: typeof s.LastUpdatedTime === "string" ? s.LastUpdatedTime : null,
+        };
       } catch (error) {
         if (notThere(error, /does not exist/u)) return null;
         throw error;
@@ -120,7 +127,13 @@ export function createRealPorts(args: RealPortsArgs): Ports {
       }
     },
     async executeChangeSet(stack, name) { await cfnJson(["execute-change-set", "--stack-name", stack, "--change-set-name", name]); },
-    async deleteChangeSet(stack, name) { await cfnJson(["delete-change-set", "--stack-name", stack, "--change-set-name", name]); },
+    async deleteChangeSet(stack, name) {
+      // CloudFormation deletes a stack's change sets itself once one executes: deleting one that is already gone (or whose stack is) is done, not a failure.
+      try { await cfnJson(["delete-change-set", "--stack-name", stack, "--change-set-name", name]); } catch (error) {
+        if (notThere(error, /ChangeSetNotFound|Stack \[[^\]]*\] does not exist|Stack with id [^ ]+ does not exist/u)) return;
+        throw error;
+      }
+    },
     async listChangeSetNames(stack) {
       const doc = (await cfnJson(["list-change-sets", "--stack-name", stack])) as { Summaries?: Array<{ ChangeSetName?: string }> };
       return (doc.Summaries ?? []).map((s) => s.ChangeSetName).filter((n): n is string => typeof n === "string");
