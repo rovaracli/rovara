@@ -82,12 +82,35 @@ it("asks Rovara to propose the setup, says it is reading, and posts only a reque
 it("shows each suggestion with where it came from and whether the source was checked, and ticks only a verified suggestion for a setting the project has no value for", async () => {
   const f = setup(h(OnboardScreen), { draft: READY });
   await screen.findByText("npm ci");
-  expect(screen.getByText("package.json:4", { exact: false })).toBeTruthy();
+  // The file only, never a line: an older Code may still send one (the fixtures below carry one) and it is not shown.
+  expect(screen.getByText("From web/package.json")).toBeTruthy();
+  expect(screen.queryByText(/package\.json:4/)).toBeNull();
+  expect(screen.queryByText(/:\d+$/)).toBeNull();
   expect(screen.getByText("\"ci\": \"npm ci\"")).toBeTruthy();
   expect(screen.getAllByText("Checked against the file").length).toBeGreaterThan(0);
   expect(screen.getByText("Rovara could not find this in the file")).toBeTruthy();
   expect(screen.getByRole("checkbox", { name: /^setup: In web:/ })).toHaveProperty("checked", true);
   expect(screen.getByRole("checkbox", { name: /^tests: In web:/ })).toHaveProperty("checked", false);
+  f.close();
+});
+
+it("a citation from a newer Code has no line at all: it reads \"From <file>\" with the quote, and nothing else", async () => {
+  const noLine = (path: string, quote: string) => ({ kind: "file", repo: "web", path, commit: COMMIT, quote });
+  const proposal = { ...PROPOSAL, setup: [item("setup-web", { repo: "web", commands: ["npm ci"] }, [noLine("README.md", "Install with npm ci.")])] };
+  const f = setup(h(OnboardScreen), { draft: { ...READY, proposal } });
+  await screen.findByText("npm ci");
+  expect(screen.getAllByText("From web/README.md").length).toBeGreaterThan(0);
+  expect(screen.getByText("Install with npm ci.")).toBeTruthy();
+  f.close();
+});
+
+it("a project with two repositories shows which repository each file is in, so two README.md citations differ", async () => {
+  const place = (repo: string) => ({ kind: "file", repo, path: "README.md", commit: COMMIT, quote: `Install ${repo} with npm ci.` });
+  const proposal = { ...PROPOSAL, setup: [item("setup-web", { repo: "web", commands: ["npm ci"] }, [place("web"), place("api")])] };
+  const f = setup(h(OnboardScreen), { draft: { ...READY, proposal } });
+  await screen.findByText("npm ci");
+  expect(screen.getAllByText("From web/README.md").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("From api/README.md").length).toBeGreaterThan(0);
   f.close();
 });
 
