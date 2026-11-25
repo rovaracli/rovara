@@ -135,12 +135,14 @@ export function PeoplePanel({ id, shareRequest = 0 }: { id: string; /** D8: goes
    <ul className="rv-people-list" aria-label="People on this task">{view.people.map(person => {
     const label = person.method !== undefined && Object.hasOwn(SESSION_PEOPLE_METHOD_LABELS, person.method) ? SESSION_PEOPLE_METHOD_LABELS[person.method as keyof typeof SESSION_PEOPLE_METHOD_LABELS] : undefined;
     const roleWord = Object.hasOwn(ROLE_WORDS, person.role) ? ROLE_WORDS[person.role as keyof typeof ROLE_WORDS] : "Access unavailable";
+    // T2: a role this page does not know ("unknown", a word a newer Code added) shows no role to change and no Remove: only the three roles a person can hold, and not "denied", are acted on.
+    const changeable = person.role === "owner" || person.role === "commenter" || person.role === "viewer";
     return <li key={person.personId} data-testid="people-row">
      <span className="rv-people-name"><span className="rv-people-who"><VisibleText text={person.name} /></span>{person.you && <span className="rv-muted"> (you)</span>}{label !== undefined && <span className="rv-muted"> · {label}</span>}</span>
-     {canManage && person.role !== "denied"
+     {canManage && changeable
       ? <Select label={"Role for " + person.name} value={Object.hasOwn(ROLE_WORDS, person.role) ? person.role : ""} disabled={locked} options={ROLE_OPTIONS} onValueChange={value => { if (value !== person.role && (value === "owner" || value === "commenter" || value === "viewer")) change(person.personId, value); }} />
       : <span className={page === undefined ? "rv-muted" : "rv-people-role"} data-testid="people-role">{roleWord}</span>}
-     {canManage && person.role !== "denied" && <Button variant={page === undefined ? "quiet" : "secondary"} disabled={locked} aria-label={"Remove " + person.name} onClick={() => { change(person.personId, "denied"); }}>Remove</Button>}
+     {canManage && changeable && <Button variant={page === undefined ? "quiet" : "secondary"} disabled={locked} aria-label={"Remove " + person.name} onClick={() => { change(person.personId, "denied"); }}>Remove</Button>}
     </li>;
    })}{(data?.sharedWith ?? []).map(shared => <li key={"shared-" + shared.developerId} data-testid="people-row">
      <span className="rv-people-name"><span className="rv-people-who"><VisibleText text={shared.name} /></span></span>
