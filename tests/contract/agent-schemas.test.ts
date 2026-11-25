@@ -207,6 +207,17 @@ describe("task action refusal codes", () => {
       expect(errorStatus(AgentXErrorCodeSchema.parse(code)), code).toBe(status);
     }
   });
+
+  it("accepts LINEAR_TEAM_TAKEN (Code train 44) and ROUTE_NOT_SERVED (Code train 54), with Code's statuses (issue #346: the deployed-drift gate refused Code dd7fbb02c without them)", () => {
+    const expected: Record<string, number> = {
+      LINEAR_TEAM_TAKEN: 409,
+      ROUTE_NOT_SERVED: 404,
+    };
+    for (const [code, status] of Object.entries(expected)) {
+      expect(AgentXErrorCodeSchema.safeParse(code).success, code).toBe(true);
+      expect(errorStatus(AgentXErrorCodeSchema.parse(code)), code).toBe(status);
+    }
+  });
 });
 
 describe("spend placeholder constants", () => {
