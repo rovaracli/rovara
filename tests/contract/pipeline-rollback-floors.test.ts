@@ -61,8 +61,22 @@ describe("rollback floors file: tolerant read", () => {
     expect(floors.floors.every((f) => f.sha !== null && f.reason.length > 20)).toBe(true);
     expect(floors.floors.find((f) => f.group === "web")!.sha!.startsWith("fbe943520")).toBe(true);
     expect(floors.belowFloorDigests.map((d) => d.digest.slice(0, 15))).toEqual(["sha256:68af1b9e"]);
-    expect(floors.pending).toMatchObject([{ tag: "v0.13.19", when: like(/train 27/u) }]);
+    expect(floors.pending[0]).toMatchObject({ tag: "v0.13.19", when: like(/train 27/u) });
     expect(floors.ignored).toEqual([]);
+  });
+
+  it("holds a pending floor for the stored Bedrock word no_answer in the web, gateway and Code groups (older readers fail the whole company document), written down and not yet enforced", () => {
+    const floors = parseFloors(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8"));
+    const rows = floors.pending.filter((row) => row.tag === "BEDROCK-BYO-CHECK-FIXES");
+    expect(rows.map((row) => row.group).sort()).toEqual(["code", "gateway", "web"]);
+    for (const row of rows) {
+      expect(row.reason).toMatch(/no_answer/u);
+      expect(row.reason).toMatch(/whole company product-AI document/u);
+      expect(row.when).toMatch(/merged: set sha/u);
+      expect(row.sha).toBeNull();
+    }
+    // Not enforced yet: no floor of the three groups names this change until its merge sha is known.
+    expect(floors.floors.every((floor) => !/no_answer/u.test(floor.reason))).toBe(true);
   });
 });
 

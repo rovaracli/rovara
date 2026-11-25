@@ -54,6 +54,8 @@ export interface ProductAiStore {
   /** A project uses a company source (a link, never a copy; product-keys.ts link). */
   link(change: Change & { sourceId: string; companySourceId: string }): Promise<ProductAiView>;
   remove(change: Change & { sourceId: string }): Promise<ProductAiView>;
+  /** Runs the Bedrock connection test again for the saved connection and records the result (product-keys.ts recheckBedrock). */
+  recheckBedrock(change: Change & { sourceId: string }): Promise<ProductAiView>;
   /** Restores a removed source inside its 7-day window (product-keys.ts recover). */
   recover(change: Change & { sourceId: string }): Promise<ProductAiView>;
   setEvalBudget(change: Change & { budget: { calls: number; costMicros: number } }): Promise<ProductAiView>;
