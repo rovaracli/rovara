@@ -107,34 +107,44 @@ export function cutCallMicros(input: FailedCallInput & { /** The route is Bedroc
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-const REASONING_FAMILY: Record<string, RegExp> = { openai: /^(?:o\d|gpt-5|gpt-oss)/u, gemini: /gemini-(?:2\.5|[3-9])/u };
 /**
- * Can this request make the model bill reasoning tokens that are never streamed? Decided by CODE from the request the provider receives
- * (its reasoning / thinking parameters) and the model's identity, never from answer text. A cut call that may have reasoned and whose
- * complete usage was not read cannot be priced: what the provider billed for hidden reasoning is unknowable, so the hold stands.
- * Unknown (an unreadable body, an unknown provider, a model that is not Claude on Bedrock): true.
- *   anthropic / Claude: only an enabled or adaptive `thinking`.   OpenRouter: unless the request turns reasoning off (`reasoning.enabled: false`).
- *   OpenAI-shaped: a `reasoning_effort` other than "none", else the reasoning model families (o-series, gpt-5, gpt-oss).
- *   Gemini: `thinkingConfig` (a budget of 0 turns thinking off, except on Pro), else gemini 2.5 and later.
+ * The ALLOW-LIST of models KNOWN not to reason ("safe to estimate"). Everything else (a new, renamed or unknown model, a `*-latest` alias,
+ * gpt-5, o-series, codex, gemini 2.5 and later) is treated as able to reason: the table fails safe, never under-counts.
+ */
+const NON_REASONING = {
+  claude: /^(?:claude-|(?:[a-z]{2}\.)?anthropic\.claude-)/u,
+  openai: /^(?:gpt-3\.5-turbo|gpt-4|gpt-4-turbo|gpt-4\.1|gpt-4\.1-mini|gpt-4\.1-nano|gpt-4\.5|gpt-4o|gpt-4o-mini|chatgpt-4o-latest)(?:-(?:preview|\d{4}(?:-\d{2}-\d{2})?|\d+k))?$/u,
+  gemini: /^gemini-(?:1\.0-pro|1\.5-(?:pro|flash|flash-8b)|2\.0-(?:flash|flash-lite))(?:-(?:\d{3}|\d{2}-\d{2}|exp(?:-\d{2}-\d{2})?))?$/u,
+  /** Gemini models whose thinking a budget of 0 turns off (never Pro, never an unlisted or *-latest name). */
+  geminiOffable: /^gemini-2\.5-flash(?:-lite)?(?:-|$)/u,
+} as const;
+/**
+ * Can this request make the model bill reasoning tokens that are never streamed? Decided by CODE from the model's identity and the request
+ * the provider receives (its reasoning / thinking parameters), never from answer text. A cut call that may have reasoned and whose complete
+ * usage was not read cannot be priced: what the provider billed for hidden reasoning is unknowable, so the hold stands.
+ * FAILS SAFE: only a model on the allow-list above is "does not reason"; an unlisted model, an unreadable body or an unknown provider is true.
+ * A request-side reasoning signal forces true even for a listed model (an enabled or adaptive `thinking`, a `reasoning_effort` other than
+ * "none", a Gemini `thinkingConfig`); the one explicit off switch is Gemini 2.5 Flash / Flash-Lite with `thinkingBudget: 0`, and OpenRouter's
+ * `reasoning.enabled: false` (set by the gateway from the reviewed tariff row, qualified live).
  */
 export function mayReasonUnseen(provider: string, model: string, bytes: Uint8Array): boolean {
   let body: unknown;
   try { body = JSON.parse(Buffer.from(bytes).toString("utf8")); } catch { return true; }
   if (!isRecord(body)) return true;
-  const name = model.toLowerCase();
+  const name = model.toLowerCase().replace(/^models\//u, "");
   const thinkingOn = (value: unknown): boolean => isRecord(value) ? value.type !== "disabled" : value !== undefined;
-  const effort = body.reasoning_effort;
+  const effortOn = body.reasoning_effort !== undefined && body.reasoning_effort !== "none";
   switch (provider) {
-    case "anthropic": return thinkingOn(body.thinking);
-    case "bedrock": return !/claude/u.test(name) || thinkingOn(body.thinking) || (isRecord(body.additionalModelRequestFields) && thinkingOn(body.additionalModelRequestFields.thinking));
+    case "anthropic": return !NON_REASONING.claude.test(name) || thinkingOn(body.thinking);
+    case "bedrock": return !NON_REASONING.claude.test(name) || thinkingOn(body.thinking) || (isRecord(body.additionalModelRequestFields) && thinkingOn(body.additionalModelRequestFields.thinking));
     case "openrouter": return !(isRecord(body.reasoning) && body.reasoning.enabled === false);
-    case "openai": return (effort !== undefined && effort !== "none") || (effort === undefined && REASONING_FAMILY.openai!.test(name));
+    case "openai": return effortOn || !NON_REASONING.openai.test(name);
     case "gemini": case "vertex": {
-      if (effort !== undefined) return effort !== "none";
+      if (effortOn) return true;
       const config = isRecord(body.generationConfig) ? body.generationConfig : undefined;
       const thinking = config?.thinkingConfig;
-      if (isRecord(thinking)) return !(thinking.thinkingBudget === 0 && !name.includes("pro"));
-      return REASONING_FAMILY.gemini!.test(name);
+      if (thinking !== undefined) return !(isRecord(thinking) && thinking.thinkingBudget === 0 && NON_REASONING.geminiOffable.test(name));
+      return !NON_REASONING.gemini.test(name);
     }
     default: return true;
   }

@@ -255,7 +255,7 @@ describe("a cut call on a route whose reader does not count progress charges the
     const reserve = vi.spyOn(g.productMeter, "reserve");
     return { deps: g.deps, url: streamPath, body: { ...geminiBody, generationConfig: { maxOutputTokens: 8_192, thinkingConfig: { thinkingBudget: thinking ? 1_024 : 0 } } }, token: mint(), read: () => g.productMeter.read(productScope), held: () => reserve.mock.calls[0]![0].estimateMicros };
   };
-  const runLearning = (chunks: number, reasoningModel = false, effort?: string) => cutAfter(chunks, openAiChunk, async (transport) => {
+  const runLearning = (chunks: number, model = "gpt-4.1-mini", effort?: string) => cutAfter(chunks, openAiChunk, async (transport) => {
     const keys = { connected: async () => true, keyFor: async () => "openai-key", vertexTarget: async () => undefined, refused: async () => undefined };
     const agentMeter = new LearningMeter(() => now);
     const learningMeter = new LearningMeter(() => now, undefined, undefined, { combineCompanyWith: agentMeter });
@@ -263,7 +263,6 @@ describe("a cut call on a route whose reader does not count progress charges the
     const learning = createLearningRoutes({ keys, meter: learningMeter, companyCaps, lessons: { isOn: async () => true }, modelLimits: { maxOutputTokens: () => 8192 }, transport, transports: { openai: transport } });
     const g = setup({ meter: agentMeter, caps: companyCaps, keys: { keyFor: async () => { throw new Error("install key must not be read"); } }, learning });
     const reserve = vi.spyOn(learningMeter, "reserve");
-    const model = reasoningModel ? "gpt-5-mini" : "gpt-4.1-mini";
     return { deps: g.deps, url: "/v1/learning/openai/chat/completions", body: { model, messages: [{ role: "user", content: "reflect" }], max_completion_tokens: 4_096, stream: true, ...(effort === undefined ? {} : { reasoning_effort: effort }) }, token: mint({ stp: LEARNING_STEP, mdl: [model] }), read: () => learningMeter.read({ iss: claims.iss, cid: claims.cid, pid: claims.pid, tid: claims.tid }), held: () => reserve.mock.calls[0]![0].estimateMicros };
   });
   const bytesOf = (n: number, chunk: (i: number) => Buffer) => Array.from({ length: n }, (_, i) => chunk(i).length).reduce((x, y) => x + y, 0);
@@ -281,6 +280,12 @@ describe("a cut call on a route whose reader does not count progress charges the
       expect(out.micros).toBe(out.held); expect(out.estimated).toBe(out.held);
     }
   });
+  it("product Gemini *-latest aliases are not on the allow-list: the hold, even with thinkingBudget 0", async () => {
+    for (const model of ["gemini-flash-latest", "gemini-pro-latest"]) {
+      const out = await cutAfter(10, geminiChunk, async (t) => { const w = await gemini(t)(); return { ...w, url: streamPath.replace("gemini-2.5-flash", model) }; });
+      expect(out.micros, model).toBe(out.held); expect(out.estimated).toBe(out.held);
+    }
+  });
   it("product Gemini 2.5 with no thinkingConfig thinks by default: the hold", async () => {
     const out = await cutAfter(10, geminiChunk, async (t) => { const w = await gemini(t)(); return { ...w, body: { ...geminiBody, generationConfig: { maxOutputTokens: 8_192 } } }; });
     expect(out.micros).toBe(out.held);
@@ -291,8 +296,8 @@ describe("a cut call on a route whose reader does not count progress charges the
     expect(some.micros).toBeLessThan(some.held);
     expect(some.estimated).toBe(some.micros);
   });
-  it("learning OpenAI stream, a reasoning model (gpt-5), or any model with reasoning_effort: the hold (the reasoning is billed and never streamed)", async () => {
-    for (const out of [await runLearning(10, true), await runLearning(10, false, "low"), await runLearning(0, true)]) { expect(out.micros).toBe(out.held); expect(out.estimated).toBe(out.held); }
+  it("learning OpenAI stream, a reasoning, unknown or new model (gpt-5, codex, gpt-6), or a listed one with reasoning_effort: the hold (the reasoning is billed and never streamed)", async () => {
+    for (const out of [await runLearning(10, "gpt-5-mini"), await runLearning(10, "gpt-4.1-mini", "low"), await runLearning(0, "gpt-5-mini"), await runLearning(10, "codex-mini-latest"), await runLearning(10, "gpt-6"), await runLearning(10, "some-new-model")]) { expect(out.micros).toBe(out.held); expect(out.estimated).toBe(out.held); }
   });
 });
 
@@ -317,28 +322,34 @@ describe.each(FAMILIES)("a cut call that CAN reason without streaming it (%s)", 
 
 describe("mayReasonUnseen decides by code, from the request and the model", () => {
   const bytes = (v: unknown) => Buffer.from(JSON.stringify(v));
-  it("table", () => {
+  it("table: only a listed non-reasoning model is safe to estimate; everything else keeps the hold", () => {
     expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ messages: [] }))).toBe(false);
     expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ thinking: { type: "disabled" } }))).toBe(false);
     expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ thinking: { type: "enabled", budget_tokens: 1_024 } }))).toBe(true);
     expect(mayReasonUnseen("anthropic", "claude-sonnet-4-5", bytes({ thinking: { type: "adaptive" } }))).toBe(true);
+    expect(mayReasonUnseen("anthropic", "mystery-model", bytes({}))).toBe(true);
     expect(mayReasonUnseen("bedrock", "claude-haiku-4-5", bytes({ messages: [] }))).toBe(false);
+    expect(mayReasonUnseen("bedrock", "us.anthropic.claude-haiku-4-5-20251001-v1:0", bytes({}))).toBe(false);
     expect(mayReasonUnseen("bedrock", "claude-haiku-4-5", bytes({ additionalModelRequestFields: { thinking: { type: "enabled" } } }))).toBe(true);
     expect(mayReasonUnseen("bedrock", "zai.glm-5", bytes({ messages: [] }))).toBe(true);
     expect(mayReasonUnseen("openrouter", "vendor/model", bytes({ reasoning: { enabled: false } }))).toBe(false);
     expect(mayReasonUnseen("openrouter", "vendor/model", bytes({ reasoning: { enabled: true, max_tokens: 1_024 } }))).toBe(true);
     expect(mayReasonUnseen("openrouter", "vendor/model", bytes({}))).toBe(true);
-    expect(mayReasonUnseen("openai", "gpt-4.1-mini", bytes({}))).toBe(false);
+    for (const name of ["gpt-4.1-mini", "gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo", "gpt-4.5-preview", "chatgpt-4o-latest"]) expect(mayReasonUnseen("openai", name, bytes({})), name).toBe(false);
     expect(mayReasonUnseen("openai", "gpt-4.1-mini", bytes({ reasoning_effort: "low" }))).toBe(true);
-    expect(mayReasonUnseen("openai", "gpt-5-mini", bytes({}))).toBe(true);
-    expect(mayReasonUnseen("openai", "gpt-5.1", bytes({ reasoning_effort: "none" }))).toBe(false);
-    expect(mayReasonUnseen("openai", "o4-mini", bytes({}))).toBe(true);
-    expect(mayReasonUnseen("gemini", "gemini-2.5-flash", bytes({}))).toBe(true);
-    expect(mayReasonUnseen("gemini", "gemini-2.5-flash", bytes({ generationConfig: { thinkingConfig: { thinkingBudget: 0 } } }))).toBe(false);
-    expect(mayReasonUnseen("vertex", "gemini-2.5-pro", bytes({ generationConfig: { thinkingConfig: { thinkingBudget: 0 } } }))).toBe(true);
-    expect(mayReasonUnseen("gemini", "gemini-2.0-flash", bytes({}))).toBe(false);
-    expect(mayReasonUnseen("gemini", "gemini-3-pro", bytes({}))).toBe(true);
-    expect(mayReasonUnseen("anthropic", "x", Buffer.from("not json"))).toBe(true);
-    expect(mayReasonUnseen("somewhere", "x", bytes({}))).toBe(true);
+    expect(mayReasonUnseen("openai", "gpt-4.1-mini", bytes({ reasoning_effort: "none" }))).toBe(false);
+    for (const name of ["gpt-5-mini", "gpt-5.1", "gpt-6", "o4-mini", "o3", "codex-mini-latest", "gpt-oss-120b", "gpt-4.1-reasoner", "gpt-40", "whatever"]) expect(mayReasonUnseen("openai", name, bytes({})), name).toBe(true);
+    expect(mayReasonUnseen("openai", "gpt-5.1", bytes({ reasoning_effort: "none" }))).toBe(true);
+    for (const name of ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash-002", "gemini-2.0-flash-lite"]) expect(mayReasonUnseen("gemini", name, bytes({})), name).toBe(false);
+    expect(mayReasonUnseen("gemini", "gemini-2.0-flash", bytes({ generationConfig: { thinkingConfig: { thinkingBudget: 0 } } }))).toBe(true);
+    expect(mayReasonUnseen("gemini", "gemini-2.0-flash", bytes({ generationConfig: { thinkingConfig: { includeThoughts: true } } }))).toBe(true);
+    for (const name of ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-pro", "gemini-flash-latest", "gemini-pro-latest", "gemini-flash-lite-latest", "models/gemini-pro-latest"]) expect(mayReasonUnseen("gemini", name, bytes({})), name).toBe(true);
+    const off = bytes({ generationConfig: { thinkingConfig: { thinkingBudget: 0 } } });
+    expect(mayReasonUnseen("gemini", "gemini-2.5-flash", off)).toBe(false);
+    expect(mayReasonUnseen("vertex", "gemini-2.5-flash-lite", off)).toBe(false);
+    for (const name of ["gemini-2.5-pro", "gemini-flash-latest", "gemini-pro-latest", "gemini-3-flash"]) expect(mayReasonUnseen("vertex", name, off), name).toBe(true);
+    expect(mayReasonUnseen("gemini", "gemini-2.5-flash", bytes({ generationConfig: { thinkingConfig: { thinkingBudget: 1_024 } } }))).toBe(true);
+    expect(mayReasonUnseen("anthropic", "claude-x", Buffer.from("not json"))).toBe(true);
+    expect(mayReasonUnseen("somewhere", "claude-x", bytes({}))).toBe(true);
   });
 });
