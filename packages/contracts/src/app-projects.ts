@@ -94,7 +94,7 @@ export const SettingsProofSchema = z.object({
 }).strict();
 export type SettingsProof = z.infer<typeof SettingsProofSchema>;
 
-/** `POST /v1/app/projects/{name}/settings/undo`: write the last proved setup back as a new revision. A maintainer, in a browser session, signed in within the last 10 minutes. */
+/** `POST /v1/app/projects/{name}/settings/undo`: write the last proved setup back as a new revision. A maintainer, in a browser session (no recent-sign-in step). */
 export const ProjectSettingsUndoBodySchema = z.object({ requestId: z.string().uuid(), expectedRevision: z.number().int().positive() }).strict();
 export type ProjectSettingsUndoBody = z.infer<typeof ProjectSettingsUndoBodySchema>;
 

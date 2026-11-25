@@ -12,7 +12,7 @@ export const RECIPES_TEXT = {
  APPROVED: "Offered to projects",
  NONE_APPROVED: "No recipe is offered yet.",
  APPROVE: "Approve this recipe",
- APPROVE_HELP: "You approve exactly what is shown here, the commands included. You need to have signed in within the last 10 minutes.",
+ APPROVE_HELP: "You approve exactly what is shown here, the commands included.",
  REJECT: "Reject",
  STOP: "Stop offering",
  CHANGE_WHO: "Change who it is offered to",

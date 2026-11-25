@@ -34,7 +34,7 @@ export function createSetupRecipesApi(host: AppHost) {
  const post = async (body: unknown) => { const sent = await api.send("POST", SETUP_RECIPES_PATH, body, Done, NEVER); if (sent.kind !== "done") throw new Error("unreadable"); };
  return {
   list: (): Promise<SetupRecipesState> => api.get(SETUP_RECIPES_PATH, SetupRecipesStateReader),
-  /** Approves exactly the revision and digest the admin saw; the server answers CHANGE_STALE if either moved. Needs a sign-in within the last 10 minutes. */
+  /** Approves exactly the revision and digest the admin saw; the server answers CHANGE_STALE if either moved. Needs a signed-in admin (no recent-sign-in step). */
   approve: (recipe: SetupRecipe) => post({ action: "approve", recipeId: recipe.recipeId, expectedRevision: recipe.revision, expectedDigest: recipe.digest }),
   revoke: (recipe: SetupRecipe) => post({ action: "revoke", recipeId: recipe.recipeId, expectedRevision: recipe.revision }),
   /** Removes a recipe that exists but cannot be read back, so it stops holding a place in the company's limit. */

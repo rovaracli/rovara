@@ -16,7 +16,7 @@ const HELD_WORDS = {
 
 /**
  * TE-4: whether the setup and test commands and the dev container now in the settings were proved on a fresh machine (Proven, Checking or Unproven), the change an API key asked for that is waiting for its
- * check, and, when a saved change failed its check, the one-click way back to the last setup that passed. Going back needs a maintainer, a browser and a sign-in within the last ten minutes; the server decides.
+ * check, and, when a saved change failed its check, the one-click way back to the last setup that passed. Going back needs a maintainer and a browser session (no recent-sign-in step); the server decides.
  */
 export function SettingsProofSection({ project, onProject }: { project: AppProjectDetail; onProject: (project: AppProjectDetail) => void }) {
   const api = useOnboardingApi();

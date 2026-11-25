@@ -1024,7 +1024,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
     return { ok: true, status: "active" };
   };
 
-  const NO = { expandEvidenceFirst: false, freshSignIn: false, secondPerson: false };
+  const NO = { expandEvidenceFirst: false, secondPerson: false };
   const REJECT_REASONS = ["wrong_problem", "wrong_approach", "too_big", "missing_test", "not_now", "other"];
   const opened = new Set<string>();
   const decisionHref = (id: string, action: "approve" | "reject") => `/v1/app/decisions/${id.replace(":", "/")}/${action}`;
@@ -1050,7 +1050,7 @@ export async function startFakeCode(options: FakeCodeOptions = {}): Promise<Fake
         out.push({
           id, kind: "merge", taskId: task.taskId, project: task.project, title: task.title.slice(0, 80), question: `Merge pull request ${String(open.number)}?`,
           recommended: { action: "approve", why: "Checks passed and the reviews are done" }, next: { text: "Merges the pull request into main" },
-          evidence: [{ kind: "checks", label: "Checks", value: "all passed", state: "good" }], risk: "medium", riskReasons: ["Changes the main branch"], friction: { expandEvidenceFirst: true, freshSignIn: false, secondPerson: false },
+          evidence: [{ kind: "checks", label: "Checks", value: "all passed", state: "good" }], risk: "medium", riskReasons: ["Changes the main branch"], friction: { expandEvidenceFirst: true, secondPerson: false },
           actions: [{ kind: "approve", label: "Merge", href: decisionHref(id, "approve"), method: "POST" }, { kind: "reject", label: "Reject", href: decisionHref(id, "reject"), method: "POST" }, { kind: "open", label: "Open the task", href: `/app/sessions/${task.taskId}`, method: "GET" }],
           rejectReasons: REJECT_REASONS, status: "pending", createdAt: task.updatedAt,
         });

@@ -22,7 +22,7 @@ function failureOf(caught: unknown): Failure {
 
 /**
  * The Jira organization admin key (DV-1). WRITE-ONLY: the key is typed into a password field, sent once, cleared from the page as soon as it is sent, and never shown back (no call returns it). The key and the
- * Atlassian organization id go together, so Save needs both. Only a company owner or admin sees this; the broker also needs a sign-in within the last 10 minutes and writes an audit record.
+ * Atlassian organization id go together, so Save needs both. Only a company owner or admin sees this; the broker writes an audit record (no recent-sign-in step).
  */
 export function JiraOrgAdminKey({ connections }: { connections: ReadonlyArray<{ connectionId: string; label: string }> }) {
   const host = useAppHost(), api = useMemo(() => createApiClient(host), [host]);
