@@ -259,9 +259,9 @@ describe("review and approve", () => {
     const f = reviewing({ verification: { "setup-payments": "unverified", "tests-payments": "verified" }, unmatched: { "setup-payments": "pip install -r requirements.txt" } });
     const found = await screen.findByTestId("setup-found");
     const group = within(within(found).getByTestId("found-setup"));
-    expect(group.getByTestId("found-unmatched").textContent).toBe("Does not match the code: Rovara could not find pip install -r requirements.txt in the files it quoted.");
+    expect(group.getByTestId("found-unmatched").textContent).toBe("Does not match the code: Rovara could not find pip install -r requirements.txt in the lines it quoted.");
     expect(group.getByTestId("found-unmatched").querySelector("code")!.textContent).toBe("pip install -r requirements.txt");
-    expect(group.getByTestId("found-anyway").textContent).toBe("Rovara could not find this command in the files it quoted; tick to use it anyway.");
+    expect(group.getByTestId("found-anyway").textContent).toBe("Rovara could not find this command in the lines it quoted; tick to use it anyway.");
     const box = group.getByRole("checkbox");
     expect(box.matches(":disabled")).toBe(false);
     expect(box.matches(":checked") || box.getAttribute("aria-checked") === "true").toBe(false);

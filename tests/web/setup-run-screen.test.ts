@@ -145,9 +145,9 @@ it("Use this setup: an item that does not match the code is not ticked for the p
 it("a row that does not match names the command Rovara could not find, can be ticked after the warning, and is sent with useAnyway", async () => {
   const f = setup({ read: { status: 200, body: { ...READY, unmatched: { "tests-web": "pytest -q" } } }, answers: { "/confirm": { status: 200, body: { ...REPLY, used: ["setup-web", "tests-web"], unchecked: ["tests-web"] } } } });
   const card = await within(await region()).findByRole("region", { name: "Use this setup" });
-  expect(within(card).getByTestId("confirm-unmatched").textContent).toBe("Does not match the code: Rovara could not find pytest -q in the files it quoted.");
+  expect(within(card).getByTestId("confirm-unmatched").textContent).toBe("Does not match the code: Rovara could not find pytest -q in the lines it quoted.");
   expect(within(card).getByTestId("confirm-unmatched").querySelector("code")!.textContent).toBe("pytest -q");
-  expect(within(card).getByTestId("confirm-anyway").textContent).toBe("Rovara could not find this command in the files it quoted; tick to use it anyway.");
+  expect(within(card).getByTestId("confirm-anyway").textContent).toBe("Rovara could not find this command in the lines it quoted; tick to use it anyway.");
   fireEvent.click(within(card).getAllByRole<HTMLInputElement>("checkbox")[1]!);
   expect(within(card).getByTestId("confirm-anyway").textContent).toBe("You chose to use this although it does not match the code. The second machine still checks it.");
   fireEvent.click(within(card).getByRole("button", { name: "Use this setup" }));
