@@ -82,11 +82,17 @@ describe("contract drift against Code's pinned snapshot", () => {
     expect(parsed.has("SessionViewReaderSchema")).toBe(true);
     expect(parsed.has("SessionViewSchema")).toBe(false);
   });
-  it("the real drift the exact readers surface is accepted by name, and nothing else is new", () => {
-    const accepted = readAccepted().map((entry) => entry.key);
-    for (const key of ["reviewed-project-archive.ts#ReviewedProjectArchivePreviewSchema expectedProjectIncarnation", "reviewed-project-restore.ts#ReviewedProjectRestorePreviewSchema expectedProjectIncarnation", "app-service-status.ts#OrgServiceStatusSchema teamRecord"]) {
-      expect(accepted.some((entry) => entry.startsWith(key)), key).toBe(true);
-    }
+  // The 5 drifts the exact readers surfaced (expectedProjectIncarnation x4, teamRecord) were fixed in Cloud's contract files (STRICT-READERS-KNOWN-FIELDS), not accepted: with the exact readers compared against Code, these
+  // schemas show NO drift against an EMPTY accepted list (a regression in the readers, or a Code field they lack, fails here and not only in the whole-gate test).
+  it("compares the 5 schemas the exact readers once surfaced and finds no drift in them, with nothing accepted", async () => {
+    const schemas = ["ReviewedProjectArchivePreviewSchema", "ReviewedProjectArchiveOutcomeSchema", "ReviewedProjectRestorePreviewSchema", "ReviewedProjectRestoreOutcomeSchema", "OrgServiceStatusSchema"];
+    const parsed = parsedSchemaNames();
+    for (const name of schemas) expect(parsed.has(name), `${name} is compared`).toBe(true);
+    const snapshot = readSnapshot();
+    for (const name of schemas) expect(Object.keys(snapshot.schemas).some((id) => id.endsWith(`#${name}`)), `${name} is in Code's snapshot`).toBe(true);
+    const result = check(snapshot, await extractCloud(zod as never), []);
+    expect(result.report.drifts.filter((drift) => schemas.some((name) => drift.schema.endsWith(`#${name}`)))).toEqual([]);
+    expect(readAccepted().filter((entry) => schemas.some((name) => entry.key.includes(`#${name} `)))).toEqual([]);
   });
   // Pre-review S5: names that only a comment mentions, whose schema a server route or the app checks Code's answer against by hand, stay compared (the identifier scan alone would drop them).
   it("keeps the named mirrored schemas compared, each one real in Code's snapshot, and still leaves the #1516 schemas out", () => {
