@@ -53,3 +53,16 @@ Each mutant applied singly to one product line from the committed tree (b6bc4ce5
 | P8 | the gate no longer maps `XReaderSchema` to `XSchema` for the hand-written exact readers | KILLED (1 failed) | "compares Code with the strict schema of every hand-written exact reader ..." |
 | P9 | the gate drops the named mirrored schemas (the S5 loss) | KILLED (1 failed) | "keeps the named mirrored schemas compared ..." |
 | P10 | the mirrored list gains `SessionViewSchema` (the #1516 failure comes back) | KILLED (5 failed) | the #1516 drift-gate test, the exact-readers test, "has no drift in a schema Cloud parses that is not accepted" |
+
+## Opus fixes + sync (Opus review of e000cb343; rebased onto cloud/next de1accf1a)
+
+Each mutant applied singly (committed tree fd38c8be5), then `decouple-t2-forward-readers`, `contract-drift`, `decouple-t2-opus-review`, `decouple-t2-projections`, `sources-member`, `sources-admin`, `setup-checklist`, `builder-unknown-thinking` (vitest, `--maxWorkers=1`; packages rebuilt with `tsc -b`), restored with `git checkout`. 6 of 6 killed.
+
+| # | Mutant | Result | Killed by |
+|---|--------|---|---|
+| Q1 | `notesOptIn` back on the GRANT list (an unreadable value reads as "not kept") | KILLED (5 failed) | the SourcesTab test (a word / an object still says notes with links are kept), the SourceRow test (switch ON), the pinned lists and the path pin |
+| Q2 | a listed key at a NEW path: a `fix: true` flag added to a reader schema is classified silently by key name | KILLED (1 failed) | "every true-only flag, at every path of every reader ... is pinned with its class" |
+| Q3 | an unknown WORKFLOW state reads as running again (`state !== "COMPLETE"`) | KILLED (4 failed) | "a SUCCEEDED / RUNNING task whose workflow state is ... reads as unknown" |
+| Q4 | the company line says "Slack not added" for an unknown workspace state | KILLED (1 failed) | "the company line for Slack ... paused_by_future_code says Slack unknown" |
+| Q5 | the builder opens an editor with an empty step list when the resolved recipe cannot be read | KILLED (1 failed) | "a RESOLVED recipe ... says so instead of showing an empty step list" |
+| Q6 | an exact reader with no Code counterpart loses its reason in `EXACT_READERS_NOT_COMPARED` | KILLED (1 failed) | the Opus pin (reasons equal the uncompared list) |
