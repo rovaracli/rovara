@@ -78,6 +78,21 @@ it("low risk: shows the risk with its reason, the changes, the passed check and 
   f.close();
 });
 
+it("the older approval card also tags the commands used without a match and says how many; a candidate with none recorded shows no tag", async () => {
+  const f = mount({ read: view({}, { usedWithoutMatch: ["npm run lint", "npm ci"] }) });
+  const c = await card();
+  expect(within(c).getByTestId("setup-approval-unmatched-note").textContent).toBe("2 commands were used without a match in the lines Rovara quoted. They are tagged under Details.");
+  expect(within(c).getAllByTestId("setup-approval-unmatched").map(tag => tag.closest("li")!.textContent)).toEqual(["npm ci Not matched to the code", "npm run lint Not matched to the code"]);
+  expect(within(c).getByTestId("setup-approval-risk").textContent).toContain("Low risk");
+  f.close();
+  cleanup();
+  const none = mount();
+  const plain = await card();
+  expect(within(plain).queryByTestId("setup-approval-unmatched")).toBeNull();
+  expect(within(plain).queryByTestId("setup-approval-unmatched-note")).toBeNull();
+  none.close();
+});
+
 it("medium and high risk say why in plain words; high names the areas it reaches", async () => {
   expect(riskReason({ risk: "medium", changes: [{ area: "test_mocks", risk: "medium" }] })).toBe(T.why.medium);
   expect(riskReason({ risk: "high", changes: [{ area: "websites", risk: "high" }, { area: "setup_commands", risk: "low" }, { area: "dev_container", risk: "high" }] })).toBe("It changes allowed addresses, the dev container.");

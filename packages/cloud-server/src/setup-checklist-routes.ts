@@ -8,7 +8,7 @@
 //   POST /v1/app/projects/{p}/setup-agent   {requestId} -> Code POST /v1/app/projects/{p}/setup-agent                  (start, or Re-run setup: a re-run only proposes)
 //   POST /v1/app/projects/{p}/setup-agent/stop {requestId} -> Code POST .../setup-agent/stop
 //   GET  /v1/app/projects/{p}/setup-agent/journal?after=n  -> Code GET .../setup-agent/journal?after=n
-//   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
+//   POST /v1/app/projects/{p}/setup-agent/confirm {requestId, expectedRevision, itemIds?, useAnyway?} -> Code POST .../setup-agent/confirm  ("Use this setup": a candidate and its check; L4-D, Code #899)
 //   POST /v1/app/projects/{p}/setup-agent/discard {requestId}                              -> Code POST .../setup-agent/discard  (drop the waiting candidate)
 //   POST /v1/app/projects/{p}/setup-agent/decide {requestId, outcome, seen, reason?}       -> Code POST .../setup-agent/decide   (approve or reject: Code's risk-based approver rule)
 //   POST /v1/app/projects/{p}/setup-agent/host-decide {requestId, host, outcome, seen, reason?} -> Code POST .../setup-agent/host-decide (allow or refuse an address a setup run asked for: Code's rule is a live company owner or admin; Cloud adds none)
@@ -304,23 +304,27 @@ export function applyAnswer(value: unknown): Plain {
   need(Array.isArray(changes) && changes.length <= 16 && changes.every((one) => plain(one) && oneOf(one["area"], AREAS) && oneOf(one["risk"], RISKS)), undefined);
   need(approval === undefined || (plain(approval) && typeof approval["requestId"] === "string" && DECISION_ID.test(approval["requestId"]) && whole(approval["revision"], 1) && typeof approval["artifactDigest"] === "string" && HEX64.test(approval["artifactDigest"])
     && approval["kind"] === "setup" && oneOf(approval["risk"], RISKS)), undefined);
+  const without = v["usedWithoutMatch"];
+  need(without === undefined || lines(without, 64), undefined);
   const c = check as Plain, a = approval as Plain | undefined;
   return {
     candidateRevision: v["candidateRevision"], baseRevision: v["baseRevision"], setup: [...(v["setup"] as string[])], readiness: [...(v["readiness"] as string[])],
     ...(locations === undefined ? {} : { promptLocations: [...(locations as string[])] }),
+    ...(without === undefined || (without as string[]).length === 0 ? {} : { usedWithoutMatch: [...(without as string[])] }),
     check: { status: c["status"], ...(c["failedStep"] === undefined ? {} : { failedStep: c["failedStep"] }) },
     risk: v["risk"], changes: (changes as Plain[]).map((one) => ({ area: one["area"], risk: one["risk"] })), approver: v["approver"], canApprove: v["canApprove"], canReject: v["canReject"],
     ...(a === undefined ? {} : { approval: { requestId: a["requestId"], revision: a["revision"], artifactDigest: a["artifactDigest"], kind: "setup", risk: a["risk"] } }),
   };
 }
 
-/** The browser's "Use this setup", strictly: `{requestId, expectedRevision, itemIds?}` and nothing else. */
-export function confirmBody(value: unknown): { requestId: string; expectedRevision: number; itemIds?: string[] } | undefined {
-  if (!plain(value) || Object.keys(value).some((key) => key !== "requestId" && key !== "expectedRevision" && key !== "itemIds")) return undefined;
-  const ids = value["itemIds"];
+/** The browser's "Use this setup", strictly: `{requestId, expectedRevision, itemIds?, useAnyway?}` and nothing else. `useAnyway` names ticked items the page warned about; Code decides whether it counts. */
+export function confirmBody(value: unknown): { requestId: string; expectedRevision: number; itemIds?: string[]; useAnyway?: string[] } | undefined {
+  if (!plain(value) || Object.keys(value).some((key) => key !== "requestId" && key !== "expectedRevision" && key !== "itemIds" && key !== "useAnyway")) return undefined;
+  const ids = value["itemIds"], anyway = value["useAnyway"];
   if (typeof value["requestId"] !== "string" || !UUID.test(value["requestId"]) || !whole(value["expectedRevision"], 0, 1_000_000_000)) return undefined;
   if (ids !== undefined && !(Array.isArray(ids) && ids.length <= CONFIRM_IDS_MAX && ids.every((id) => text(id, 100)))) return undefined;
-  return { requestId: value["requestId"], expectedRevision: value["expectedRevision"], ...(ids === undefined ? {} : { itemIds: [...ids] }) };
+  if (anyway !== undefined && !(Array.isArray(anyway) && anyway.length <= CONFIRM_IDS_MAX && anyway.every((id) => text(id, 100)))) return undefined;
+  return { requestId: value["requestId"], expectedRevision: value["expectedRevision"], ...(ids === undefined ? {} : { itemIds: [...ids] }), ...(anyway === undefined ? {} : { useAnyway: [...anyway] }) };
 }
 
 export interface DecideBody { requestId: string; outcome: "approve" | "reject"; seen: { revision: number; artifactDigest: string }; reason?: string }
@@ -519,7 +523,7 @@ const runReadRoute: Route = {
 };
 
 /** One approval act (confirm, discard or decide): the checked body goes to Code as the person; Code's answer is rebuilt and its refusals are Cloud's fixed words. */
-function approvalRoute<B>(tail: ApprovalKind | "host-decide", check: (body: unknown) => B | undefined, rebuild: (value: unknown, project: string, sent: B) => Plain, event: string, describe: (sent: B) => Record<string, string>, refuse: (error: CodeError) => RouteAnswer = (error) => approvalRefusal(tail as ApprovalKind, error)): Route {
+function approvalRoute<B>(tail: ApprovalKind | "host-decide", check: (body: unknown) => B | undefined, rebuild: (value: unknown, project: string, sent: B) => Plain, event: string, describe: (sent: B) => Record<string, string | string[]>, refuse: (error: CodeError) => RouteAnswer = (error) => approvalRefusal(tail as ApprovalKind, error)): Route {
   return {
     method: "POST", path: new RegExp(`^/projects/([^/]+)/setup-agent/${tail}$`, "u"),
     answer: async (context) => {
@@ -543,7 +547,9 @@ function approvalRoute<B>(tail: ApprovalKind | "host-decide", check: (body: unkn
   };
 }
 
-const confirmRoute = approvalRoute("confirm", confirmBody, (value) => confirmAnswer(value), "cloud.setup_confirm", () => ({}));
+/** What the log line of a confirm adds: the item ids a person ticked although the page said they do not match the code (a list; the body already bounds it to 128 ids of at most 100 characters), and how many. Nothing when there are none. */
+export const confirmLogDetails = (sent: { useAnyway?: string[] }): Record<string, string | string[]> => (sent.useAnyway === undefined || sent.useAnyway.length === 0 ? {} : { useAnyway: [...sent.useAnyway], useAnywayCount: String(sent.useAnyway.length) });
+const confirmRoute = approvalRoute("confirm", confirmBody, (value) => confirmAnswer(value), "cloud.setup_confirm", confirmLogDetails);
 const discardRoute = approvalRoute("discard", runBody, (value) => { need(plain(value) && typeof value["discarded"] === "boolean", undefined); return { discarded: (value as Plain)["discarded"] }; }, "cloud.setup_discard", () => ({}));
 const decideRoute = approvalRoute("decide", decideBody, (value, project, sent) => {
   need(plain(value) && value["project"] === project && oneOf(value["decision"], ["approved", "rejected"] as const) && value["decision"] === (sent.outcome === "approve" ? "approved" : "rejected")

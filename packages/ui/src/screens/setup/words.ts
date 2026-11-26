@@ -20,6 +20,16 @@ export const VERDICT_WORDS = {
   unverified: "Does not match the code",
 } as const;
 
+/** A command row that does not match the code, on both "use this setup" cards. The check is "the command is not in the lines Rovara quoted", never "it is nowhere in the project" (DEC 540). */
+export const MISMATCH_WORDS = {
+  before: "Does not match the code: Rovara could not find ", after: " in the lines it quoted.",
+  misread: "Rovara misread your files: the lines it quoted for this row are not in them, so it can't be used as it is.",
+  runAgain: "Run setup again", changeCommand: "Change a command", changeLocked: "Changing a command is not available yet.",
+  useAnyway: "Rovara could not find this command in the lines it quoted; tick to use it anyway.",
+  chosenAnyway: "You chose to use this although it does not match the code. The second machine still checks it.",
+  tickOne: "Tick at least one command to check this setup.", tickOneUse: "Tick at least one command to use this setup.",
+} as const;
+
 export const CONFIRM_WORDS = {
   rule: "Using this setup saves it as a proposal in the test environment below; it does not change the project's settings. You approve it there, after a passing proof.",
   next: "Saved as a proposal. In the test environment below, run its check, prove it, then approve it; approving adds the commands to the settings.",
@@ -43,6 +53,8 @@ export const APPROVAL_WORDS = {
     highUnknown: "Rovara could not tell what it changes, so it is treated as high risk.",
   },
   area: { setup_commands: "setup commands", test_commands: "test commands", test_mocks: "test mocks", prompt_locations: "where the AI prompts live", websites: "allowed addresses", registries: "package registries", integrations: "integrations", dev_container: "the dev container", other: "something Rovara does not recognise" },
+  /** A command used with no file evidence behind it (a ticked row that did not match, or one that could not be checked against a file). The check on a fresh workspace and this approval still apply. */
+  withoutMatch: { tag: "Not matched to the code", summary: (n: number) => `${String(n)} ${n === 1 ? "command was" : "commands were"} used without a match in the lines Rovara quoted. They are tagged under Details.` },
   who: { maintainer: "A project maintainer, or a company owner or admin, approves this.", admin: "A company owner or admin approves high-risk changes." },
   check: {
     checking: "Rovara is checking it on a fresh workspace. This can take a few minutes.",

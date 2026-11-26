@@ -3,9 +3,9 @@
 // rules (a project's managers confirm and discard; no step-up (owner DEC 254zzz73); low and medium risk need a maintainer, high a company owner or admin; a stale digest or revision is refused;
 // another company's project reads as "project not found"). Cloud must: pass the person's own token, put the project only into Code's path, forward only checked bodies, rebuild every answer
 // from known fields, never say Code's or the browser's own text, and add no rule of its own that could widen Code's.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  CodeClient, LocalSessionStore, LocalWorkSessionStore, SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_WORDS, applyAnswer, confirmBody, createCloudHandler, decideBody, type CloudRequest, type CodeSession,
+  CodeClient, LocalSessionStore, LocalWorkSessionStore, SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_WORDS, applyAnswer, confirmBody, confirmLogDetails, createCloudHandler, decideBody, type CloudRequest, type CodeSession,
 } from "../../packages/cloud-server/src/index.js";
 import { SetupAgentViewSchema, SetupConfirmReplySchema, SetupDecideReplySchema, SetupDiscardReplySchema } from "../../packages/contracts/src/setup-agent-web.js";
 
@@ -171,6 +171,12 @@ describe("the run's read carries the waiting candidate", () => {
       expect(errorOf(res)).toEqual({ code: "RUNTIME_UNAVAILABLE", message: SETUP_CHECKLIST_WORDS.unavailable });
       expect(res.text).not.toContain(LEAK);
     }
+    const base = { candidateRevision: 2, baseRevision: 1, setup: ["a"], readiness: ["b"], check: { status: "ready" }, risk: "low", changes: [{ area: "setup_commands", risk: "low" }], approver: "maintainer", canApprove: true, canReject: true };
+    expect(applyAnswer({ ...base, usedWithoutMatch: ["a"] })).toMatchObject({ usedWithoutMatch: ["a"] });
+    expect(applyAnswer(base)).not.toHaveProperty("usedWithoutMatch");
+    expect(applyAnswer({ ...base, usedWithoutMatch: [] })).not.toHaveProperty("usedWithoutMatch");
+    expect(() => applyAnswer({ ...base, usedWithoutMatch: "a" })).toThrow();
+    expect(() => applyAnswer({ ...base, usedWithoutMatch: [""] })).toThrow();
     expect(() => applyAnswer([])).toThrow();
     expect(() => applyAnswer(null)).toThrow();
   });
@@ -190,6 +196,23 @@ describe("Use this setup (confirm)", () => {
     for (const call of w.calls) expect(JSON.stringify(call.headers)).not.toContain(B);
   });
 
+  it("forwards useAnyway to Code and logs which ticked rows did not match the code (ids and count only), and nothing extra when none", async () => {
+    const w = setUp();
+    w.candidates.get(key(A, "payments"))!.decided = "approve";
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
+    try {
+      const headers = { ...await w.as("pia-token"), "x-rovara-company": B };
+      const res = await w.send("POST", "/v1/web/projects/payments/setup-agent/confirm?company=" + B, headers, { requestId: UUID1, expectedRevision: 3, itemIds: ["setup-1", "tests-2"], useAnyway: ["tests-2"] });
+      expect(res.status).toBe(200);
+      expect(w.codeCalls()).toEqual([expect.objectContaining({ body: { requestId: UUID1, expectedRevision: 3, itemIds: ["setup-1", "tests-2"], useAnyway: ["tests-2"] } })]);
+      expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>).filter((line) => line["event"] === "cloud.setup_confirm")).toEqual([{ event: "cloud.setup_confirm", project: "payments", useAnyway: ["tests-2"], useAnywayCount: "1" }]);
+    } finally { spy.mockRestore(); }
+    expect(confirmLogDetails({})).toEqual({});
+    expect(confirmLogDetails({ useAnyway: [] })).toEqual({});
+    expect(confirmLogDetails({ useAnyway: ["a,b", "c"] })).toEqual({ useAnyway: ["a,b", "c"], useAnywayCount: "2" });
+  });
+
   it("refuses a body that is not exactly the checked one, without asking Code", async () => {
     const w = setUp();
     const ada = await w.as("ada-token");
@@ -204,6 +227,11 @@ describe("Use this setup (confirm)", () => {
       expect(errorOf(res).message).toBe(SETUP_CHECKLIST_WORDS.invalid);
     }
     expect(confirmBody({ requestId: UUID1, expectedRevision: 0 })).toEqual({ requestId: UUID1, expectedRevision: 0 });
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, itemIds: ["a", "b"], useAnyway: ["a"] })).toEqual({ requestId: UUID1, expectedRevision: 0, itemIds: ["a", "b"], useAnyway: ["a"] });
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, useAnyway: "a" })).toBeUndefined();
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, useAnyway: [""] })).toBeUndefined();
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, useAnyway: Array.from({ length: 129 }, (_, i) => `i${String(i)}`) })).toBeUndefined();
+    expect(confirmBody({ requestId: UUID1, expectedRevision: 0, other: 1 })).toBeUndefined();
     expect(w.codeCalls()).toHaveLength(0);
   });
 
