@@ -156,3 +156,15 @@ it("removes an open restore confirmation after live company authority is lost",a
 it("explains restore policy without claiming work starts or resumes",async()=>{const f=mount();try{await review();expect(screen.getByRole("dialog").textContent).toContain("Restoring does not start or resume work");expect(screen.getByRole("dialog").textContent).toContain("This deployment's restore prerequisites passed");expect(screen.getByRole("dialog").textContent).toContain("repository access, setup, budget and trial");expect(screen.getByRole("dialog").textContent).not.toMatch(/notification|retry is queued/i);}finally{f.close();}});
 
 it("uses the fresh second-company preview pin after an identity switch rather than the earlier company",async()=>{const f=mount();try{await screen.findByRole("button",{name:"Review restore"});f.me.org.orgId="org_bbbbbbbbbbbbbbbbbbbb";f.me.org.name="Second company";await act(async()=>{await f.query.invalidateQueries({queryKey:["admin","identity"]});});await screen.findByText("Administration · Second company",{exact:true});await review();acknowledge();fireEvent.click(screen.getByRole("button",{name:"Restore project"}));await screen.findByText("Current project status: Active.");expect(f.posts()).toHaveLength(1);expect(f.posts()[0]!.body).toMatchObject({expectedOrgId:"org_bbbbbbbbbbbbbbbbbbbb",expectedRevision:0,expectedProjectRevision:3,acknowledgeNewWorkAllowed:true});}finally{f.close();}});
+// STRICT-READERS-KNOWN-FIELDS: same for restore: `current` of the outcome may carry expectedProjectIncarnation.
+it("reads a restore outcome whose current carries expectedProjectIncarnation as confirmed, not unconfirmed", async () => {
+  const ref = {} as { f: ReturnType<typeof mount> }; let restored = false;
+  const current = () => ({ orgId: ref.f.me.org.orgId, project: "payments", status: restored ? "active" : "archived", expectedRevision: restored ? 2 : 1, expectedProjectRevision: 3, expectedProjectIncarnation: 5, checkedAt: "2026-10-27T15:00:00.000Z", prerequisites: "checked", access: { actions: restored ? [] : ["restore"] } });
+  ref.f = mount({ preview: () => ({ status: 200, body: current() }), post: async () => { restored = true; return { status: 200, body: { replayed: false, receipt: { project: "payments", status: "active", revision: 2, projectRevision: 3, restoredAt: "2026-10-27T15:01:00.000Z", egressReconciliation: "pending" }, current: current(), effects: { egress: "synchronized" } } }; } });
+  const f = ref.f;
+  await review(); acknowledge(); fireEvent.click(screen.getByRole("button", { name: "Restore project" }));
+  await screen.findByText("Current project status: Active.");
+  expect(f.posts()).toHaveLength(1);
+  expect(document.body.textContent).not.toMatch(/unconfirmed/i);
+  f.close();
+});
