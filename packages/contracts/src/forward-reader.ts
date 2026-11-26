@@ -58,15 +58,15 @@ function designReviewReader(schema: z.ZodType): z.ZodType {
 /**
  * `key?: true` flags (a plain `z.literal(true).optional()`: present only when true). A newer Code may send such a key as `false`, a word or an object. What that reads as depends on what the flag does, so it is decided BY KEY,
  * from these three explicit lists (tests/contract/decouple-t2-forward-readers.test.ts pins them and walks every reader so a new flag must be put in one):
- *  - GRANT: the flag grants something by being `true` (merge, co-owner, live ask/fix, an approval, a notes opt-in). A value that is not exactly `true` reads as absent: it grants nothing.
- *  - WARNING: the flag is a caveat, a failure or a limit (the last run failed, offline, a partial diff, the same model reviewed its own plan, a check that is broken or made with fakes, a list that was cut, a trial that is used). Absent would mean "no
+ *  - GRANT: the flag grants something by being `true` (merge, co-owner, live ask/fix, an approval, the offer of the Slack notes switch). A value that is not exactly `true` reads as absent: it grants nothing.
+ *  - WARNING: the flag is a caveat, a failure or a limit (the last run failed, offline, a partial diff, the same model reviewed its own plan, a check that is broken or made with fakes, a list that was cut, a trial that is used, a Slack source that keeps notes with links: `notesOptIn` is a retention FACT, so an unreadable value must never say less is kept). Absent would mean "no
  *    warning", so an unreadable value must never read as absent: only an explicit `false` or `null` reads as absent (Code said "no"); anything else reads as `true`, so the caveat is shown and never hidden.
  *  - DISPLAY: a label with no effect on what a person may do or is told is wrong (`you`, `process`). An unreadable value reads as absent.
  * Every other `true`-only flag keeps the schema's own strict reading (an unreadable value refuses the answer, as before T2).
  */
-export const GRANT_FLAG_KEYS: readonly string[] = ["approved", "ask", "coOwner", "fix", "mayMerge", "notesOptIn", "notesSwitch"];
+export const GRANT_FLAG_KEYS: readonly string[] = ["approved", "ask", "coOwner", "fix", "mayMerge", "notesSwitch"];
 export const WARNING_FLAG_KEYS: readonly string[] = [
-  "broken", "lastRunFailed", "linked", "madeByRovara", "neverStarted", "noOtherCompany", "notRevised", "offline", "otherCompanyFailed", "partialDiff", "programNotFound", "retireProposed", "reviewRequired",
+  "broken", "lastRunFailed", "linked", "madeByRovara", "neverStarted", "noOtherCompany", "notRevised", "offline", "otherCompanyFailed", "partialDiff", "programNotFound", "retireProposed", "notesOptIn", "reviewRequired",
   "sameModelAsPlanner", "trialUsed", "truncated", "unlisted", "workflowBlocked",
 ];
 export const DISPLAY_FLAG_KEYS: readonly string[] = ["process", "you"];

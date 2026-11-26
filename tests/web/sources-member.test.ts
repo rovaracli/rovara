@@ -19,6 +19,21 @@ describe("the Sources tab for a person who cannot edit", () => {
   expect(f.recordCalls()).toHaveLength(0);
   expect(chunk.loads).toBe(0);
  });
+ // Opus S1 (DEC 540): `notesOptIn` is a retention FACT (this Slack source keeps notes with links). A newer Code that sends it in a shape this build cannot read must never make the page say LESS is kept.
+ it.each([["a word", "yes"], ["an object", { by: "admin" }]])("a source whose notesOptIn arrives as %s still says its notes with links are kept (never reads as not kept)", async (_name, value) => {
+  const view = sources({ sources: [source({ kind: "slack", scope: "slack:T1/C9", retention: "B", notesOptIn: true })] });
+  (view.sources[0] as unknown as Record<string, unknown>)["notesOptIn"] = value;
+  openSources({ canEdit: false, view: adminView(), readable: view });
+  await screen.findByRole("list", { name: "Sources" });
+  expect(screen.getByText("(notes with links, switched on by your admin)")).toBeTruthy();
+ });
+ it("a source with notesOptIn explicitly false says nothing about notes (Code said it is not kept), and one without it too", async () => {
+  const view = sources({ sources: [source({ kind: "slack", scope: "slack:T1/C9", retention: "A" }), source({ kind: "slack", scope: "slack:T1/C8", retention: "A" })] });
+  (view.sources[0] as unknown as Record<string, unknown>)["notesOptIn"] = false;
+  openSources({ canEdit: false, view: adminView(), readable: view });
+  await screen.findByRole("list", { name: "Sources" });
+  expect(screen.queryByText("(notes with links, switched on by your admin)")).toBeNull();
+ });
  it("with the team record off (the lessons sources read answers not found) a maintainer never asks for the editors' view, and sees the same tab as before this lane", async () => {
   const f = openSources({ lessonsSources: refusal("NOT_FOUND", "The team record isn't set up here.", 404) });
   expect(await screen.findByText("The team record isn't set up here yet.")).toBeTruthy();

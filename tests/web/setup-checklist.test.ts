@@ -12,6 +12,7 @@ import type { ApiRequest, ApiResponse } from "../../packages/ui/src/host.js";
 import { AppHostProvider } from "../../packages/ui/src/host.js";
 import { createQueryClient } from "../../packages/ui/src/api/query.js";
 import { ProjectChecklist } from "../../packages/ui/src/screens/setup/ProjectChecklist.js";
+import { CompanySetupLine } from "../../packages/ui/src/screens/setup/CompanySetupLine.js";
 import { ProjectSettingsTab } from "../../packages/ui/src/screens/project/ProjectSettingsTab.js";
 import { FinishSetup } from "../../packages/ui/src/screens/home/FinishSetup.js";
 import { fakeHost } from "./support/fake-host.js";
@@ -40,7 +41,7 @@ function checklist(extra: Record<string, unknown> = {}) {
 }
 const runView = (status: string, canManage: boolean) => ({ status, basedOnRevision: 3, limits: { commands: 40, sameStepTries: 3, wallClockMin: 45, budgetCents: 400, hostAsks: 5 }, canManage });
 
-interface Options { status?: () => ApiResponse; run?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; role?: "owner" | "admin" | "member"; projects?: string[]; archived?: boolean }
+interface Options { status?: () => ApiResponse; run?: () => ApiResponse; post?: (request: ApiRequest) => ApiResponse; role?: "owner" | "admin" | "member"; projects?: string[]; archived?: boolean; slack?: unknown }
 function mount(element: ReactElement, options: Options = {}) {
   const f = fakeHost(async (request) => {
     if (request.path === "/v1/app/projects/web/setup-status") return options.status?.() ?? { status: 200, body: checklist() };
@@ -50,7 +51,7 @@ function mount(element: ReactElement, options: Options = {}) {
     if (request.path.startsWith("/v1/app/projects/web/setup-agent/journal")) return { status: 200, body: { status: "failed", entries: [], hostAsks: [] } };
     if (request.path === "/v1/app/org/members") return { status: 200, body: { members: [{ developerId: "b".repeat(64), name: "Priya", role: "admin", joinedAt: "2026-10-23", identities: [] }, { developerId: "c".repeat(64), name: "Sam", role: "member", joinedAt: "2026-10-23", identities: [] }] } };
     if (request.path === "/v1/app/github/connections") return { status: 200, body: { installations: [{ installationId: 11, accountLogin: "acme", connectedAt: "2026-11-17T00:00:00Z", connectedBy: { kind: "operator" } }] } };
-    if (request.path === "/v1/app/slack") return { status: 200, body: { workspace: null } };
+    if (request.path === "/v1/app/slack") return { status: 200, body: options.slack ?? { workspace: null } };
     if (request.path === "/v1/app/linear") return { status: 200, body: { status: "disconnected" } };
     if (request.path === "/v1/app/projects/web/slack/channel") return { status: 200, body: { connected: false, channels: [] } };
     if (request.path === "/v1/app/nav") { const nav = navFixture(); return { status: 200, body: { ...nav, me: { ...nav.me, orgRole: options.role ?? "owner" }, projects: (options.projects ?? ["web"]).map((name) => ({ name, agents: [] })) } }; }
@@ -150,6 +151,15 @@ describe("the project checklist", () => {
     g.close();
   });
 
+  // Opus N2 (DEC 540): a Slack workspace whose state this build does not know is "unknown", not "not added".
+  it.each([[{ workspace: null }, "Slack not added (optional)"], [{ workspace: { teamName: "Acme", state: "connected", connectedAt: "2026-11-17T00:00:00Z", connectedBy: { kind: "operator" } } }, "Slack connected"],
+    [{ workspace: { teamName: "Acme", state: "paused_by_future_code", connectedAt: "2026-11-17T00:00:00Z", connectedBy: { kind: "operator" } } }, "Slack unknown"]])("the company line for Slack %j says %s", async (slack, words) => {
+    const f = mount(h(CompanySetupLine, {}), { slack });
+    await screen.findByTestId("checklist-company");
+    await waitFor(() => { const line = screen.getByTestId("checklist-company").textContent ?? ""; expect(line).toContain("GitHub connected"); expect(line).toContain(words); });
+    if (words === "Slack unknown") expect(screen.getByTestId("checklist-company").textContent).not.toContain("not added");
+    f.close();
+  });
   it("is read-only for a person who can't change the project, pointing to the company's admins without asking for the admin-only members list", async () => {
     const f = mount(h(ProjectChecklist, { project: "web" }), { status: () => ({ status: 200, body: checklist({ viewer: { companyRole: "member", projectAdmin: false, canSkip: false } }) }), run: () => ({ status: 200, body: runView("failed", false) }) });
     expect(await screen.findByText("Ask your company's admins to finish setup.")).toBeTruthy();
