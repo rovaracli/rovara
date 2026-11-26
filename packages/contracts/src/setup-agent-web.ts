@@ -19,6 +19,8 @@ export const SetupApplyViewSchema = z.object({
   readiness: z.array(z.string().min(1).max(2_000)).max(64),
   /** L4-EVP: where the project's AI prompts live, as the candidate adds them, one plain line each (Code's words). */
   promptLocations: z.array(z.string().min(1).max(1_100)).max(40).optional(),
+  /** The candidate's commands (as in `setup` and `readiness`) used with no file evidence behind them; the approval card tags them. Absent: none, or a candidate made before Code kept it. */
+  usedWithoutMatch: z.array(z.string().min(1).max(2_000)).max(64).optional(),
   /** Where the candidate's check on a fresh workspace stands; a decision is offered only once it is `ready`. */
   check: z.object({ status: z.enum(SETUP_CHECK_STATES), failedStep: z.string().min(1).max(1_000).optional() }).passthrough(),
   risk: z.enum(SETUP_RISKS),
@@ -77,6 +79,8 @@ export const SetupAgentViewSchema = z.object({
   proposal: SetupProposalSchema.optional(),
   failure: z.string().max(1_000).optional(),
   verification: z.record(z.string().min(1).max(100), z.enum(SETUP_VERIFICATION_STATES)).optional(),
+  /** For a command item that does not match the code: the first command no quote shows, per item id (Code's; absent when not known). */
+  unmatched: z.record(z.string().min(1).max(100), z.string().min(1).max(600)).optional(),
   verified: z.boolean().optional(),
   /** A company admin has turned setup runs off: nothing can be started. */
   companySetupOff: z.literal(true).optional(),
@@ -125,6 +129,8 @@ export const SetupConfirmRequestSchema = z.object({
   requestId: z.string().uuid(),
   expectedRevision: z.number().int().min(0),
   itemIds: z.array(z.string().min(1).max(100)).max(128).optional(),
+  /** Command items among `itemIds` the person ticked after the page warned that Rovara could not find the command in the code. */
+  useAnyway: z.array(z.string().min(1).max(100)).max(128).optional(),
 }).strict();
 export const SETUP_CONFIRM_LEFT_OUT = ["unverified", "refused_command", "not_a_command_item", "too_many", "invalid_command"] as const;
 export const SetupConfirmReplySchema = z.object({
