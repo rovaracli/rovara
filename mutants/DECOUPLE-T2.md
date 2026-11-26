@@ -30,3 +30,7 @@ Each mutant was applied singly to one product line (from the clean committed tre
 | M14 | disconnect preview: the unknown-blockers object loose (extra field tolerated) | KILLED (1 failed) | "the disconnect preview reader stays strict: an extra field in unknown blockers is refused" |
 | M15 | disconnect preview: the target object loose | KILLED (3 failed) | "the disconnect preview reader stays strict: an extra field in the target", "refuses invalid body", "rejects invalid/ambiguous success" |
 | M16 | disconnect preview: the unknown-blockers reason opened (`z.string()`) | KILLED (1 failed) | "the disconnect preview reader stays strict: an unknown-blockers reason this build does not know is refused" |
+
+### Rebase note (onto cloud/next cb4941c29)
+
+cloud/next gained `you.chargedTo` in the strict `SessionViewSchema` (the one-field single), so the #1516 drift-gate test in `tests/contract/decouple-t2-forward-readers.test.ts` now adds a made-up `you.futureNote` to Code's snapshot instead of `you.chargedTo` (the gate treats every such field alike). M6 was rerun after the rebase on that test: still KILLED (3 failed: the drift-gate test, "reads the schemas Cloud's app and server name in code, not in a comment or a string", "has no drift in a schema Cloud parses that is not accepted").
