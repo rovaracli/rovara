@@ -110,7 +110,7 @@ describe("gate deployed-drift", () => {
     expect((await drift.run({ ...input(state, manifest()), ports })).result).toBe("pass");
     expect(seen.map((s) => s.cmd)).toEqual(["npm ci", "npm run", "npm run"]);
     for (const call of seen) {
-      for (const name of Object.keys(NO_AWS_ENV)) expect(Object.hasOwn(call.env ?? {}, name) && call.env![name] === undefined, `${call.cmd}: ${name}`).toBe(true);
+      for (const name of Object.keys(NO_AWS_ENV)) expect(Object.hasOwn(call.env ?? {}, name) && call.env![name] === NO_AWS_ENV[name], `${call.cmd}: ${name}`).toBe(true);
       expect(Object.keys(NO_AWS_ENV)).toEqual(expect.arrayContaining(["AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_WEB_IDENTITY_TOKEN_FILE"]));
     }
   });
@@ -132,7 +132,7 @@ describe("gate deployed-drift", () => {
       ["/p/scripts/contract-drift/link-code-workspaces.ts", "/c", "/code", CODE],
     ]);
     expect(order).toEqual([`link /w/cloud-deployed-${sha("3").slice(0, 12)}`, "check", "link /c", "check"]);
-    for (const call of seen) for (const name of Object.keys(NO_AWS_ENV)) expect(Object.hasOwn(call.env ?? {}, name) && call.env![name] === undefined, name).toBe(true);
+    for (const call of seen) for (const name of Object.keys(NO_AWS_ENV)) expect(Object.hasOwn(call.env ?? {}, name) && call.env![name] === NO_AWS_ENV[name], name).toBe(true);
   });
 
   it("fails closed when the Code workspace packages cannot be installed: the check does not run and the tree is reported", async () => {

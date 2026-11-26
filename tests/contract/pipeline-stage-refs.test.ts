@@ -233,20 +233,25 @@ describe("pipeline stage CLI: CLOUD_REF=from-trigger", () => {
 describe("pipeline stage CLI: live Cloud sha and mode", () => {
   const resolved = (tag: string, at: string) => ({ tag, sha: sha(at), ref: "CLOUD_REF" as const, trunk: "cloud/next" });
 
-  it("reads DeployedCloudSha from the web stack, then the gateway, and says when it is absent", async () => {
+  it("reads DeployedCloudSha from the web stack only (the gateway is Code's now), and says when it is absent", async () => {
     const state = newState();
     liveStack(state, stackFor("beta", "web"), { outputs: { DeployedCloudSha: sha("3") } });
     liveStack(state, stackFor("beta", "gateway"));
-    expect(await readLiveCloudSha(makePorts(state), stackFor("beta", "web"), stackFor("beta", "gateway"))).toEqual({ sha: sha("3"), warnings: [] });
+    expect(await readLiveCloudSha(makePorts(state), stackFor("beta", "web"))).toEqual({ sha: sha("3"), warnings: [] });
     const absent = newState();
     liveStack(absent, stackFor("beta", "web"));
-    const none = await readLiveCloudSha(makePorts(absent), stackFor("beta", "web"), stackFor("beta", "gateway"));
+    const none = await readLiveCloudSha(makePorts(absent), stackFor("beta", "web"));
     expect(none.sha).toBeNull();
     expect(none.warnings[0]).toMatch(/unknown/);
+    // #1478 phase 2: the gateway is Code's and records a Code commit; whatever Cloud sha an earlier pipeline stamped on it is not read, and never disagrees with the web stack.
+    const gatewayOnly = newState();
+    liveStack(gatewayOnly, stackFor("beta", "web"));
+    liveStack(gatewayOnly, stackFor("beta", "gateway"), { outputs: { DeployedCloudSha: sha("2") } });
+    expect((await readLiveCloudSha(makePorts(gatewayOnly), stackFor("beta", "web"))).sha).toBeNull();
     const disagree = newState();
     liveStack(disagree, stackFor("beta", "web"), { outputs: { DeployedCloudSha: sha("3") } });
     liveStack(disagree, stackFor("beta", "gateway"), { outputs: { DeployedCloudSha: sha("2") } });
-    expect((await readLiveCloudSha(makePorts(disagree), stackFor("beta", "web"), stackFor("beta", "gateway"))).warnings[0]).toMatch(/differs/);
+    expect(await readLiveCloudSha(makePorts(disagree), stackFor("beta", "web"))).toEqual({ sha: sha("3"), warnings: [] });
   });
 
   it("is a release when the ref is newer than or equal to what is live", async () => {

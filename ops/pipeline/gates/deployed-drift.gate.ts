@@ -21,7 +21,7 @@ async function deployedSha(input: GateInput): Promise<Deployed | string> {
   const live = input.manifest.cloud.liveSha[input.env];
   if (live !== null) return { sha: live, source: "stack-output" };
   if (input.manifest.mode === "adoption") return { sha: input.manifest.cloud.sha, source: "adoption" };
-  const first = `first release: ${input.env} has no DeployedCloudSha output on its web or gateway stack, so the deployed Cloud cannot be checked out and nothing is assumed.`;
+  const first = `first release: ${input.env} has no DeployedCloudSha output on its web stack (the gateway is Code's now and records a Code commit, not a Cloud one), so the deployed Cloud cannot be checked out and nothing is assumed.`;
   const flag = await envValue(input.ports, ADOPT_DEPLOYED_SHA_ENV);
   if (flag === null) return `${first} Run once as an adoption run (manifest mode adoption, CLOUD_REF = the tag already live, every change set empty), or name the live Cloud commit with ${ADOPT_DEPLOYED_SHA_ENV}=<40-hex sha of a release tag>.`;
   if (!SHA.test(flag)) return `${ADOPT_DEPLOYED_SHA_ENV} must be a 40-character lowercase hex commit sha`;

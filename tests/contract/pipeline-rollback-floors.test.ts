@@ -23,7 +23,7 @@ const manifest = (mode: Manifest["mode"], tag: string, cloudSha: string, digest:
   schema: 1, executionId: EXEC_ID, exec8: EXEC8, createdAt: "2026-11-24T12:00:00.000Z", mode,
   cloud: { tag, sha: cloudSha, ref: "CLOUD_REF", trunk: "cloud/next", liveSha: { beta: null, production: null } },
   code: { sha: null, release: "run", requestedRelease: "run", pinnedSha: { beta: null, production: null }, supersedes: null },
-  gateway: { digest, source: digest === null ? null : "supplied", imageTag: null, repository: null }, stages: {},
+  gateway: { digest, source: digest === null ? null : "supplied", imageTag: null, repository: null, codeSha: sha("c") }, stages: {},
 });
 const cs = (part: "web" | "gateway"): ChangeSetRecord => ({ part, stack: `s-${part}`, changeSetName: "n", changeSetId: "i", noChanges: false, status: "CREATE_COMPLETE", executionStatus: "AVAILABLE", templateSha256: "h", rows: [], counts: { add: 0, modify: 0, remove: 0, replace: 0 }, previewedAt: "x", executedAt: null, finalStatus: null });
 const input = (state: FakeState, m: Manifest, phase: GateInput["phase"] = "preflight", changeSets: ChangeSetRecord[] = []): GateInput => ({
@@ -57,7 +57,7 @@ describe("rollback floors file: tolerant read", () => {
 
   it("the committed file parses, names full shas, carries the floors the plan lists and pins the digest below the gateway floor", () => {
     const floors = parseFloors(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8"));
-    expect(floors.floors.map((f) => f.group).sort()).toEqual(["code", "gateway", "gateway", "web", "web"]);
+    expect(floors.floors.map((f) => f.group).sort()).toEqual(["code", "gateway", "gateway", "gatewayCode", "gatewayCode", "web", "web"]);
     expect(floors.floors.every((f) => f.sha !== null && f.reason.length > 20)).toBe(true);
     expect(floors.floors.find((f) => f.group === "web")!.sha!.startsWith("fbe943520")).toBe(true);
     expect(floors.belowFloorDigests.map((d) => d.digest.slice(0, 15))).toEqual(["sha256:68af1b9e"]);
@@ -68,10 +68,12 @@ describe("rollback floors file: tolerant read", () => {
   it("enforces the Bedrock no_answer floor in all three groups (web and gateway at the Cloud train commit, Code at the Code merge of BEDROCK-BYO-CHECK-FIXES); nothing of it is pending (older readers fail the whole company document)", () => {
     const floors = parseFloors(readFileSync(new URL("../../ops/pipeline/rollback-floors.json", import.meta.url), "utf8"));
     const enforced = floors.floors.filter((floor) => /no_answer/u.test(floor.reason));
-    expect(enforced.map((floor) => floor.group).sort()).toEqual(["code", "gateway", "web"]);
+    expect(enforced.map((floor) => floor.group).sort()).toEqual(["code", "gateway", "gatewayCode", "web"]);
     for (const floor of enforced) expect(floor.reason).toMatch(/whole company product-AI document/u);
-    expect(enforced.filter((floor) => floor.group !== "code").every((floor) => floor.sha === "59edd60f2bff237a42a06380222269264e6889d5")).toBe(true);
+    // the Cloud rows hold the Cloud merge; the code and gatewayCode rows hold the Code commit that carries the same change (the gateway is built from Code since #1478 phase 2)
+    expect(enforced.filter((floor) => floor.group === "gateway" || floor.group === "web").every((floor) => floor.sha === "59edd60f2bff237a42a06380222269264e6889d5")).toBe(true);
     expect(enforced.find((floor) => floor.group === "code")!.sha).toBe("5e6c41b127a3be962f8e9790f98dc6420b0f3c1e");
+    expect(enforced.find((floor) => floor.group === "gatewayCode")!.sha).toBe("5e6c41b127a3be962f8e9790f98dc6420b0f3c1e");
     expect(floors.pending.filter((row) => row.tag === "BEDROCK-BYO-CHECK-FIXES")).toEqual([]);
   });
 });

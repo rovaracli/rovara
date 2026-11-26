@@ -14,7 +14,10 @@ export interface ProtectedList {
   statefulTypes: string[];
   dataRewrites: Record<string, string[]>;
   imageRows: ImageRowRule[];
+  /** The pipeline tree's paths (Cloud commits) whose change since the live deploy makes the gateway change more than an image change. */
   imageOnlyPaths: string[];
+  /** The Code paths (Code commits, judged in the Code clone) holding the gateway's infra: a change in any makes the gateway change more than an image change. */
+  imageOnlyCodePaths: string[];
 }
 
 const METADATA_TYPE = "AWS::CDK::Metadata";
@@ -35,6 +38,7 @@ export function parseProtected(raw: string): ProtectedList {
   const text = (value: unknown): value is string[] => Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === "string" && item !== "");
   if (!text(file.statefulTypes)) throw new Error("protected.json: statefulTypes must be a non-empty list");
   if (!text(file.imageOnlyPaths)) throw new Error("protected.json: imageOnlyPaths must be a non-empty list");
+  if (!text(file.imageOnlyCodePaths)) throw new Error("protected.json: imageOnlyCodePaths must be a non-empty list");
   const rewrites = file.dataRewrites;
   if (typeof rewrites !== "object" || rewrites === null || Array.isArray(rewrites)) throw new Error("protected.json: dataRewrites must be an object of resource type -> property names");
   for (const [type, names] of Object.entries(rewrites)) if (!text(names)) throw new Error(`protected.json: dataRewrites.${type} must be a non-empty list of property names`);

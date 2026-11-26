@@ -19,7 +19,8 @@
   },
   "build": {
     "common": ["npm ci", "npx tsc -b infra", "npx tsc -b packages/model-gateway"],
-    "web": ["npm run build:web"]
+    "web": ["npm run build:web"],
+    "codeGateway": ["npm ci --ignore-scripts --no-audit --no-fund", "npx tsc -b infra"]
   },
   "releaseCheck": { "paths": ["/app", "/v1/web/me"], "intervalSeconds": 1 }
 }

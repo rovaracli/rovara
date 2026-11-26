@@ -58,7 +58,7 @@ async function createManifest(ctx: StepContext, state: State): Promise<Manifest>
   const { ports, config, inputs } = ctx;
   const resolved = await resolveCloudRef(ports, config, inputs.cloudRef, { sourceCommit: inputs.cloudSourceCommit, env: ctx.env });
   ctx.log(`Cloud ref: ${resolved.tag} at ${resolved.sha.slice(0, 12)} (${resolved.ref}, on ${resolved.trunk})`);
-  const live = await readLiveCloudSha(ports, stackName(config, ctx.env, "web"), stackName(config, ctx.env, "gateway"));
+  const live = await readLiveCloudSha(ports, stackName(config, ctx.env, "web"));
   // CODE_RELEASE: typed on a run started by hand, or decided from which source started the run (lib/coderelease.ts); decided before anything is written, and refused when it cannot be.
   const codeRelease = decideCodeRelease(inputs, resolved);
   ctx.log(`Code release requested: ${codeRelease.request} (${codeRelease.why})`);
@@ -134,7 +134,7 @@ async function joinManifest(ctx: StepContext, state: State): Promise<Manifest> {
   // Production deploys what Beta resolved (the manifest's tag and commit), never something re-resolved: `from-trigger` is not read here, and an explicit tag that is not Beta's is refused.
   if (inputs.cloudRef !== null && inputs.cloudRef !== FROM_TRIGGER && inputs.cloudRef !== manifest.cloud.tag) throw new StageError("REFUSED", `CLOUD_REF ${inputs.cloudRef} is not the release Beta resolved in this execution (${manifest.cloud.tag}): ${ctx.env} deploys what Beta deployed`);
   await requireLastGoodUnlessAdoption(ctx, manifest.mode);
-  const live = await readLiveCloudSha(ports, stackName(config, ctx.env, "web"), stackName(config, ctx.env, "gateway"));
+  const live = await readLiveCloudSha(ports, stackName(config, ctx.env, "web"));
   manifest.cloud.liveSha[ctx.env] = live.sha;
   const warnings = await requireNoForwardMove(ctx, manifest, live.sha);
   joinCodeFacts(ctx, manifest);

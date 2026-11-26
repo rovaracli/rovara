@@ -15,7 +15,7 @@ import { webAppStep } from "../../ops/pipeline/steps/web-app.ts";
 import { proofStep } from "../../ops/pipeline/steps/proof.ts";
 import { StageError } from "../../ops/pipeline/types.ts";
 import type { Gate, ImageStepResult, Manifest, PipelineEnv, StepName } from "../../ops/pipeline/types.ts";
-import { seedLastGood, CDK_METADATA, DIGEST_A, DIGEST_B, EXEC8, FAKE_ACCOUNT, OTHER_ACCOUNT, EXEC_ID, MODIFY_FUNCTION, config, fakeSwitches, liveStack, makeCtx, makePorts, newState, row, sha, stackFor } from "./pipeline-stage-fakes.ts";
+import { seedLastGood, withCodeClone, CDK_METADATA, DIGEST_A, DIGEST_B, EXEC8, FAKE_ACCOUNT, OTHER_ACCOUNT, EXEC_ID, MODIFY_FUNCTION, config, fakeSwitches, liveStack, makeCtx, makePorts, newState, row, sha, stackFor } from "./pipeline-stage-fakes.ts";
 import type { FakeState } from "./pipeline-stage-fakes.ts";
 import type { Inputs } from "../../ops/pipeline/lib/context.ts";
 
@@ -29,7 +29,7 @@ const STEPS: Record<StepName, StepFunction> = {
 
 /** A world where beta is live: three stacks, a gateway digest, and change sets cdk will create. */
 function betaWorld(over: Partial<FakeState> = {}): FakeState {
-  const state = newState({ plan: { RovaraCloudApp: [CDK_METADATA], RovaraCloudWeb: [MODIFY_FUNCTION], RovaraModelGateway: [row("Modify", "TaskDef", "AWS::ECS::TaskDefinition", "True")] }, ...over });
+  const state = newState({ exec: withCodeClone(), plan: { RovaraCloudApp: [CDK_METADATA], RovaraCloudWeb: [MODIFY_FUNCTION], RovaraModelGateway: [row("Modify", "TaskDef", "AWS::ECS::TaskDefinition", "True")] }, ...over });
   liveStack(state, stackFor("beta", "gateway"), { parameters: { ImageDigest: DIGEST_B } });
   liveStack(state, stackFor("beta", "web"), { outputs: { CloudUrl: "https://cloud.example.test/app" } });
   liveStack(state, stackFor("beta", "app"));
@@ -90,7 +90,7 @@ describe("pipeline stage CLI: beta, step by step", () => {
     expect(m.stages.beta!.completed).toEqual(["preflight", "image", "gateway", "gateway-check", "web-app", "proof"]);
     expect(m.gateway).toMatchObject({ digest: DIGEST_A, source: "built" });
     const cdkCalls = run.state.calls.filter((c) => c.startsWith("cdk "));
-    expect(cdkCalls[1]).toMatch(new RegExp(`^cdk RovaraModelGateway ${NAME} ctx=.*rovaraCloudSha.* params=rovara-cloud-beta-gateway:ImageDigest=${DIGEST_A}$`, "u"));
+    expect(cdkCalls[1]).toMatch(new RegExp(`^cdk RovaraModelGateway ${NAME} ctx=.*rovaraCodeSha.* params=rovara-cloud-beta-gateway:ImageDigest=${DIGEST_A}$`, "u"));
     expect(cdkCalls[1]).not.toContain("agentxAccount");
     expect(executes(run.state)).toEqual([`cfn execute ${stackFor("beta", "gateway")} ${NAME}`, `cfn execute ${stackFor("beta", "app")} ${NAME}`, `cfn execute ${stackFor("beta", "web")} ${NAME}`]);
     expect(m.stages.beta!.releaseCheck).toMatchObject({ base: "https://cloud.example.test", failures: [] });
@@ -181,7 +181,7 @@ describe("pipeline stage CLI: beta, step by step", () => {
     const run = newRun(betaWorld());
     run.state.ssm["/rovara-cloud/beta/release/last-good"] = JSON.stringify({ schema: 1, env: "beta", recordedAt: "2026-11-20T00:00:00.000Z", executionId: "old", mode: "release", cloud: { tag: "v0.13.1", sha: sha("1") }, gateway: { digest: DIGEST_B }, extraKeyFromTheFuture: true });
     for (const name of ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as StepName[]) await step(run, "beta", name);
-    expect(parseLastGood(run.state.ssm["/rovara-cloud/beta/release/last-good"]).previous).toEqual({ cloudTag: "v0.13.1", cloudSha: sha("1"), gatewayDigest: DIGEST_B });
+    expect(parseLastGood(run.state.ssm["/rovara-cloud/beta/release/last-good"]).previous).toEqual({ cloudTag: "v0.13.1", cloudSha: sha("1"), gatewayDigest: DIGEST_B, gatewayCodeSha: null });
   });
 
   it("does not write last-good when a proof gate fails", async () => {
@@ -206,7 +206,7 @@ describe("pipeline stage CLI: beta, step by step", () => {
   describe("with the committed gate policy", () => {
     const LIST_PATH = new URL("../../ops/pipeline/protected.json", import.meta.url).pathname;
     // Every required gate that is not under test passes: only the protected gate is real here.
-    const others = (): Gate[] => [integrity, pass("own-key-backfill", "preflight"), pass("gitleaks", "preflight"), pass("deployed-drift", "preflight"), pass("gateway-runprice", "gateway-live"), pass("gateway-settled", "gateway-live"), { name: "rollback-floor", phases: ["preflight", "change-sets"], run: () => Promise.resolve({ result: "pass" }) }];
+    const others = (): Gate[] => [integrity, pass("own-key-backfill", "preflight"), pass("gitleaks", "preflight"), pass("deployed-drift", "preflight"), pass("gateway-runprice", "gateway-live"), pass("gateway-settled", "gateway-live"), pass("gateway-source-switch", "change-sets"), { name: "rollback-floor", phases: ["preflight", "change-sets"], run: () => Promise.resolve({ result: "pass" }) }];
     const policyRun = async (state: FakeState, gates: Gate[]): Promise<Run> => {
       const { loadGatePolicy } = await import("../../ops/pipeline/config.ts");
       state.files[LIST_PATH] = readFileSync(LIST_PATH, "utf8");
@@ -371,7 +371,7 @@ describe("pipeline stage CLI: modes", () => {
   it("an adoption run keeps the live digest, never calls the image build, and refuses any real row", async () => {
     const state = betaWorld({ plan: { RovaraCloudApp: [CDK_METADATA], RovaraCloudWeb: [CDK_METADATA], RovaraModelGateway: [CDK_METADATA] } });
     state.stacks[stackFor("beta", "web")]!.outputs.DeployedCloudSha = sha("3");
-    const run = newRun(state, { inputs: { adopt: true, cloudRef: "v0.13.9", codeRelease: "skip" } });
+    const run = newRun(state, { inputs: { adopt: true, cloudRef: "v0.13.9", codeRelease: "skip", codeLiveSha: sha("c") } });
     run.steps = { ...STEPS, image: (c, s) => imageStep(c, s, () => Promise.reject(new Error("must not be called"))) };
     run.gates = [integrity, pass("g2", "gateway-live"), pass("p", "proof")];
     for (const name of ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as StepName[]) await step(run, "beta", name);
@@ -409,7 +409,7 @@ describe("pipeline stage CLI: the first release is an adoption run", () => {
   it("an adoption run's proof writes the first last-good, after which a release run is allowed", async () => {
     const state = noRecord({ plan: { RovaraCloudApp: [CDK_METADATA], RovaraCloudWeb: [CDK_METADATA], RovaraModelGateway: [CDK_METADATA] } });
     state.stacks[stackFor("beta", "web")]!.outputs.DeployedCloudSha = sha("3");
-    const run = newRun(state, { inputs: { adopt: true, cloudRef: "v0.13.9", codeRelease: "skip" } });
+    const run = newRun(state, { inputs: { adopt: true, cloudRef: "v0.13.9", codeRelease: "skip", codeLiveSha: sha("c") } });
     run.gates = [integrity, pass("g2", "gateway-live"), pass("p", "proof")];
     run.steps = { ...STEPS, image: (c, s) => imageStep(c, s, () => Promise.reject(new Error("must not be called"))) };
     for (const name of ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as StepName[]) await step(run, "beta", name);
@@ -622,7 +622,7 @@ describe("pipeline stage CLI: production joins what beta resolved", () => {
     expect(older.run.logs.join("\n")).toMatch(/WARNING: Code is promoted next to an OLDER/u);
     expect((await skipped(sha("3"))).stage.warnings).toEqual([]); // the same Cloud
     expect((await skipped(sha("4"))).stage.warnings).toEqual([]); // a NEWER production Cloud is not "older"
-    expect((await skipped(sha("2"), { codeRelease: "skip" })).stage.warnings).toEqual([]);
+    expect((await skipped(sha("2"), { codeRelease: "skip", codeLiveSha: sha("c") })).stage.warnings).toEqual([]);
   });
 
   it("an unreadable or unknown production Cloud is said, never a failure of the skip", async () => {
@@ -640,12 +640,13 @@ describe("pipeline stage CLI: the image step", () => {
     expect(manifestOf(run.state).gateway.digest).toBeNull();
   });
 
-  it("passes L6 the candidate tree, the supplied digest, and rejects a result that is not a digest", async () => {
+  it("passes L6 the Code commit, the supplied digest, and rejects a result that is not a digest", async () => {
     const run = await afterPreflight();
     let seen: unknown;
-    run.steps = { ...STEPS, image: (c, s) => imageStep(c, s, (input) => { seen = { supplied: input.supplied, cloud: input.dirs.cloud, env: input.env }; return Promise.resolve({ digest: "latest", source: "built", imageTag: "t", repository: "r" }); }) };
+    run.steps = { ...STEPS, image: (c, s) => imageStep(c, s, (input) => { seen = { supplied: input.supplied, code: input.dirs.code, codeSha: input.codeSha, env: input.env }; return Promise.resolve({ digest: "latest", source: "built", imageTag: "t", repository: "r" }); }) };
     await failsWith(step(run, "beta", "image", { gatewayDigest: DIGEST_B }), "FAILED", /not sha256/);
-    expect(seen).toEqual({ supplied: { digest: DIGEST_B }, cloud: `/work/cloud-${sha("4").slice(0, 12)}`, env: "beta" });
+    // a supplied digest is only looked up (no tree), and its Code commit is the one recorded beside it in last-good
+    expect(seen).toEqual({ supplied: { digest: DIGEST_B }, code: null, codeSha: sha("c"), env: "beta" });
     await failsWith(step(run, "beta", "image", { gatewayDigest: "sha256:short" }), "USAGE");
   });
 
@@ -726,7 +727,7 @@ describe("pipeline stage CLI: records", () => {
   it("reads a manifest tolerantly (extra keys, missing optionals) and refuses a wrong schema or missing required values", () => {
     const base = { schema: 1, executionId: EXEC_ID, exec8: EXEC8, createdAt: "t", mode: "release", cloud: { tag: "v1.0.0", sha: sha("a"), trunk: "cloud/next", futureKey: 1 }, newTopLevel: {} };
     const parsed = parseManifest(JSON.stringify(base));
-    expect(parsed.gateway).toEqual({ digest: null, source: null, imageTag: null, repository: null });
+    expect(parsed.gateway).toEqual({ digest: null, source: null, imageTag: null, repository: null, codeSha: null });
     expect(parsed.code.pinnedSha).toEqual({ beta: null, production: null });
     expect(parsed.cloud.liveSha).toEqual({ beta: null, production: null });
     expect(() => parseManifest("nope")).toThrow(/not JSON/);
@@ -752,7 +753,7 @@ describe("pipeline stage CLI: records", () => {
       "PROMOTION SUMMARY beta  execution 1a2b3c4d  mode release",
       `  Code   : sha ${"c".repeat(12)}  release=run  (pinned: none)`,
       `  Cloud  : v1.0.0 ${"a".repeat(12)}  (live: ${"9".repeat(12)})`,
-      `  Gateway: ${DIGEST_A.slice(0, 19)}...  source=built`,
+      `  Gateway: ${DIGEST_A.slice(0, 19)}...  source=built  built from Code none`,
       "  Change sets: web  +0 ~3 -0 r1 | app  no changes",
       "  Gates  : pass g | skipped k (why)",
       `  NOTE   : this run supersedes execution 99887766, whose Code sha ${"e".repeat(12)} is not promoted`, "",
@@ -846,10 +847,11 @@ describe("pipeline stage CLI: command line and exit codes", () => {
     const bad: Gate = { name: "bad", phases: ["preflight"], run: () => Promise.resolve({ result: "fail", failures: ["x"] }) };
     expect((await run(["beta", "preflight"], ctxEnv, betaWorld(), { gates: [integrity, bad] })).code).toBe(20);
     const state = betaWorld();
-    const good = await run(["beta", "preflight"], ctxEnv, state);
+    const withCode = { ...ctxEnv, CODE_SHA: sha("c") };
+    const good = await run(["beta", "preflight"], withCode, state);
     expect(good.code).toBe(0);
     state.files["/in/manifest.json"] = state.files["out/manifest.json"]!;
-    const image = await run(["beta", "image", "--manifest", "/in/manifest.json"], ctxEnv, state);
+    const image = await run(["beta", "image", "--manifest", "/in/manifest.json"], withCode, state);
     expect(image.code).toBe(3);
     expect(image.lines.at(-1)).toMatch(/^STAGE-FAILED beta image REFUSED: the stack rovara-cloud-beta-gateway-images does not exist/);
   });

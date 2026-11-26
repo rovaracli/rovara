@@ -1,5 +1,7 @@
 // Step image, the real one (lane L6; BETA-CLOUD-PLAN 1.7; L2-STAGE-CLI-INTERFACE.md section 8). L2 owns the checks around this function (adoption never calls it,
-// production's result must equal beta's digest); this file owns the work:
+// production's result must equal beta's digest); this file owns the work. The gateway is Code's (#1478 phase 2): the image is built from a checkout of the CODE commit the
+// gateway comes from (`input.dirs.code` at `input.codeSha`), never from the Cloud tree; the script and the context are the same files in both repositories, so the same source
+// gives the same context hash and the same tag.
 //   beta        name the image by its build-context hash (tag ctx-<64 hex>, computed by scripts/model-gateway-image.ts BEFORE any docker work); when that tag is
 //               already in the repository reuse its digest (no build, no push: an unchanged gateway keeps its digest, so the gateway change set is a no-op);
 //               otherwise build once (linux/arm64), push it under that immutable tag and read the digest the tag resolves to;
@@ -26,19 +28,26 @@ async function useSupplied(input: ImageStepInput, repository: Repository, digest
   return { digest, source: "supplied", imageTag: found.tags[0] ?? "(untagged)", repository: repository.name };
 }
 
-/** The hash must come from a clean checkout of the manifest's Cloud sha: the candidate tree is reused when it already exists, and a hand-edited file in it would otherwise name the tag. */
+/** The Code tree the gateway image is built from, and the Code commit it must be at. Beta builds only; a tree or commit that is missing is refused, never replaced by another. */
+function sourceOf(input: ImageStepInput): { dir: string; sha: string } {
+  if (input.dirs.code === null || input.codeSha === null) throw new StageError("REFUSED", "the image step has no Code checkout to build the gateway image from");
+  return { dir: input.dirs.code, sha: input.codeSha };
+}
+
+/** The hash must come from a clean checkout of the Code commit the gateway comes from: the tree is reused when it already exists, and a hand-edited file in it would otherwise name the tag. */
 async function assertCleanCandidate(input: ImageStepInput): Promise<void> {
-  const { ports, dirs, manifest } = input;
-  const head = await ports.exec("git", ["rev-parse", "HEAD"], { cwd: dirs.cloud });
-  if (head.code !== 0 || head.stdout.trim() !== manifest.cloud.sha) throw new StageError("REFUSED", `the candidate tree is not at the manifest's Cloud commit ${manifest.cloud.sha.slice(0, 12)}: the gateway image tag is made from its files, so it is not used`);
-  const status = await ports.exec("git", ["status", "--porcelain", "--untracked-files=all", "--", "packages/model-gateway", "environments/model-gateway", "tsconfig.base.json", "scripts/model-gateway-image.ts"], { cwd: dirs.cloud });
-  if (status.code !== 0) throw new StageError("FAILED", `git status failed in the candidate tree (exit ${status.code})`);
-  if (status.stdout.trim() !== "") throw new StageError("REFUSED", "the candidate tree has changed or untracked files under the gateway's build inputs: the gateway image tag is made from its files, so it is not used");
+  const { ports } = input;
+  const source = sourceOf(input);
+  const head = await ports.exec("git", ["rev-parse", "HEAD"], { cwd: source.dir });
+  if (head.code !== 0 || head.stdout.trim() !== source.sha) throw new StageError("REFUSED", `the Code tree is not at the Code commit ${source.sha.slice(0, 12)} the gateway comes from: the gateway image tag is made from its files, so it is not used`);
+  const status = await ports.exec("git", ["status", "--porcelain", "--untracked-files=all", "--", "packages/model-gateway", "environments/model-gateway", "tsconfig.base.json", "scripts/model-gateway-image.ts"], { cwd: source.dir });
+  if (status.code !== 0) throw new StageError("FAILED", `git status failed in the Code tree (exit ${status.code})`);
+  if (status.stdout.trim() !== "") throw new StageError("REFUSED", "the Code tree has changed or untracked files under the gateway's build inputs: the gateway image tag is made from its files, so it is not used");
   // Ignored files are not listed above; one under the gateway source (src/dist, src/build, src/coverage) would still enter the context and the hash. The build output of
   // the pipeline's own `tsc -b` lives outside src, so a normal run lists nothing here.
-  const ignored = await ports.exec("git", ["status", "--porcelain", "--ignored", "--untracked-files=all", "--", "packages/model-gateway/src"], { cwd: dirs.cloud });
-  if (ignored.code !== 0) throw new StageError("FAILED", `git status --ignored failed in the candidate tree (exit ${ignored.code})`);
-  if (ignored.stdout.trim() !== "") throw new StageError("REFUSED", "the candidate tree has ignored files under the gateway source: they would enter the image context, so the gateway image tag is not made from this tree");
+  const ignored = await ports.exec("git", ["status", "--porcelain", "--ignored", "--untracked-files=all", "--", "packages/model-gateway/src"], { cwd: source.dir });
+  if (ignored.code !== 0) throw new StageError("FAILED", `git status --ignored failed in the Code tree (exit ${ignored.code})`);
+  if (ignored.stdout.trim() !== "") throw new StageError("REFUSED", "the Code tree has ignored files under the gateway source: they would enter the image context, so the gateway image tag is not made from this tree");
 }
 
 /** Reads the `contextSha256` a model-gateway-image.ts command printed: a JSON line. `last` takes the final such line (the `context` command's answer), else the first one (`build` prints it before docker's own output). */
@@ -56,10 +65,11 @@ function printedContextHash(stdout: string, which: "last" | "first"): string | n
 async function gatewayContextHash(input: ImageStepInput): Promise<string> {
   const { ports, dirs } = input;
   await assertCleanCandidate(input);
+  const source = sourceOf(input);
   const out = `${dirs.work}/gateway-context`;
   await removeDir(ports, out);
   try {
-    const ran = await ports.exec("npx", ["--no-install", "tsx", "scripts/model-gateway-image.ts", "context", "--out", out], { cwd: dirs.cloud });
+    const ran = await ports.exec("node", ["scripts/model-gateway-image.ts", "context", "--out", out], { cwd: source.dir });
     if (ran.code !== 0) throw new StageError("FAILED", `the gateway image context could not be computed (exit ${ran.code}): ${tail(ran.stderr || ran.stdout)}`);
     const hash = printedContextHash(ran.stdout, "last");
     if (hash === null) throw new StageError("FAILED", "the gateway image context script printed no contextSha256");
@@ -70,7 +80,8 @@ async function gatewayContextHash(input: ImageStepInput): Promise<string> {
 }
 
 async function buildAndPush(input: ImageStepInput, repository: Repository, tag: string, contextSha256: string): Promise<ImageStepResult> {
-  const { ports, log, dirs, manifest } = input;
+  const { ports, log, dirs } = input;
+  const source = sourceOf(input);
   const existing = await findImage(ports, repository.name, { tag });
   if (existing !== null) {
     // The tag IS the build-context hash, so an image under it was built from this exact context (by an earlier run or an earlier attempt): reuse its digest, never rebuild or push.
@@ -79,8 +90,8 @@ async function buildAndPush(input: ImageStepInput, repository: Repository, tag: 
     return { digest: existing.digest, source: "built", imageTag: tag, repository: repository.name };
   }
   const local = `rovara-model-gateway:${tag}`;
-  log(`build: linux/arm64 image ${local} from ${manifest.cloud.sha.slice(0, 12)}`);
-  const built = await ports.exec("npx", ["--no-install", "tsx", "scripts/model-gateway-image.ts", "build", "--tag", local], { cwd: dirs.cloud });
+  log(`build: linux/arm64 image ${local} from Code ${source.sha.slice(0, 12)}`);
+  const built = await ports.exec("node", ["scripts/model-gateway-image.ts", "build", "--tag", local], { cwd: source.dir });
   if (built.code !== 0) throw new StageError("FAILED", `the gateway image build exited ${built.code}: ${tail(built.stderr || built.stdout)}`);
   // The tag was made from one context assembly and the build made its own: they must be the same context, or the tag would name an image built from something else.
   const buildHash = printedContextHash(built.stdout, "first");
