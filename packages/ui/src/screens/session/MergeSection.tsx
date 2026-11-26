@@ -267,7 +267,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
    refusalNow: () => refusalNow(validated), storageWords: STORAGE_WORDS,
    pending: () => {
     const frozen = shown, sentHeads = frozen.heads ?? [];
-    return { v: 1 as const, sessionId: subject, requestId: crypto.randomUUID(), startedAt: new Date().toISOString(), heads: sentHeads, risk: frozen.risk, sent: sentHeads.map(head => head.repositoryId + " #" + String(head.number) + " at " + shortSha(head.headSha)) };
+    return { v: 1 as const, sessionId: subject, requestId: crypto.randomUUID(), startedAt: new Date().toISOString(), heads: sentHeads, risk: frozen.risk === "unknown" ? undefined : frozen.risk, sent: sentHeads.map(head => head.repositoryId + " #" + String(head.number) + " at " + shortSha(head.headSha)) };
    },
    claimed: claim => {
     if (claim.kind !== "done") {
