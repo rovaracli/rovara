@@ -34,13 +34,19 @@ export interface CodeTask {
   [field: string]: unknown;
 }
 
-type SessionStatus = "starting" | "running" | "needs_person" | "stopped" | "succeeded" | "failed" | "cancelled";
+/**
+ * T2 (DECOUPLE plan 9.10): "unknown" is the status of a task whose Code status this Cloud does not know (a newer Code adds one). The session still reads, with its data and no new action:
+ * it is not running (no Stop, not on the Live board), offers no Retry and no Close, not waiting (no card), not ended (no end time); the page shows "Status unavailable". It is never read as failed, so nothing is retried or alarmed on a guess.
+ */
+type SessionStatus = "starting" | "running" | "needs_person" | "stopped" | "succeeded" | "failed" | "cancelled" | "unknown";
 
 /**
  * Whether the task's workflow is still going. Code's task `status` is its worker's LAST RUN (deriveTaskStatus), so between steps (a plan
  * waiting for review, a blocked review, a pull request waiting for merge, the next step queued) it reads SUCCEEDED although the task is not
  * done. While the workflow is not COMPLETE and the task is neither closed nor cancelled, the workflow decides.
  */
+/** Code's workflow states (contracts task-workflow.ts `WorkflowStateSchema`; a test keeps this list equal to it). */
+export const KNOWN_WORKFLOW_STATES: ReadonlySet<string> = new Set(["READY", "RUNNING", "WAITING", "BLOCKED", "COMPLETE"]);
 const workflowOpen = (task: CodeTask): boolean =>
   task.workflow !== undefined && task.workflow.state !== "COMPLETE" && (task.status === "RUNNING" || task.status === "SUCCEEDED");
 
@@ -59,11 +65,14 @@ export function sessionStatus(task: CodeTask): SessionStatus {
   if (task.status === "FAILED" && ["READY", "RUNNING", "WAITING", "BLOCKED"].includes(task.workflow?.state ?? "") && advisoryFailureOnly(task)) {
     return task.workflow!.state === "WAITING" || task.workflow!.state === "BLOCKED" ? "needs_person" : "running";
   }
+  // A workflow state this build does not know (a newer Code adds one) is not "running": the task reads as unknown (no Stop, no Close, no Retry, off the Live board), never as Running or Done on a guess.
+  if (workflowOpen(task) && typeof task.workflow!.state === "string" && !KNOWN_WORKFLOW_STATES.has(task.workflow!.state)) return "unknown";
   if (workflowOpen(task)) return task.workflow!.state === "WAITING" || task.workflow!.state === "BLOCKED" ? "needs_person" : "running";
   const statuses: Record<CodeTask["status"], SessionStatus> = {
     STARTING: "starting", RUNNING: "running", SUCCEEDED: "succeeded", FAILED: "failed", INTERRUPTED: "failed", CANCELLED: "cancelled", CLOSED: "stopped",
   };
-  return statuses[task.status];
+  // Object.hasOwn: a status word such as "constructor" must not find a function on the table.
+  return Object.hasOwn(statuses, task.status) ? statuses[task.status] : "unknown";
 }
 
 /** The plan waiting for review on this task: the workflow's revision and the newest plan's digest. Undefined when no plan waits. */
@@ -133,7 +142,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   // Code lets a task's readers read it and nothing else (take-over works only for tasks shared in Slack).
   // Anyone who can read the session can comment on it (Cloud keeps the comments, Rovara-cloud#24).
   // A session can remain open between steps; Stop only cancels work that is running now.
-  const actions = ["watch", "comment", ...(((owner || extras.coOwner === true) && blockedStepRetry(task) !== undefined) || (owner && blockedReview(task)?.retry !== undefined) ? ["retry"] : []), ...(owner && status === "running" && (task.workflow === undefined || task.workflow.state === "RUNNING") ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
+  const actions = ["watch", "comment", ...(((owner || extras.coOwner === true) && blockedStepRetry(task) !== undefined) || (owner && blockedReview(task)?.retry !== undefined) ? ["retry"] : []), ...(owner && status === "running" && (task.workflow === undefined || task.workflow.state === "RUNNING") ? ["stop"] : []), ...(owner && status !== "stopped" && status !== "unknown" ? ["close"] : [])];
   const follow = people ?? { ...followState(session, viewer.developerId), viewingNow: [] };
   return {
     contractVersion: 1,
@@ -168,14 +177,15 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
 }
 
 const STATUS_WORDS: Record<SessionStatus, string> = {
-  starting: "Starting", running: "Running", needs_person: "Waiting for you", stopped: "Stopped", succeeded: "Done", failed: "Failed", cancelled: "Cancelled",
+  starting: "Starting", running: "Running", needs_person: "Waiting for you", stopped: "Stopped", succeeded: "Done", failed: "Failed", cancelled: "Cancelled", unknown: "Status unavailable",
 };
 const STEP_WORDS: Record<string, string> = {
   PLAN: "Planning", PLAN_REVIEW: "Plan review", IMPLEMENT: "Coding", VERIFY: "Checking", REVIEW: "Reviewing", PULL_REQUEST: "Pull request",
 };
 
 /** Whether the session is still going: not stopped, done, failed or cancelled. */
-export const sessionRunning = (task: CodeTask): boolean => !ENDED.has(sessionStatus(task));
+// An unknown status is NOT running (T2 / pre-review S2): it stays off the project's Live board, which lists running work.
+export const sessionRunning = (task: CodeTask): boolean => { const status = sessionStatus(task); return status !== "unknown" && !ENDED.has(status); };
 
 /**
  * One session as a Live tile (LiveTileSchema), for the person reading it, from the same parts as the session page: Code's task,
@@ -222,6 +232,8 @@ const REVIEW_REASON_MAX = 200;
 export function blockedStepRetry(task: CodeTask): { expectedRevision: number } | undefined {
   const workflow = task.workflow;
   if (task.status === "CLOSED" || task.status === "CANCELLED" || task["closedAt"] !== undefined) return undefined;
+  // A status this build does not know offers no retry (T2 / pre-review S2): Code's word may mean the task is no longer retryable.
+  if (sessionStatus(task) === "unknown") return undefined;
   if (workflow?.state !== "BLOCKED" || !["UNDERSTAND", "PLAN", "PLAN_CRITIQUE", "IMPLEMENT", "VERIFY", "PULL_REQUEST", "WAIT_FOR_MERGE"].includes(workflow.stage ?? "")) return undefined;
   // Code refuses waitingForSpend before retryStep; merge-wait only retries a failed PR update.
   if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.budgetPaused || isRunLimitBlockReason(workflow.blockReason)) return undefined;

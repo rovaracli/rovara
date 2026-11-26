@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 import { makeTemporaryNodeModules } from "./code-workspaces.js";
 import { compareDocuments, driftKey, isRequestSchemaName, type Drift, type DriftReport, type SchemaDocument } from "./compare.js";
 import { extractSchemas, type Extracted, type ZodLike } from "./extract.js";
@@ -63,6 +64,66 @@ export interface CheckResult {
 }
 
 /**
+ * The `...Schema` identifiers a source file CODE uses. A name in a comment or a string is not a parser: before T2 (DECOUPLE, #1516) a comment that said "(SessionViewSchema, ...)" in
+ * packages/cloud-server/src/session-view.ts made the strict `SessionViewSchema` count as read by Cloud, so Code's additive `you.chargedTo` failed the deployed-drift gate although nothing in Cloud
+ * parses a session view with that schema (the web app reads it with the forward reader).
+ */
+function schemaIdentifiers(file: string, source: string): string[] {
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && /^[A-Z][A-Za-z0-9]*Schema$/u.test(node.text)) found.push(node.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS));
+  return found;
+}
+
+/**
+ * Hand-written readers that stay EXACT (pre-review S4): access, destructive-confirmation, money and plan-review answers Cloud reads with a strict reader that is not built by forwardReader (DECOUPLE-T2-DONE.md gives each reason).
+ * Code is compared with the strict schema each one is read with, though code writes only the `...ReaderSchema` name: `XReaderSchema` here means `XSchema` is compared.
+ */
+export const HAND_WRITTEN_EXACT_READERS: readonly string[] = [
+  "DecisionOutcomeReaderSchema", "JiraOrgAdminResultReaderSchema", "LoadedKnowledgeResponseReaderSchema", "LoadedKnowledgeTextReaderSchema", "ModelSelectionPolicyResponseReaderSchema", "OrgServiceStatusReaderSchema",
+  "OrgSlackWorkspaceEvidenceResponseReaderSchema", "ProjectAllowedWebsitesProposalReaderSchema", "ProjectAllowedWebsitesResultReaderSchema", "ProjectAllowedWebsitesReviewReaderSchema", "ProjectSlackDecisionReaderSchema",
+  "ProjectSlackInventoryReaderSchema", "ProjectSlackProposalReaderSchema", "ProjectSlackReceiptReaderSchema", "ProjectSlackTargetReaderSchema", "ProjectWorkingBranchContextReaderSchema", "ProjectWorkingBranchPageReaderSchema",
+  "ProjectWorkingBranchPreviewReaderSchema", "ProjectWorkingBranchSaveResultReaderSchema", "ReviewedProjectArchiveOutcomeReaderSchema", "ReviewedProjectArchivePreviewReaderSchema", "ReviewedProjectRestoreOutcomeReaderSchema",
+  "ReviewedProjectRestorePreviewReaderSchema", "TrackerPeopleReaderSchema", "TrackerPeopleResultReaderSchema",
+];
+
+/**
+ * The 7 hand-written exact readers above that are compared with NOTHING, each with its reason (Opus N1): Code's snapshot has no schema named `XSchema` for them, so the map above finds nothing to compare. The gap is explicit; a
+ * test (tests/contract/decouple-t2-opus-review.test.ts and contract-drift.test.ts) pins this list to the readers that really have no counterpart, so one that gains a counterpart (or a new one without) fails until this is updated.
+ * To close a gap: give Code's schema the same name, or map the reader to the name Code uses.
+ */
+export const EXACT_READERS_NOT_COMPARED: Readonly<Record<string, string>> = {
+  JiraOrgAdminResultReaderSchema: "jira-org-admin-web.ts defines only the reader (`{ status: saved | cleared }`, the result of Cloud's own admin write); Code's snapshot has no `JiraOrgAdminResultSchema`.",
+  LoadedKnowledgeResponseReaderSchema: "loaded-knowledge.ts defines only the reader (the stages Code loaded); Code's snapshot has no `LoadedKnowledgeResponseSchema`.",
+  LoadedKnowledgeTextReaderSchema: "loaded-knowledge.ts defines only the reader (the loaded text or `available: false`); Code's snapshot has no `LoadedKnowledgeTextSchema`.",
+  OrgSlackWorkspaceEvidenceResponseReaderSchema: "org-slack-workspace-evidence.ts holds the strict schema and its `.strip()` reader, but Code's snapshot has no schema of that name (Code names or splits it differently).",
+  ProjectAllowedWebsitesResultReaderSchema: "app-allowed-websites.ts builds the result reader as a union of Cloud-named pieces; Code's snapshot has no `ProjectAllowedWebsitesResultSchema` to compare as a whole (its pieces are compared where named).",
+  TrackerPeopleReaderSchema: "tracker-people-web.ts defines only the reader (the tracker people list); Code's snapshot has no `TrackerPeopleSchema`.",
+  TrackerPeopleResultReaderSchema: "tracker-people-web.ts defines only the reader (`{ status: mapped | unmapped | auto_link_on | auto_link_off }`, the result of Cloud's own write); Code's snapshot has no `TrackerPeopleResultSchema`.",
+};
+
+/**
+ * Schemas the server or the app checks Code's answer against BY HAND, field by field (it refuses an answer with a field or word it does not list), whose only mention in code is the comment that says what it mirrors (pre-review S5). Before
+ * the identifier scan these were compared by accident (the comment counted); they stay compared on purpose, so a Code change to one of them still shows in the gate while the hand-written check would refuse it. Not here, on purpose: SessionViewSchema,
+ * SessionMessageSchema, WorkflowSnapshotShapeSchema and ProjectOverviewSchema (Cloud reads those with forward readers: the #1516 failure was a comment counting them), LiveTileSchema, SessionEventSchema and SessionShareSchema (Cloud builds those itself), request bodies, and local names.
+ */
+export const MIRRORED_SCHEMA_NAMES: readonly string[] = [
+  "AppMeResponseSchema", "AppProjectSummarySchema", "DeveloperTaskEventSchema", "HowWeWorkViewSchema", "SavedEnvPanelSchema", "WorkflowFeedbackReviewRefSchema", "WorkflowStageSchema",
+];
+
+/**
+ * Comment-only mirrors that the gate CANNOT compare today: their contract file is not in packages/contracts/web-safe-files.json, so Code's snapshot has no schema of that name to compare (listed so the loss is explicit, not silent; the test
+ * pins that each is absent from the snapshot and tells the day one becomes comparable, when it moves to MIRRORED_SCHEMA_NAMES). ProjectOverviewSchema is not here: Cloud reads it with a forward reader (the #1516 class).
+ */
+export const MIRRORED_NOT_COMPARABLE: readonly string[] = [
+  "AdminBudgetSettingsSchema", "AgentDirectoryResponseSchema", "AppNavSchema", "CompanyEngineModelViewSchema", "CompanyLearningModelViewSchema", "DeveloperTaskListDetailSchema", "DeveloperTaskListRoundSchema", "FeatureIdSchema",
+  "MemberRemovalPreviewSchema", "TaskPeopleChangeResultSchema", "UpkeepSpendSchema",
+];
+
+/**
  * The schemas Cloud's own code reads an answer with: every `...Schema` name written in the web app (packages/ui/src) or the server (packages/cloud-server/src). A drift in a schema nothing
  * here names cannot refuse an answer today, and the day something starts to use it the name shows up here and the drift with it.
  */
@@ -72,10 +133,12 @@ export function parsedSchemaNames(): Set<string> {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) visit(full);
-      else if (/\.tsx?$/u.test(entry.name)) for (const match of readFileSync(full, "utf8").matchAll(/\b[A-Z][A-Za-z0-9]*Schema\b/gu)) names.add(match[0]);
+      else if (/\.tsx?$/u.test(entry.name)) for (const name of schemaIdentifiers(full, readFileSync(full, "utf8"))) names.add(name);
     }
   };
   for (const dir of ["packages/ui/src", "packages/cloud-server/src"]) visit(path.join(CLOUD_ROOT, dir));
+  for (const reader of HAND_WRITTEN_EXACT_READERS) if (names.has(reader)) names.add(reader.replace(/ReaderSchema$/u, "Schema"));
+  for (const name of MIRRORED_SCHEMA_NAMES) names.add(name);
   return names;
 }
 

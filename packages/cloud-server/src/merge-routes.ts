@@ -74,9 +74,12 @@ export function mergeReadinessAnswer(value: unknown): { mayMerge: boolean; ready
   const mayMerge = need(typeof f["mayMerge"] === "boolean", f["mayMerge"]) as boolean;
   const ready = need(typeof f["ready"] === "boolean" && (mayMerge || f["ready"] === false), f["ready"]) as boolean;
   const message = f["message"] === undefined ? undefined : need(sentence(f["message"]) !== undefined, f["message"]) as string;
-  const risk = f["risk"] === undefined ? undefined : need(typeof f["risk"] === "string" && RISKS.has(f["risk"]), f["risk"]) as string;
+  // T2 (DECOUPLE plan 9.10): a risk word Cloud does not know (a newer Code adds a level) is left out, not a reason the readiness answer is refused whole. The press needs the risk the person saw
+  // (Code's merge body requires it), so an answer without one is not offered in the app: the page falls back to the GitHub path (`pressBound`), which is "unknown shows no action". A risk that is not a word is still unreadable.
+  const risk = f["risk"] === undefined ? undefined : need(typeof f["risk"] === "string" && f["risk"].length >= 1 && f["risk"].length <= 64, f["risk"]) as string;
+  const knownRisk = risk !== undefined && RISKS.has(risk) ? risk : undefined;
   const heads = f["heads"] === undefined || (Array.isArray(f["heads"]) && f["heads"].length === 0) ? undefined : headsOf(f["heads"]);
-  return { mayMerge, ready, ...(message === undefined ? {} : { message }), ...(risk === undefined ? {} : { risk }), ...(heads === undefined ? {} : { heads }), pullRequests: pullsOf(f["pullRequests"], true) };
+  return { mayMerge, ready, ...(message === undefined ? {} : { message }), ...(knownRisk === undefined ? {} : { risk: knownRisk }), ...(heads === undefined ? {} : { heads }), pullRequests: pullsOf(f["pullRequests"], true) };
 }
 
 /** Code's merged answer, rebuilt. */

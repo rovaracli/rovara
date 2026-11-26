@@ -1,5 +1,6 @@
 import { WorkflowDesignReviewSchema } from "./design-review.js";
 import type { TaskMoneyV1 } from "./task-money.js";
+import { TaskMoneyV1Schema } from "./task-money-schema.js";
 // Forward-compatible readers, shared by the chain session views (chain-session.ts) and the agent session views (session-views.ts).
 import { z } from "zod";
 
@@ -54,13 +55,43 @@ function designReviewReader(schema: z.ZodType): z.ZodType {
   }
 }
 
+/**
+ * `key?: true` flags (a plain `z.literal(true).optional()`: present only when true). A newer Code may send such a key as `false`, a word or an object. What that reads as depends on what the flag does, so it is decided BY KEY,
+ * from these three explicit lists (tests/contract/decouple-t2-forward-readers.test.ts pins them and walks every reader so a new flag must be put in one):
+ *  - GRANT: the flag grants something by being `true` (merge, co-owner, live ask/fix, an approval, the offer of the Slack notes switch). A value that is not exactly `true` reads as absent: it grants nothing.
+ *  - WARNING: the flag is a caveat, a failure or a limit (the last run failed, offline, a partial diff, the same model reviewed its own plan, a check that is broken or made with fakes, a list that was cut, a trial that is used, a Slack source that keeps notes with links: `notesOptIn` is a retention FACT, so an unreadable value must never say less is kept). Absent would mean "no
+ *    warning", so an unreadable value must never read as absent: only an explicit `false` or `null` reads as absent (Code said "no"); anything else reads as `true`, so the caveat is shown and never hidden.
+ *  - DISPLAY: a label with no effect on what a person may do or is told is wrong (`you`, `process`). An unreadable value reads as absent.
+ * Every other `true`-only flag keeps the schema's own strict reading (an unreadable value refuses the answer, as before T2).
+ */
+export const GRANT_FLAG_KEYS: readonly string[] = ["approved", "ask", "coOwner", "fix", "mayMerge", "notesSwitch"];
+export const WARNING_FLAG_KEYS: readonly string[] = [
+  "broken", "lastRunFailed", "linked", "madeByRovara", "neverStarted", "noOtherCompany", "notRevised", "offline", "otherCompanyFailed", "partialDiff", "programNotFound", "retireProposed", "notesOptIn", "reviewRequired",
+  "sameModelAsPlanner", "trialUsed", "truncated", "unlisted", "workflowBlocked",
+];
+export const DISPLAY_FLAG_KEYS: readonly string[] = ["process", "you"];
+
+function flagReader(key: string, field: z.ZodType): z.ZodType | undefined {
+  const outer = defOf(field);
+  if (outer.type !== "optional") return undefined;
+  const inner = defOf(outer.innerType as z.ZodType);
+  if (inner.type !== "literal" || ![...(inner.values as unknown[])].every((value) => value === true)) return undefined;
+  const flag = (outer.innerType as z.ZodType).optional();
+  if (GRANT_FLAG_KEYS.includes(key) || DISPLAY_FLAG_KEYS.includes(key)) return flag.catch(undefined as never);
+  if (WARNING_FLAG_KEYS.includes(key)) return flag.catch((context: { input: unknown }) => (context.input === false || context.input === null ? undefined : true) as never);
+  return undefined;
+}
+
 export function readerOf(schema: z.ZodType): z.ZodType {
   if (schema === WorkflowDesignReviewSchema) return designReviewReader(schema);
+  // DECOUPLE T2: task money is read exactly or not at all (parseTaskMoneyV1 refuses any extra key or unknown word: unknown money never becomes exact money). A money block this build cannot read used to refuse the whole
+  // session; it now reads as no money ("Cost unavailable") and the rest of the answer is kept. Nothing in it is ever partly read or interpreted.
+  if (schema === TaskMoneyV1Schema) return schema.catch(undefined as never);
   const def = defOf(schema);
   switch (def.type) {
     case "object": {
       const shape: Record<string, z.ZodType> = (schema as unknown as z.ZodObject).shape;
-      return z.looseObject(Object.fromEntries(Object.entries(shape).map(([key, field]) => [key, readerOf(field)])));
+      return z.looseObject(Object.fromEntries(Object.entries(shape).map(([key, field]) => [key, flagReader(key, field) ?? readerOf(field)])));
     }
     case "enum":
       return openEnum((schema as unknown as z.ZodEnum).options as unknown as readonly [string, ...string[]]);
@@ -68,6 +99,19 @@ export function readerOf(schema: z.ZodType): z.ZodType {
       return z.array(readerOf(def.element as z.ZodType));
     case "optional":
       return readerOf(def.innerType as z.ZodType).optional();
+    // DECOUPLE T2: the wrappers are looked through too. Before, `x.nullable()` / `.default()` / `.readonly()` kept the strict object or closed enum inside as it was, so a newer Code's extra field (or new word)
+    // under a nullable object refused the whole answer. A `.catch()` already tolerates any inner failure and is left as it is.
+    case "nullable":
+      return readerOf(def.innerType as z.ZodType).nullable();
+    case "nonoptional":
+      return readerOf(def.innerType as z.ZodType).nonoptional();
+    case "readonly":
+      return readerOf(def.innerType as z.ZodType).readonly();
+    case "default": {
+      const inner = readerOf(def.innerType as z.ZodType);
+      // Keep the schema's own default, whether it is a value or a function. A default that is an unknown-able word keeps being that word.
+      return inner.default(def.defaultValue as never);
+    }
     case "record": {
       // Only a record keyed by plain strings with no checks of its own is rebuilt (its values are read like any other value: an enum in a record's list is open). An enum-keyed or partial record, or one with a
       // refinement, stays as the schema has it: rebuilding it would make it exhaustive or drop the refinement.

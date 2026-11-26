@@ -1383,10 +1383,13 @@ describe("the Merge button through Code (DEC 254zzz94)", () => {
     expect(mergeCalls().filter((entry) => entry.method === "POST")).toEqual([]);
     expect((await call("POST", `/v1/web/sessions/${sessionId}/merge`, { ...auth, body: { requestId: ID, expectedHeads: [HEAD], risk: "medium" } }))!.status).toBe(200);
     expect(JSON.parse(mergeCalls().filter((entry) => entry.method === "POST")[0]!.body!)).toEqual({ requestId: ID, expectedHeads: [HEAD], risk: "medium" });
-    for (const body of [{ mayMerge: true, ready: true, risk: "extreme", pullRequests: [] }, { mayMerge: true, ready: true, heads: [{ ...HEAD, headSha: "x" }], pullRequests: [] }]) {
-      code.answerMerge("GET", 200, body);
-      expect((await call("GET", `/v1/web/sessions/${sessionId}/merge`, { cookie: auth.cookie }))!.status).toBe(502);
-    }
+    // DECOUPLE T2: a risk word a newer Code adds is left out (the page has no risk, so it offers no Merge press and falls back to GitHub); a head that cannot be read still refuses the whole answer.
+    code.answerMerge("GET", 200, { mayMerge: true, ready: true, risk: "extreme", pullRequests: [] });
+    const unknownRisk = (await call("GET", `/v1/web/sessions/${sessionId}/merge`, { cookie: auth.cookie }))!;
+    expect(unknownRisk.status).toBe(200);
+    expect(JSON.parse(unknownRisk.body)).not.toHaveProperty("risk");
+    code.answerMerge("GET", 200, { mayMerge: true, ready: true, heads: [{ ...HEAD, headSha: "x" }], pullRequests: [] });
+    expect((await call("GET", `/v1/web/sessions/${sessionId}/merge`, { cookie: auth.cookie }))!.status).toBe(502);
   });
 
   it("a long half merge is cut, never dropped; an answer Cloud can't read never says nothing was merged", async () => {
