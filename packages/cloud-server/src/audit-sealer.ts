@@ -322,7 +322,11 @@ export class AuditSealer {
       if (progress.phase === "waiting-timestamp" && progress.tsaProvider !== this.timestamps.provider) {
         next = EpochProgressV1Schema.parse({ ...progress, tsaProvider: this.timestamps.provider, updatedAt: stamp });
         if ((await this.store.advanceEpoch(progress, next)) === "advanced") progress = next;
-        else progress = (await this.store.getEpochProgress(progress.epochId)) ?? progress;
+        else {
+          const stored = await this.store.getEpochProgress(progress.epochId);
+          if (stored === undefined) throw new AuditLedgerCorrupt("epoch progress vanished");
+          progress = stored;
+        }
         continue;
       }
       if (progress.phase === "planned") {

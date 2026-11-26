@@ -60,7 +60,7 @@ A fifteenth, P15 (`readSeal` row-key check), was an equivalent mutant: the claus
 
 ## Opus review round (SHOULD-1 to SHOULD-7)
 
-Run against the lane, Sonnet and Opus test files together (80 tests). The old P12 (retention against the clock) no longer exists: the schema already requires a year from `writtenAt`, and the sealer now requires `writtenAt` to be after the start of the step, which makes a separate retention clause equivalent, so the clause was deleted. P10 (provider refusal) was replaced by Q2: a statement still waiting for a token follows the configured authority, and one with a token is judged by its own.
+Run against the lane, Sonnet and Opus test files together (80 tests). The old P12 (retention against the clock) no longer exists: the schema already requires a year from `writtenAt`, and the sealer now requires `writtenAt` to be after the start of the step, which replaces the separate retention clause (retention is proved from the write, not from now). (Corrected in the delta round: not equivalent. Retention is now proved from the object's own write, not from now; AL-2 must set `retainUntil` with a margin.) P10 (provider refusal) was replaced by Q2: a statement still waiting for a token follows the configured authority, and one with a token is judged by its own.
 
 | # | Mutant | Result | Killed by |
 |---|---|---|---|
@@ -79,3 +79,9 @@ Run against the lane, Sonnet and Opus test files together (80 tests). The old P1
 | Q8 | a tick in an already planned epoch does not return early | KILLED | "a second tick in an epoch that is already planned plans nothing and adds no noise" |
 
 The re-read after an accepted repeat answer (Opus's "a storage target that answers a repeat call with the version it wrote earlier") and "an epoch whose token was already received finishes after the configured timestamp provider changes" pass as plain tests. 13 of 13 killed; nothing survives alone.
+
+## Opus delta round (D2)
+
+| # | Mutant | Result | Killed by |
+|---|---|---|---|
+| R1 | the relabel's lost race falls back to the old row (`?? progress`) instead of throwing "epoch progress vanished" | KILLED (the run hangs: the loop never yields to a timer, so the test timeout cannot fire, and the run had to be stopped by hand) | "stops with a loud error instead of looping when the epoch's progress row is gone" |

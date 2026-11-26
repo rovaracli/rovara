@@ -705,6 +705,26 @@ describe("sealer: the authority named on a statement (pre-review SHOULD-3)", () 
   });
 });
 
+describe("sealer: a relabel that loses a race over a vanished row (Opus delta D2)", () => {
+  it("stops with a loud error instead of looping when the epoch's progress row is gone", async () => {
+    const r = rig();
+    await seed(r);
+    r.tsa.failNext = 1;
+    at(r, "2026-11-25T12:05:10Z");
+    const first = await tick(r); // the statement waits for a stamp, naming "testtsa"
+    class Other extends TimestampDouble { override provider = "othertsa"; }
+    class Vanishes extends DynamoAuditLedgerStore {
+      override async advanceEpoch() {
+        for (const [key, item] of [...r.db.items.entries()]) if (item.pk === `EPOCHSTATE#${first.epochId}`) r.db.items.delete(key);
+        return "stale" as const;
+      }
+    }
+    at(r, "2026-11-25T12:06:00Z");
+    const second = await tick(r, new AuditSealer(new Vanishes(r.db, "t"), r.storage, new Other(), { now: r.now }));
+    expect(second.blocked).toContainEqual({ what: `epoch ${first.epochId}`, reason: "AuditLedgerCorrupt", refused: true });
+  }, 10_000);
+});
+
 describe("sealer: the head and the chain's end (pre-review SHOULD-2, 5)", () => {
   it("stops a company whose head names a record that is not the chain's last", async () => {
     const r = rig();
