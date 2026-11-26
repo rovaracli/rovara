@@ -682,6 +682,21 @@ describe("pipeline stage CLI: the image step", () => {
     expect(manifestOf(run.state).stages.production).toMatchObject({ skipped: "CLOUD_PROD=off", completed: [] });
   });
 
+  it("#373: the skipped production preflight (CLOUD_PROD off) still writes exports.env, which the buildspec requires and the Code actions read", async () => {
+    const run = newRun(betaWorld());
+    run.gates = [integrity, pass("g2", "gateway-live"), pass("p", "proof")];
+    for (const name of ["preflight", "image", "gateway", "gateway-check", "web-app", "proof"] as StepName[]) await step(run, "beta", name);
+    // Each pipeline action starts with an empty out/: beta's exports.env is not there for production.
+    delete run.state.files["out/exports.env"];
+    await step(run, "production", "preflight", { cloudProd: false });
+    expect(run.state.files["out/exports.env"]).toContain("export CODE_RELEASE_EFFECTIVE='run'");
+    expect(run.state.files["out/exports.env"]).toContain("export CLOUD_TAG='v0.13.10'");
+    // A later skipped step writes none (only the preflight's exports are read).
+    delete run.state.files["out/exports.env"];
+    await step(run, "production", "image", { cloudProd: false });
+    expect(run.state.files["out/exports.env"]).toBeUndefined();
+  });
+
   it("CLOUD_REF=latest (from the environment, via buildInputs) runs beta to production: Production deploys what Beta resolved and is not refused over the word latest", async () => {
     const fromEnv = (over: Record<string, string>) => { const i = buildInputs({}, { EXEC_ID, AWS_REGION: "us-east-1", ROVARA_EXPECTED_DEPLOY_ACCOUNT: FAKE_ACCOUNT, CLOUD_REF: "latest", CODE_RELEASE: "run", ...over }, new Date()); return { cloudRef: i.cloudRef, cloudProd: i.cloudProd, codeRelease: i.codeRelease }; };
     const betaIn = fromEnv({ CLOUD_PROD: "off" });
