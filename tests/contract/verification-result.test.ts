@@ -4,6 +4,7 @@ import {
   TESTING_BLOCKED_REASONS, TESTING_CODE_REASONS, TESTING_COMMAND_MAX, TESTING_PARTIAL_REASONS, TESTING_REASONS, TESTING_REASON_TEXT, TESTING_RESULTS, TESTING_RESULT_LABELS, TESTING_ROWS_MAX,
   TestingRowSchema, TestingViewSchema, testingSummary,
 } from "@agentx/contracts";
+import { BROWSER_RUNNER_WORDS } from "../../packages/contracts/src/browser-runner-words.js";
 
 const row = (over: Record<string, unknown> = {}) => ({ label: "unit", command: "pytest -q", status: "passed", ...over });
 const view = (over: Record<string, unknown> = {}) => ({ schemaVersion: 1, result: "verified", reasons: [], rows: [row()], ...over });
@@ -22,6 +23,24 @@ describe("testing result words", () => {
 
   it("names the three codes the design adds as environment reasons", () => {
     for (const reason of ["setup_failed_in_task", "host_blocked", "build_host_offline"]) expect(TESTING_BLOCKED_REASONS).toContain(reason);
+  });
+});
+
+describe("browser_runner_missing (BROWSER-SKIP-HONESTY, Code 256abf700): browser checks did not run because the install has no browser runner", () => {
+  it("is an environment reason with Code's words, and says neither passed nor failed", () => {
+    expect(TESTING_BLOCKED_REASONS).toContain("browser_runner_missing");
+    expect(TESTING_REASON_TEXT.browser_runner_missing).toBe("browser checks did not run: there is no browser runner");
+    expect(TESTING_REASON_TEXT.browser_runner_missing).toBe(BROWSER_RUNNER_WORDS.testingReason);
+    expect(TESTING_REASON_TEXT.browser_runner_missing).not.toMatch(/passed|failed|verified/iu);
+    expect(BROWSER_RUNNER_WORDS.notRun).toBe("Browser checks not run: this install has no browser runner.");
+  });
+
+  it("parses a blocked row and a Blocked by environment view that carry it, and refuses it on a row that is not blocked", () => {
+    expect(TestingRowSchema.safeParse(row({ status: "blocked", reason: "browser_runner_missing" })).success).toBe(true);
+    expect(TestingViewSchema.safeParse(view({ result: "blocked_by_environment", reasons: ["browser_runner_missing"], rows: [row(), row({ label: "browser", status: "blocked", reason: "browser_runner_missing" })] })).success).toBe(true);
+    expect(TestingRowSchema.safeParse(row({ status: "failed", reason: "browser_runner_missing" })).success).toBe(false);
+    expect(TestingRowSchema.safeParse(row({ status: "not_run", reason: "browser_runner_missing" })).success).toBe(false);
+    expect(TestingRowSchema.safeParse(row({ reason: "browser_runner_missing" })).success).toBe(false);
   });
 });
 
