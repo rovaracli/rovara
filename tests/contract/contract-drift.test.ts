@@ -54,10 +54,13 @@ describe("contract drift against Code's pinned snapshot", () => {
     expect(snapshot.files).toEqual(webSafeFiles());
   });
 
-  it("reads the schemas Cloud's app and server name, and those include the setup draft the break was found in", () => {
+  it("reads the schemas Cloud's app and server name in code, not in a comment or a string, and those include the setup draft the break was found in", () => {
     const parsed = parsedSchemaNames();
     expect(parsed.size).toBeGreaterThan(100);
     expect(parsed.has("SetupDraftResponseSchema")).toBe(true);
+    // #1516: cloud-server/src/session-view.ts names `SessionViewSchema` in a comment only; the app reads a session with SessionViewReaderSchema. A comment is not a parser.
+    expect(parsed.has("SessionViewSchema")).toBe(false);
+    expect(parsed.has("SessionViewReaderSchema")).toBe(true);
   });
 
   it("finds the Code 0.5.49 break: a setup item's timeoutSeconds against a strict Cloud schema, and passes once Cloud takes the field", () => {
