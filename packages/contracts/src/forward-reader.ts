@@ -55,6 +55,33 @@ function designReviewReader(schema: z.ZodType): z.ZodType {
   }
 }
 
+/**
+ * `key?: true` flags (a plain `z.literal(true).optional()`: present only when true). A newer Code may send such a key as `false`, a word or an object. What that reads as depends on what the flag does, so it is decided BY KEY,
+ * from these three explicit lists (tests/contract/decouple-t2-forward-readers.test.ts pins them and walks every reader so a new flag must be put in one):
+ *  - GRANT: the flag grants something by being `true` (merge, co-owner, live ask/fix, an approval, a notes opt-in). A value that is not exactly `true` reads as absent: it grants nothing.
+ *  - WARNING: the flag is a caveat, a failure or a limit (the last run failed, offline, a partial diff, the same model reviewed its own plan, a check that is broken or made with fakes, a list that was cut, a trial that is used). Absent would mean "no
+ *    warning", so an unreadable value must never read as absent: only an explicit `false` or `null` reads as absent (Code said "no"); anything else reads as `true`, so the caveat is shown and never hidden.
+ *  - DISPLAY: a label with no effect on what a person may do or is told is wrong (`you`, `process`). An unreadable value reads as absent.
+ * Every other `true`-only flag keeps the schema's own strict reading (an unreadable value refuses the answer, as before T2).
+ */
+export const GRANT_FLAG_KEYS: readonly string[] = ["approved", "ask", "coOwner", "fix", "mayMerge", "notesOptIn", "notesSwitch"];
+export const WARNING_FLAG_KEYS: readonly string[] = [
+  "broken", "lastRunFailed", "linked", "madeByRovara", "neverStarted", "noOtherCompany", "notRevised", "offline", "otherCompanyFailed", "partialDiff", "programNotFound", "retireProposed", "reviewRequired",
+  "sameModelAsPlanner", "trialUsed", "truncated", "unlisted", "workflowBlocked",
+];
+export const DISPLAY_FLAG_KEYS: readonly string[] = ["process", "you"];
+
+function flagReader(key: string, field: z.ZodType): z.ZodType | undefined {
+  const outer = defOf(field);
+  if (outer.type !== "optional") return undefined;
+  const inner = defOf(outer.innerType as z.ZodType);
+  if (inner.type !== "literal" || ![...(inner.values as unknown[])].every((value) => value === true)) return undefined;
+  const flag = (outer.innerType as z.ZodType).optional();
+  if (GRANT_FLAG_KEYS.includes(key) || DISPLAY_FLAG_KEYS.includes(key)) return flag.catch(undefined as never);
+  if (WARNING_FLAG_KEYS.includes(key)) return flag.catch((context: { input: unknown }) => (context.input === false || context.input === null ? undefined : true) as never);
+  return undefined;
+}
+
 export function readerOf(schema: z.ZodType): z.ZodType {
   if (schema === WorkflowDesignReviewSchema) return designReviewReader(schema);
   // DECOUPLE T2: task money is read exactly or not at all (parseTaskMoneyV1 refuses any extra key or unknown word: unknown money never becomes exact money). A money block this build cannot read used to refuse the whole
@@ -64,18 +91,14 @@ export function readerOf(schema: z.ZodType): z.ZodType {
   switch (def.type) {
     case "object": {
       const shape: Record<string, z.ZodType> = (schema as unknown as z.ZodObject).shape;
-      return z.looseObject(Object.fromEntries(Object.entries(shape).map(([key, field]) => [key, readerOf(field)])));
+      return z.looseObject(Object.fromEntries(Object.entries(shape).map(([key, field]) => [key, flagReader(key, field) ?? readerOf(field)])));
     }
     case "enum":
       return openEnum((schema as unknown as z.ZodEnum).options as unknown as readonly [string, ...string[]]);
     case "array":
       return z.array(readerOf(def.element as z.ZodType));
-    case "optional": {
-      const inner = defOf(def.innerType as z.ZodType);
-      // A flag that grants something by being `true` (`you.mayMerge`, `you.coOwner`, `live.ask`): any other value a newer Code sends reads as absent, which grants nothing, instead of refusing the whole answer.
-      if (inner.type === "literal" && [...(inner.values as unknown[])].every((value) => value === true)) return (def.innerType as z.ZodType).optional().catch(undefined as never);
+    case "optional":
       return readerOf(def.innerType as z.ZodType).optional();
-    }
     // DECOUPLE T2: the wrappers are looked through too. Before, `x.nullable()` / `.default()` / `.readonly()` kept the strict object or closed enum inside as it was, so a newer Code's extra field (or new word)
     // under a nullable object refused the whole answer. A `.catch()` already tolerates any inner failure and is left as it is.
     case "nullable":

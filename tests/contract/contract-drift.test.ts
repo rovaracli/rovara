@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import * as zod from "zod";
 import { describe, expect, it } from "vitest";
 import { compareDocuments, compareSchema, driftKey, groupDrifts, type SchemaDocument } from "../../scripts/contract-drift/compare.js";
-import { check, extractCloud, parsedSchemaNames, readAccepted, readSnapshot, webSafeFiles } from "../../scripts/contract-drift/run.js";
+import { check, extractCloud, HAND_WRITTEN_EXACT_READERS, MIRRORED_NOT_COMPARABLE, MIRRORED_SCHEMA_NAMES, parsedSchemaNames, readAccepted, readSnapshot, webSafeFiles } from "../../scripts/contract-drift/run.js";
 
 const doc = (schemas: Record<string, unknown>, aliases: Record<string, string> = {}): SchemaDocument => ({ schemas: schemas as SchemaDocument["schemas"], aliases });
 const obj = (properties: Record<string, unknown>, required: string[] = [], closed = true) => ({ type: "object", properties, required, ...(closed ? { additionalProperties: false } : {}) });
@@ -61,6 +61,45 @@ describe("contract drift against Code's pinned snapshot", () => {
     // #1516: cloud-server/src/session-view.ts names `SessionViewSchema` in a comment only; the app reads a session with SessionViewReaderSchema. A comment is not a parser.
     expect(parsed.has("SessionViewSchema")).toBe(false);
     expect(parsed.has("SessionViewReaderSchema")).toBe(true);
+  });
+
+  // Pre-review S4: a hand-written exact reader is read as `XReaderSchema` but is as strict as `XSchema`, so Code is compared with `XSchema`.
+  it("compares Code with the strict schema of every hand-written exact reader Cloud reads with, though code writes only its ReaderSchema name", () => {
+    const parsed = parsedSchemaNames();
+    expect(HAND_WRITTEN_EXACT_READERS).toHaveLength(25);
+    const snapshot = readSnapshot();
+    const inCode = (name: string) => Object.keys(snapshot.schemas).some((id) => id.endsWith(`#${name}`));
+    for (const reader of HAND_WRITTEN_EXACT_READERS) {
+      expect(reader.endsWith("ReaderSchema")).toBe(true);
+      const strict = reader.replace(/ReaderSchema$/u, "Schema");
+      // The reader is named in code (or the entry is dead), and its strict schema is compared whenever it is.
+      expect(parsed.has(reader), `${reader} is named in the app or server`).toBe(true);
+      expect(parsed.has(strict), `${strict} is compared`).toBe(true);
+    }
+    // The destructive-confirmation readers are compared against Code's own schema (the snapshot has them), so a drift in them is seen.
+    for (const name of ["ReviewedProjectArchivePreviewSchema", "ReviewedProjectArchiveOutcomeSchema", "ReviewedProjectRestorePreviewSchema", "ReviewedProjectRestoreOutcomeSchema", "DecisionOutcomeSchema", "OrgServiceStatusSchema"]) expect(inCode(name), `${name} in Code's snapshot`).toBe(true);
+    // A forward reader's strict schema is NOT compared just because the reader is named (that is the #1516 failure).
+    expect(parsed.has("SessionViewReaderSchema")).toBe(true);
+    expect(parsed.has("SessionViewSchema")).toBe(false);
+  });
+  it("the real drift the exact readers surface is accepted by name, and nothing else is new", () => {
+    const accepted = readAccepted().map((entry) => entry.key);
+    for (const key of ["reviewed-project-archive.ts#ReviewedProjectArchivePreviewSchema expectedProjectIncarnation", "reviewed-project-restore.ts#ReviewedProjectRestorePreviewSchema expectedProjectIncarnation", "app-service-status.ts#OrgServiceStatusSchema teamRecord"]) {
+      expect(accepted.some((entry) => entry.startsWith(key)), key).toBe(true);
+    }
+  });
+  // Pre-review S5: names that only a comment mentions, whose schema a server route or the app checks Code's answer against by hand, stay compared (the identifier scan alone would drop them).
+  it("keeps the named mirrored schemas compared, each one real in Code's snapshot, and still leaves the #1516 schemas out", () => {
+    const parsed = parsedSchemaNames();
+    const snapshot = readSnapshot();
+    expect(MIRRORED_SCHEMA_NAMES).toHaveLength(7);
+    expect(new Set(MIRRORED_SCHEMA_NAMES).size).toBe(MIRRORED_SCHEMA_NAMES.length);
+    for (const name of MIRRORED_SCHEMA_NAMES) { expect(parsed.has(name), `${name} is compared`).toBe(true); expect(Object.keys(snapshot.schemas).some((id) => id.endsWith(`#${name}`)), `${name} is in Code's snapshot`).toBe(true); }
+    for (const name of ["SavedEnvPanelSchema", "HowWeWorkViewSchema", "AppMeResponseSchema"]) expect(MIRRORED_SCHEMA_NAMES).toContain(name);
+    // The mirrors the gate cannot compare (no schema of that name in Code's snapshot: the contract file is not web-safe): named, so the loss is explicit. The day one is in the snapshot it must move to MIRRORED_SCHEMA_NAMES.
+    expect(MIRRORED_NOT_COMPARABLE).toHaveLength(11);
+    for (const name of MIRRORED_NOT_COMPARABLE) { expect(Object.keys(snapshot.schemas).some((id) => id.endsWith(`#${name}`)), `${name} has no schema to compare (move it to MIRRORED_SCHEMA_NAMES if it does)`).toBe(false); expect(MIRRORED_SCHEMA_NAMES).not.toContain(name); }
+    for (const name of ["SessionViewSchema", "SessionMessageSchema", "WorkflowSnapshotShapeSchema", "ProjectOverviewSchema"]) { expect(MIRRORED_SCHEMA_NAMES).not.toContain(name); expect(parsed.has(name), `${name} stays out`).toBe(false); }
   });
 
   it("finds the Code 0.5.49 break: a setup item's timeoutSeconds against a strict Cloud schema, and passes once Cloud takes the field", () => {

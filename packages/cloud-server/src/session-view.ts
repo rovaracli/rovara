@@ -36,7 +36,7 @@ export interface CodeTask {
 
 /**
  * T2 (DECOUPLE plan 9.10): "unknown" is the status of a task whose Code status this Cloud does not know (a newer Code adds one). The session still reads, with its data and no new action:
- * it is not running (no Stop), not waiting (no card), not ended (no end time); the page shows "Status unavailable". It is never read as failed, so nothing is retried or alarmed on a guess.
+ * it is not running (no Stop, not on the Live board), offers no Retry and no Close, not waiting (no card), not ended (no end time); the page shows "Status unavailable". It is never read as failed, so nothing is retried or alarmed on a guess.
  */
 type SessionStatus = "starting" | "running" | "needs_person" | "stopped" | "succeeded" | "failed" | "cancelled" | "unknown";
 
@@ -180,7 +180,8 @@ const STEP_WORDS: Record<string, string> = {
 };
 
 /** Whether the session is still going: not stopped, done, failed or cancelled. */
-export const sessionRunning = (task: CodeTask): boolean => !ENDED.has(sessionStatus(task));
+// An unknown status is NOT running (T2 / pre-review S2): it stays off the project's Live board, which lists running work.
+export const sessionRunning = (task: CodeTask): boolean => { const status = sessionStatus(task); return status !== "unknown" && !ENDED.has(status); };
 
 /**
  * One session as a Live tile (LiveTileSchema), for the person reading it, from the same parts as the session page: Code's task,
@@ -227,6 +228,8 @@ const REVIEW_REASON_MAX = 200;
 export function blockedStepRetry(task: CodeTask): { expectedRevision: number } | undefined {
   const workflow = task.workflow;
   if (task.status === "CLOSED" || task.status === "CANCELLED" || task["closedAt"] !== undefined) return undefined;
+  // A status this build does not know offers no retry (T2 / pre-review S2): Code's word may mean the task is no longer retryable.
+  if (sessionStatus(task) === "unknown") return undefined;
   if (workflow?.state !== "BLOCKED" || !["UNDERSTAND", "PLAN", "PLAN_CRITIQUE", "IMPLEMENT", "VERIFY", "PULL_REQUEST", "WAIT_FOR_MERGE"].includes(workflow.stage ?? "")) return undefined;
   // Code refuses waitingForSpend before retryStep; merge-wait only retries a failed PR update.
   if (workflow.blockReason === WORKFLOW_BLOCK_REASONS.budgetPaused || isRunLimitBlockReason(workflow.blockReason)) return undefined;
