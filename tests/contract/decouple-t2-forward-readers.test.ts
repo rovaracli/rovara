@@ -7,7 +7,7 @@ import * as web from "../../packages/contracts/src/web.js";
 import { SessionViewSchema, SessionViewReaderSchema, SessionResponseReaderSchema, forwardReader } from "@agentx/contracts/web";
 import { sessionFixture } from "../web/support/session-fixture.js";
 
-// What Code's SessionView carries today that Cloud's copy of the schema (packages/contracts/src/session-views.ts) does not: `display` and `you.chargedTo` (TASK-TAKEOVER PR A, the cause of the #1516 beta
+// What Code's SessionView carries today that Cloud's copy of the schema (packages/contracts/src/session-views.ts) does not: `display`, and (until the one-field single landed on cloud/next) `you.chargedTo` (TASK-TAKEOVER PR A, the cause of the #1516 beta
 // release failing closed). This is Code's view as Code serves it, so the strict schema Cloud holds refuses it and the reader Cloud parses with must not.
 function codeSessionView(extra: { you?: Record<string, unknown>; top?: Record<string, unknown> } = {}) {
   const base = sessionFixture();
@@ -25,12 +25,13 @@ describe("#1516: Code's session view with fields Cloud's schema does not have", 
     }
   });
   it("does not fail the deployed-drift gate: the gate compares only schemas Cloud parses in code, and nothing parses a session with the strict SessionViewSchema", async () => {
-    // Code's side as origin/code/next serves it: the pinned snapshot plus `you.chargedTo`.
+    // Code's side as a newer origin/code/next serves it: the pinned snapshot plus a `you` field Cloud's schema does not have. (`you.chargedTo` itself is in Cloud's schema since the one-field single landed on
+    // cloud/next, so the #1516 shape is reproduced with a made-up field; the gate treats every such field alike.)
     const snapshot = structuredClone(readSnapshot());
     const view = snapshot.schemas["session-views.ts#SessionViewSchema"] as unknown as { properties: { you: { properties: Record<string, unknown> } } };
-    view.properties.you.properties["chargedTo"] = { type: "string", minLength: 1, maxLength: 260 };
+    view.properties.you.properties["futureNote"] = { type: "string", minLength: 1, maxLength: 260 };
     const cloud = await extractCloud(zod as never);
-    const named = (drifts: readonly { schema: string; path: string }[]) => drifts.filter(drift => drift.schema.endsWith("#SessionViewSchema") && drift.path === "you.chargedTo");
+    const named = (drifts: readonly { schema: string; path: string }[]) => drifts.filter(drift => drift.schema.endsWith("#SessionViewSchema") && drift.path === "you.futureNote");
     // Before T2 a comment made the strict schema count as parsed, and the gate refused the release (the #1516 failure).
     expect(named(check(snapshot, cloud, [], new Set([...parsedSchemaNames(), "SessionViewSchema"])).unaccepted)).toHaveLength(1);
     expect(named(check(snapshot, cloud, []).report.drifts)).toHaveLength(0);
@@ -51,7 +52,7 @@ describe("forwardReader is deep", () => {
   const input = { you: { level: "future", f: 1, nested: { n: 1, f: 2 }, more: { k: "c", f: 3 }, list: [{ s: "x", f: 4 }, null] }, f: 5 };
   it("accepts an unknown key under nullable, default, readonly, array and optional wrappers, and reads an unknown word as unknown", () => {
     expect(Strict.safeParse(input).success).toBe(false);
-    const read = forwardReader(Strict).parse(input) as { you: { level: string; nested: { f: number }; more: { k: string; f: number }; list: Array<{ f: number } | null> } };
+    const read = forwardReader(Strict).parse(input) as unknown as { you: { level: string; nested: { f: number }; more: { k: string; f: number }; list: Array<{ f: number } | null> } };
     expect(read.you.level).toBe("unknown");
     expect(read.you.nested.f).toBe(2);
     expect(read.you.more).toEqual({ k: "unknown", f: 3 });
