@@ -385,8 +385,12 @@ export class CodeClient {
     if (second.status === 401) {
       // A 401 on a fresh token can come from Code's gateway for a path Code doesn't serve (a legacy install has no /v1/app/*).
       // Only Code's own access check refusing the sign-in ends it; otherwise the path is answered as not on Code yet.
-      if (path !== "/v1/dev/access" && await this.accessWith(session.accessToken, deadline) !== undefined) {
-        throw new CodeError(501, { error: { code: "NOT_ON_CODE_YET", message: "This isn't available on this Rovara Code yet." } });
+      if (path !== "/v1/dev/access") {
+        const check = await this.accessStanding(session.accessToken, deadline);
+        // MEMBERSHIP-READ-FAILS-SAFE: Code's own access check failing to ANSWER (a 5xx, a throttle, a timeout status) says nothing about the person: the read is retryable, the sign-in is kept
+        // and nothing is signed out. Only the check's own refusal (a 401) ends it.
+        if (check === "unavailable") throw new CodeError(503, { error: { code: "RUNTIME_UNAVAILABLE", message: "Rovara Code didn't answer just now. Try again in a moment." } });
+        if (check === "ok") throw new CodeError(501, { error: { code: "NOT_ON_CODE_YET", message: "This isn't available on this Rovara Code yet." } });
       }
       throw new SignInEnded();
     }
@@ -462,6 +466,20 @@ export class CodeClient {
       return { kind: "ok", tokens: { accessToken: body.access_token, ...(typeof body.refresh_token === "string" ? { refreshToken: body.refresh_token } : {}) } };
     }
     return response.status === 400 && body.error === "invalid_grant" ? { kind: "refused" } : { kind: "failed" };
+  }
+
+  /**
+   * Whether Code's access check still lets this token in, for the 401-after-refresh decision: "ok" (it answered 2xx), "unavailable" (it could not answer: a 5xx, 408 or 429, so nothing is
+   * known about the person), or "refused" (any other answer, 401 first: the sign-in is over). A transport failure is not caught here (it propagates, as it always did).
+   */
+  private async accessStanding(accessToken: string, deadline?: number): Promise<"ok" | "unavailable" | "refused"> {
+    const responseWork = this.fetchImpl(`${this.base}/v1/dev/access`, {
+      method: "POST", headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" }, body: "{}",
+      ...(deadline === undefined ? {} : { signal: AbortSignal.timeout(remaining(deadline)) }),
+    });
+    const response = deadline === undefined ? await responseWork : await beforeDeadline(responseWork, deadline);
+    if (response.ok) return "ok";
+    return response.status >= 500 || response.status === 408 || response.status === 429 ? "unavailable" : "refused";
   }
 
   private async accessWith(accessToken: string, deadline?: number): Promise<CodeAccess | undefined> {
