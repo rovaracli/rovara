@@ -238,3 +238,31 @@ describe("opus review: rules no test pinned (mutants X1, X2, X5, X8 in AL-1-REVI
     expect(await r.store.readRecords(A, 1, 10)).toHaveLength(1);
   });
 });
+
+describe("opus delta 1: what the relaxed evidence check accepts (pins the meaning, so a change to it is deliberate)", () => {
+  it("accepts an answer written during this step long ago, locked a year from ITS write (less than a year from now), and refuses one written before the step", async () => {
+    const DAY = 86_400_000;
+    const r = rig();
+    await seed(r);
+    at(r, "2026-11-25T12:05:10Z");
+    const planned = r.clock.ms;
+    class Unwired extends LockedStorageDouble { override async putLocked(): Promise<never> { throw new Error("not wired"); } }
+    await new AuditSealer(r.store, new Unwired(r.now), r.tsa, { now: r.now }).tick();
+    // The storage target was not wired for 200 days; the seal rows were planned at 12:05:10 and waited.
+    r.clock.ms = planned + 200 * DAY;
+    const answering = (writtenAt: number) => class extends LockedStorageDouble {
+      override async putLocked(write: Parameters<LockedStorageDouble["putLocked"]>[0]) {
+        return { ...(await super.putLocked(write)), writtenAt: iso(writtenAt), retainUntil: iso(writtenAt + 365 * DAY) };
+      }
+    };
+    const Before = answering(planned - 60 * 60_000);
+    await new AuditSealer(r.store, new Before(r.now), r.tsa, { now: r.now }).tick();
+    expect((await r.store.getSealProgress(A, 1, 3))?.phase).toBe("planned");
+    const During = answering(planned + 60_000);
+    await new AuditSealer(r.store, new During(r.now), r.tsa, { now: r.now }).tick();
+    const progress = await r.store.getSealProgress(A, 1, 3);
+    // The records batch is accepted (written within this step, a year from its own write); the next step began now, so the same old answer is refused there.
+    expect(progress?.phase).toBe("batch-locked");
+    if (progress?.phase === "batch-locked") expect(Date.parse(progress.batch.retainUntil) - r.clock.ms).toBeLessThan(170 * DAY);
+  });
+});
