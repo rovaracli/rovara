@@ -76,3 +76,10 @@ export { ANSWERS_ANSWERS, ANSWERS_ROUTES, ANSWERS_WORDS, answerObject, answersRe
 export { PEOPLE_LIMITS_ROUTES, PEOPLE_LIMITS_WORDS, type PersonSpendReader } from "./people-limits-routes.js";
 export { DynamoGatewayMeterReader, meterPartition, personMonthSort } from "./gateway-meter-read.js";
 export { AGENT_DIRECTORY_ANSWERS, AGENT_DIRECTORY_LIMIT, AGENT_DIRECTORY_ROUTES, AGENT_DIRECTORY_WORDS, AGENT_LIMITS, AGENT_SCOPES, agentDirectoryRefusal, directoryAnswer } from "./agent-directory-routes.js";
+export { AuditAppendContended, AuditAppendRefused, AuditAppender, type AppendResult, type AppenderOptions } from "./audit-appender.js";
+export { AuditLedgerCorrupt, DynamoAuditLedgerStore, type AuditChainStore, type AuditSealStore, type ChainHead, type EpochTip, type SealTip } from "./audit-ledger-store.js";
+export { AuditSealRefused, AuditSealer, closedAtOfEpoch, epochIdOf, lastBoundary, type SealTickReport, type SealerOptions } from "./audit-sealer.js";
+export {
+  AuditSealingNotConfigured, unconfiguredLockedStorage, unconfiguredTimestampSource,
+  type AuditLockedStorage, type AuditTimestampSource, type LockedEvidenceV1, type LockedObjectWrite,
+} from "./audit-sealing-ports.js";
