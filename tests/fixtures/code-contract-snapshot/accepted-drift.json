@@ -198,15 +198,5 @@
       "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].workingBacking(3).awsServices limit: Code allows up to 64 items; Cloud allows 24",
       "test-environment-wire.ts#TestEnvironmentStateSchema proposal.environment.dependencies[].workingBacking(4).provenance unknown-field: Code sends \"provenance\"; Cloud's object is strict and does not list it"
     ]
-  },
-  {
-    "why": "DECOUPLE T2 pre-review S4: these are hand-written EXACT readers (destructive confirmation of a project archive/restore, and the org service status) that the gate did not compare before, because code writes only their `...ReaderSchema` name. Code's pinned snapshot sends a field Cloud's exact schema does not list, so Cloud's reader refuses that answer today (the archive/restore preview and outcome, the service status), which is the safe side but a broken screen the day Code serves it. NOT fixed in the T2 lane: the exact readers need their own small lane with an Opus read (DECOUPLE-T2-DONE.md, 'Hand-written readers that stay exact'): add the field to Cloud's schema, then remove these entries. Owner/controller: decide whether those screens must work before the next Code release.",
-    "keys": [
-      "app-service-status.ts#OrgServiceStatusSchema teamRecord unknown-field: Code sends \"teamRecord\"; Cloud's object is strict and does not list it",
-      "reviewed-project-archive.ts#ReviewedProjectArchiveOutcomeSchema current.expectedProjectIncarnation unknown-field: Code sends \"expectedProjectIncarnation\"; Cloud's object is strict and does not list it",
-      "reviewed-project-archive.ts#ReviewedProjectArchivePreviewSchema expectedProjectIncarnation unknown-field: Code sends \"expectedProjectIncarnation\"; Cloud's object is strict and does not list it",
-      "reviewed-project-restore.ts#ReviewedProjectRestoreOutcomeSchema current.expectedProjectIncarnation unknown-field: Code sends \"expectedProjectIncarnation\"; Cloud's object is strict and does not list it",
-      "reviewed-project-restore.ts#ReviewedProjectRestorePreviewSchema expectedProjectIncarnation unknown-field: Code sends \"expectedProjectIncarnation\"; Cloud's object is strict and does not list it"
-    ]
   }
 ]
