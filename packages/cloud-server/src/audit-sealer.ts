@@ -5,7 +5,10 @@
 //   0. every earlier epoch is fenced off (no seal may be planned into it any more) and every earlier epoch that holds a planned seal is closed, whoever
 //      planned the seal and whether or not that writer ever came back to close it;
 //   1. each company with records up to that boundary that no seal covers gets a seal planned (range, Merkle root, head, link to its last seal), after the
-//      sealer re-checks that range against the chain (`checkChain`): a stored record that was changed is refused, never sealed;
+//      sealer re-checks that range against the chain (`checkChain`): a range whose records do not link to each other and to the company's last seal is
+//      refused, never sealed. A rewrite that is internally consistent (an unsealed tail, or a chain never sealed, rewritten with every hash recomputed) is
+//      NOT detectable here and is sealed as written: until seals are locked off the table (AL-2), whoever can write the table can rewrite unsealed
+//      records undetected;
 //   2. the epoch is closed (no seal can join it) and every closed epoch gets its statement planned, oldest first, chained to the previous statement. A later
 //      statement is never planned while an earlier closed epoch has none;
 //   3. every closed epoch not yet done is advanced as far as the ports allow: seal batch and seal locked, statement locked, token received, token locked.
@@ -17,7 +20,7 @@
 // "planned": this module claims nothing it did not do.
 import { createHash } from "node:crypto";
 import {
-  AUDIT_MAX_RECORDS_PER_ORG_EPOCH, AUDIT_RETENTION_DAYS_MIN_COMPLIANCE, AUDIT_SEAL_INTERVAL_MINUTES, TIMESTAMP_SKEW_MS, auditCanonicalJson, checkChain, genesisHash, merkleRoot, recordLeafData, sealHash, sealLeafData, statementHash,
+  AUDIT_MAX_RECORDS_PER_ORG_EPOCH, AUDIT_SEAL_INTERVAL_MINUTES, TIMESTAMP_SKEW_MS, auditCanonicalJson, checkChain, genesisHash, merkleRoot, recordLeafData, sealHash, sealLeafData, statementHash,
   type EpochStatementV1, type OrgSealV1,
 } from "@agentx/contracts";
 import type { AuditRecordV1 } from "@agentx/contracts/audit-record-v1";
@@ -25,7 +28,7 @@ import {
   EpochProgressV1Schema, LockedEvidenceV1Schema, SealProgressV1Schema, type EpochProgressV1, type SealProgressV1,
 } from "./audit-contracts-v1.js";
 import type { AuditSealStore, EpochTip, SealTip } from "./audit-ledger-store.js";
-import { AuditLedgerCorrupt } from "./audit-ledger-store.js";
+import { AuditLedgerCorrupt, AuditStoreBusy } from "./audit-ledger-store.js";
 import { AuditSealingNotConfigured, UNCONFIGURED_PROVIDER, type AuditLockedStorage, type AuditTimestampSource, type LockedEvidenceV1, type LockedObjectWrite } from "./audit-sealing-ports.js";
 
 /** A range that is about to be sealed does not check against the chain (or no longer matches what was planned). Nothing is sealed or locked. */
@@ -111,9 +114,15 @@ export class AuditSealer {
   }
 
   private async planSeals(epochId: string, boundary: Date, report: SealTickReport): Promise<void> {
-    // A later epoch is already planned: this tick is late, its records go into a later epoch.
     const epochTip = await this.store.getEpochTip();
-    if (epochTip !== undefined && epochTip.epochId >= epochId) return;
+    // The same epoch is already planned: this tick is a repeat, its records go into the next one.
+    if (epochTip !== undefined && epochTip.epochId === epochId) return;
+    // A later epoch is already planned or fenced (a sealer whose clock is ahead ran): nothing can be planned into this one. Nothing is lost, but say so.
+    const fence = await this.store.getFence();
+    if ((epochTip !== undefined && epochTip.epochId > epochId) || (fence !== undefined && fence > epochId)) {
+      report.blocked.push({ what: "hold sealing", reason: "AuditEpochAheadOfClock", refused: false });
+      return;
+    }
     for (const companyId of (await this.store.listCompanies()).sort()) {
       try {
         await this.planSealFor(companyId, epochId, boundary, report);
@@ -129,6 +138,11 @@ export class AuditSealer {
       const head = await this.store.getHead(companyId);
       const tip: SealTip | undefined = await this.store.getSealTip(companyId);
       const fromSeq = (tip?.toSeq ?? 0) + 1;
+      if (head === undefined && tip !== undefined) throw new AuditLedgerCorrupt(`company ${companyId}: the chain's head is missing though seq ${tip.toSeq} is sealed`);
+      // A head below what is sealed, or at the sealed record with another hash, is a rolled-back or replaced head: loud, never silent.
+      if (head !== undefined && tip !== undefined && (head.seq < tip.toSeq || (head.seq === tip.toSeq && head.hash !== tip.headHash))) {
+        throw new AuditLedgerCorrupt(`company ${companyId}: the chain's head is behind or not the sealed record (sealed through seq ${tip.toSeq})`);
+      }
       if (head === undefined || head.seq < fromSeq) return;
 
       const wanted = Math.min(this.maxPerSeal, head.seq - fromSeq + 1);
@@ -162,6 +176,8 @@ export class AuditSealer {
       }
       // Refused: another sealer planned first, or the tip moved. Look again.
     }
+    // Three refusals in a row: not an error of this company's data, but nothing was planned. Retried by the next tick.
+    report.blocked.push({ what: `plan seal ${companyId}`, reason: "AuditPlanContended", refused: false });
   }
 
   private async advanceEpochs(report: SealTickReport): Promise<void> {
@@ -186,6 +202,10 @@ export class AuditSealer {
   }
 
   private async advanceEpoch(epochId: string, tipIn: EpochTip | undefined, canPlan: boolean, report: SealTickReport): Promise<{ done: boolean; tip: EpochTip | undefined }> {
+    // An epoch that is already timestamped needs no more reads: one stuck epoch must not make every tick read every later epoch again.
+    const existing = await this.store.getEpochProgress(epochId);
+    if (existing?.phase === "timestamped") return { done: true, tip: { epochId, statementHash: existing.statementHash } };
+
     const seals = await this.store.listEpochSeals(epochId);
     if (seals.length === 0) throw new AuditLedgerCorrupt(`epoch ${epochId} is closed with no seals`);
 
@@ -223,7 +243,8 @@ export class AuditSealer {
       const planned = EpochProgressV1Schema.parse({ ...statement, kind: "epoch-progress", phase: "planned", statementHash: statementHash(statement), updatedAt: this.now().toISOString() });
       if ((await this.store.planEpoch(planned, { tip })) === "refused") {
         epoch = await this.store.getEpochProgress(epochId);
-        if (epoch === undefined) throw new AuditLedgerCorrupt(`epoch ${epochId} could not be planned`);
+        // Refused on a condition, yet no statement: another sealer moved the tip. Nothing is wrong with the data; the next tick looks again.
+        if (epoch === undefined) throw new AuditStoreBusy(`epoch ${epochId} was not planned this time`);
       } else epoch = planned;
     }
     tip = { epochId: epoch.epochId, statementHash: epoch.statementHash };
@@ -233,13 +254,18 @@ export class AuditSealer {
     return { done: (await this.advanceEpochPhases(epoch)).phase === "timestamped", tip };
   }
 
-  private async lock(write: LockedObjectWrite): Promise<LockedEvidenceV1> {
+  /**
+   * Locks `write` and checks the answer. `since` is when this step began (the row it continues was written then): an answer must have been written after that,
+   * so a repeat call after a stop may return the version written earlier by this same step (the port allows it) while a version from before the step, or from
+   * the future, is refused. `LockedEvidenceV1Schema` already requires the retention to be at least 365 days from `writtenAt`, so an answer written after `since`
+   * is kept for 365 days from then.
+   */
+  private async lock(write: LockedObjectWrite, since: string): Promise<LockedEvidenceV1> {
     const evidence = LockedEvidenceV1Schema.parse(await this.storage.putLocked(write));
     if (evidence.key !== write.key || evidence.sha256 !== write.sha256) throw new AuditSealRefused(write.key, "the storage target answered for other bytes than were sent");
-    // The schema only compares the answer with itself (retainUntil against its own writtenAt). Compare it with the clock too.
-    const nowMs = this.now().getTime();
-    if (Math.abs(Date.parse(evidence.writtenAt) - nowMs) > 3 * TIMESTAMP_SKEW_MS || Date.parse(evidence.retainUntil) < nowMs + AUDIT_RETENTION_DAYS_MIN_COMPLIANCE * 86_400_000 - TIMESTAMP_SKEW_MS) {
-      throw new AuditSealRefused(write.key, "the storage target's answer is not recent or is kept for less than the retention period");
+    const written = Date.parse(evidence.writtenAt);
+    if (written < Date.parse(since) - TIMESTAMP_SKEW_MS || written > this.now().getTime() + TIMESTAMP_SKEW_MS) {
+      throw new AuditSealRefused(write.key, "the storage target's answer was written before this step began or in the future");
     }
     return evidence;
   }
@@ -258,11 +284,11 @@ export class AuditSealer {
           throw new AuditSealRefused(`company ${companyId}`, "the records no longer match the planned seal");
         }
         const body = utf8(auditCanonicalJson({ v: 1, orgId: companyId, fromSeq: checkpoint.fromSeq, toSeq: checkpoint.toSeq, records }));
-        const batch = await this.lock({ key: `audit/${companyId}/records/${range16(checkpoint.fromSeq, checkpoint.toSeq)}.json`, body, sha256: sha256(body) });
+        const batch = await this.lock({ key: `audit/${companyId}/records/${range16(checkpoint.fromSeq, checkpoint.toSeq)}.json`, body, sha256: sha256(body) }, progress.updatedAt);
         next = SealProgressV1Schema.parse({ ...progress, phase: "batch-locked", batch, updatedAt: stamp });
       } else {
         const body = utf8(auditCanonicalJson(sealOf(progress)));
-        const seal = await this.lock({ key: `audit/${companyId}/seals/${range16(checkpoint.fromSeq, checkpoint.toSeq)}.json`, body, sha256: sha256(body) });
+        const seal = await this.lock({ key: `audit/${companyId}/seals/${range16(checkpoint.fromSeq, checkpoint.toSeq)}.json`, body, sha256: sha256(body) }, progress.updatedAt);
         next = SealProgressV1Schema.parse({ ...progress, phase: "locked", seal, updatedAt: stamp });
       }
       if ((await this.store.advanceSeal(progress, next)) === "advanced") progress = next;
@@ -289,16 +315,23 @@ export class AuditSealer {
     while (progress.phase !== "timestamped") {
       const stamp = this.now().toISOString();
       let next: EpochProgressV1;
-      // The statement's row names the authority that will stamp it. A stand-in's name is never written, and a source other than the one named is refused.
-      if (this.timestamps.provider === UNCONFIGURED_PROVIDER) throw new AuditSealingNotConfigured("timestamp-source");
-      if (progress.phase !== "planned" && progress.tsaProvider !== this.timestamps.provider) throw new AuditSealRefused(`epoch ${progress.epochId}`, "the statement names another timestamp authority");
+      // A stand-in's name is never written. Before a token is in hand the row follows the configured authority (the label is not in the locked statement bytes),
+      // so changing the configured provider never strands an epoch; once a token is received it is judged by ITS provider (the row's), whatever is configured now.
+      const standIn = this.timestamps.provider === UNCONFIGURED_PROVIDER;
+      if (standIn && (progress.phase === "planned" || progress.phase === "waiting-timestamp")) throw new AuditSealingNotConfigured("timestamp-source");
+      if (progress.phase === "waiting-timestamp" && progress.tsaProvider !== this.timestamps.provider) {
+        next = EpochProgressV1Schema.parse({ ...progress, tsaProvider: this.timestamps.provider, updatedAt: stamp });
+        if ((await this.store.advanceEpoch(progress, next)) === "advanced") progress = next;
+        else progress = (await this.store.getEpochProgress(progress.epochId)) ?? progress;
+        continue;
+      }
       if (progress.phase === "planned") {
         const statement: EpochStatementV1 = {
           v: 1, epochId: progress.epochId, closedAt: progress.closedAt, prevEpochId: progress.prevEpochId, prevStatementHash: progress.prevStatementHash,
           sealsRoot: progress.sealsRoot, sealCount: progress.sealCount,
         };
         const body = utf8(auditCanonicalJson(statement));
-        const evidence = await this.lock({ key: `audit/epochs/${progress.epochId}.json`, body, sha256: sha256(body) });
+        const evidence = await this.lock({ key: `audit/epochs/${progress.epochId}.json`, body, sha256: sha256(body) }, progress.updatedAt);
         next = EpochProgressV1Schema.parse({ ...progress, phase: "waiting-timestamp", statement: evidence, tsaProvider: this.timestamps.provider, updatedAt: stamp });
       } else if (progress.phase === "waiting-timestamp") {
         const token = await this.timestamps.stamp({ epochId: progress.epochId, statementHash: progress.statementHash });
@@ -306,7 +339,7 @@ export class AuditSealer {
         next = EpochProgressV1Schema.parse({ ...progress, phase: "timestamp-received", tokenBase64: Buffer.from(token).toString("base64"), tokenHash: sha256(token), updatedAt: stamp });
       } else {
         const body = Uint8Array.from(Buffer.from(progress.tokenBase64, "base64"));
-        const evidence = await this.lock({ key: `audit/epochs/${progress.epochId}.${progress.tsaProvider}.tst`, body, sha256: sha256(body) });
+        const evidence = await this.lock({ key: `audit/epochs/${progress.epochId}.${progress.tsaProvider}.tst`, body, sha256: sha256(body) }, progress.updatedAt);
         const rest: Record<string, unknown> = { ...progress };
         delete rest.tokenBase64;
         delete rest.tokenHash;
