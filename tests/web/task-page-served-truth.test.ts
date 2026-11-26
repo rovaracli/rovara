@@ -44,10 +44,11 @@ const steps: Array<[string, Record<string, unknown>, boolean]> = [
  ["cancelled task with stale running workflow", { status: "CANCELLED" }, false],
  ["failed task with stale running workflow", { status: "FAILED" }, false],
 ];
-it.each(steps)("served actions: %s offers Stop only for running work and keeps Close", (_name, patch, stop) => {
+it.each(steps)("served actions: %s offers Stop only for running work and keeps Close (except an unknown workflow state)", (_name, patch, stop) => {
  const view = servedSession(coreTask(patch));
  expect(view.you.actions.includes("stop")).toBe(stop);
- expect(view.you.actions).toContain("close");
+ // DECOUPLE T2 (Opus S5, DEC 540): a workflow state this build does not know reads as an unknown status, so it offers no Close either (it was "Running" with Close before).
+ if (_name === "unknown workflow state") expect(view.you.actions).not.toContain("close"); else expect(view.you.actions).toContain("close");
 });
 
 it.each(["member", "admin"])("served actions: a %s watcher cannot Stop a running step or Close the task", companyRole => {
