@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
 import { makeTemporaryNodeModules } from "./code-workspaces.js";
 import { compareDocuments, driftKey, isRequestSchemaName, type Drift, type DriftReport, type SchemaDocument } from "./compare.js";
 import { extractSchemas, type Extracted, type ZodLike } from "./extract.js";
@@ -63,6 +64,21 @@ export interface CheckResult {
 }
 
 /**
+ * The `...Schema` identifiers a source file CODE uses. A name in a comment or a string is not a parser: before T2 (DECOUPLE, #1516) a comment that said "(SessionViewSchema, ...)" in
+ * packages/cloud-server/src/session-view.ts made the strict `SessionViewSchema` count as read by Cloud, so Code's additive `you.chargedTo` failed the deployed-drift gate although nothing in Cloud
+ * parses a session view with that schema (the web app reads it with the forward reader).
+ */
+function schemaIdentifiers(file: string, source: string): string[] {
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && /^[A-Z][A-Za-z0-9]*Schema$/u.test(node.text)) found.push(node.text);
+    ts.forEachChild(node, visit);
+  };
+  visit(ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS));
+  return found;
+}
+
+/**
  * The schemas Cloud's own code reads an answer with: every `...Schema` name written in the web app (packages/ui/src) or the server (packages/cloud-server/src). A drift in a schema nothing
  * here names cannot refuse an answer today, and the day something starts to use it the name shows up here and the drift with it.
  */
@@ -72,7 +88,7 @@ export function parsedSchemaNames(): Set<string> {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
       if (entry.isDirectory()) visit(full);
-      else if (/\.tsx?$/u.test(entry.name)) for (const match of readFileSync(full, "utf8").matchAll(/\b[A-Z][A-Za-z0-9]*Schema\b/gu)) names.add(match[0]);
+      else if (/\.tsx?$/u.test(entry.name)) for (const name of schemaIdentifiers(full, readFileSync(full, "utf8"))) names.add(name);
     }
   };
   for (const dir of ["packages/ui/src", "packages/cloud-server/src"]) visit(path.join(CLOUD_ROOT, dir));

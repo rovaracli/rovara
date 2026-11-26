@@ -1,11 +1,5 @@
 [
   {
-    "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: no Code path writes it (no `deliveryObservation` in broker/worker at 9517796fc). Left accepted: the check still fails on any NEW drift.",
-    "keys": [
-      "agent-sessions.ts#SessionMessageSchema deliveryObservation unknown-field: Code sends \"deliveryObservation\"; Cloud's object is strict and does not list it"
-    ]
-  },
-  {
     "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: no Code path builds `designActions` (grep: only contracts/src/task-workflow-design-review.ts:331 `designReviewRetryOffer` is defined, nothing calls it); would hide the Design first / Skip buttons. Left accepted: the check still fails on any NEW drift.",
     "keys": [
       "design-review-words.ts#DesignActionsViewSchema retry unknown-field: Code sends \"retry\"; Cloud's object is strict and does not list it",
@@ -19,11 +13,7 @@
       "developer-tasks.ts#DeveloperTaskViewSchema workflow.critique.critiques[].points[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
       "developer-tasks.ts#DeveloperTaskViewSchema workflow.designReview.rounds[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
       "developer-tasks.ts#DeveloperTaskViewSchema workflow.reviews[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "developer-tasks.ts#DeveloperTaskViewSchema workflow.secondReviewBlock.findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema critique.critiques[].points[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema designReview.rounds[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema reviews[].findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema secondReviewBlock.findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it"
+      "developer-tasks.ts#DeveloperTaskViewSchema workflow.secondReviewBlock.findings[].scale unknown-field: Code sends \"scale\"; Cloud's object is strict and does not list it"
     ]
   },
   {
@@ -91,8 +81,7 @@
   {
     "why": "Class (C) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: only a SHA-256 object-format repository has a 64-hex id; GitHub-hosted repositories are SHA-1. Left accepted: the check still fails on any NEW drift.",
     "keys": [
-      "developer-tasks.ts#DeveloperTaskViewSchema workflow.branchSync.expectedHeadCommit pattern: Cloud's pattern is \"^[a-f0-9]{40}$\"; Code's is \"^[a-f0-9]{40,128}$\"",
-      "task-workflow.ts#WorkflowSnapshotShapeSchema branchSync.expectedHeadCommit pattern: Cloud's pattern is \"^[a-f0-9]{40}$\"; Code's is \"^[a-f0-9]{40,128}$\""
+      "developer-tasks.ts#DeveloperTaskViewSchema workflow.branchSync.expectedHeadCommit pattern: Cloud's pattern is \"^[a-f0-9]{40}$\"; Code's is \"^[a-f0-9]{40,128}$\""
     ]
   },
   {
@@ -119,15 +108,6 @@
     "why": "Class (D) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: emitted, but Cloud rebuilds the response from the fields it names and drops the flag (the page cannot say the stored setting was unreadable: a lost warning, not an error). Left accepted: the check still fails on any NEW drift.",
     "keys": [
       "project-playbook.ts#ProjectPlaybookResponseSchema designReviewUnreadable unknown-field: Code sends \"designReviewUnreadable\"; Cloud's object is strict and does not list it"
-    ]
-  },
-  {
-    "why": "Class (D) by the drift triage (briefs/codex/contract-drift-triage/DONE.md), Code 4ff67252e and 0.5.48 alike: Cloud builds the session view itself (cloud-server/src/session-view.ts) and the app reads it with SessionResponseReaderSchema; Code never sends this schema. Left accepted: the check still fails on any NEW drift.",
-    "keys": [
-      "session-views.ts#SessionViewSchema body(1).chain missing-required: Cloud requires \"chain\"; Code's object has no such field",
-      "session-views.ts#SessionViewSchema body(1).kind enum: Code can send \"task\": not the literal Cloud allows",
-      "session-views.ts#SessionViewSchema body(1).task unknown-field: Code sends \"task\"; Cloud's object is strict and does not list it",
-      "session-views.ts#SessionViewSchema display unknown-field: Code sends \"display\"; Cloud's object is strict and does not list it"
     ]
   },
   {
