@@ -2,9 +2,10 @@
 import { describe, expect, it } from "vitest";
 import * as zod from "zod";
 import { z } from "zod";
-import { check, extractCloud, parsedSchemaNames, readSnapshot } from "../../scripts/contract-drift/run.js";
+import { check, extractCloud, HAND_WRITTEN_EXACT_READERS as EXACT_READERS, parsedSchemaNames, readSnapshot } from "../../scripts/contract-drift/run.js";
 import * as web from "../../packages/contracts/src/web.js";
 import { SessionViewSchema, SessionViewReaderSchema, SessionResponseReaderSchema, forwardReader } from "@agentx/contracts/web";
+import { DISPLAY_FLAG_KEYS, GRANT_FLAG_KEYS, WARNING_FLAG_KEYS } from "../../packages/contracts/src/forward-reader.js";
 import { sessionFixture } from "../web/support/session-fixture.js";
 
 // What Code's SessionView carries today that Cloud's copy of the schema (packages/contracts/src/session-views.ts) does not: `display`, and (until the one-field single landed on cloud/next) `you.chargedTo` (TASK-TAKEOVER PR A, the cause of the #1516 beta
@@ -96,17 +97,8 @@ describe("forwardReader is deep", () => {
   });
 });
 
-/**
- * Hand-written readers (not built by forwardReader) that still hold strict objects or closed enums. They are access, money, destructive-confirmation or plan-review readers read exactly on purpose, or not yet converted
- * (DECOUPLE-T2-DONE.md lists each with the reason). Every other reader the contracts export is open at every depth. A name is added here only with a reason in that file.
- */
-const HAND_WRITTEN_EXACT_READERS = [
-  "DecisionOutcomeReaderSchema", "JiraOrgAdminResultReaderSchema", "LoadedKnowledgeResponseReaderSchema", "LoadedKnowledgeTextReaderSchema", "ModelSelectionPolicyResponseReaderSchema", "OrgServiceStatusReaderSchema",
-  "OrgSlackWorkspaceEvidenceResponseReaderSchema", "ProjectAllowedWebsitesProposalReaderSchema", "ProjectAllowedWebsitesResultReaderSchema", "ProjectAllowedWebsitesReviewReaderSchema", "ProjectSlackDecisionReaderSchema",
-  "ProjectSlackInventoryReaderSchema", "ProjectSlackProposalReaderSchema", "ProjectSlackReceiptReaderSchema", "ProjectSlackTargetReaderSchema", "ProjectWorkingBranchContextReaderSchema", "ProjectWorkingBranchPageReaderSchema",
-  "ProjectWorkingBranchPreviewReaderSchema", "ProjectWorkingBranchSaveResultReaderSchema", "ReviewedProjectArchiveOutcomeReaderSchema", "ReviewedProjectArchivePreviewReaderSchema", "ReviewedProjectRestoreOutcomeReaderSchema",
-  "ReviewedProjectRestorePreviewReaderSchema", "TrackerPeopleReaderSchema", "TrackerPeopleResultReaderSchema",
-];
+// The hand-written exact readers (scripts/contract-drift/run.ts HAND_WRITTEN_EXACT_READERS): the gate compares Code with their strict schemas. Each stays only with a reason in DECOUPLE-T2-DONE.md.
+const HAND_WRITTEN_EXACT_READERS = EXACT_READERS;
 
 describe("an unknown word never grants and never becomes money", () => {
   it("an action or access level a newer Code adds reads as unknown, and the grant flags read absent unless they are exactly true", () => {
@@ -126,5 +118,78 @@ describe("an unknown word never grants and never becomes money", () => {
     const read = SessionViewReaderSchema.parse(codeSessionView({ top: { cost: { ...sessionFixture().cost, payer: { kind: "robot", name: "Future payer" } } } }));
     expect(read.cost.payer).toEqual({ kind: "unknown", name: "Future payer" });
     expect(read.you.chargedTo).toBe("Charged to Priya");
+  });
+});
+
+// Pre-review S1: a `key?: true` flag a newer Code sends unreadably (`false`, a word, an object) reads by what the flag DOES. A grant reads as absent (grants nothing); a warning never reads as "no warning" (only an explicit false/null
+// is absent; anything else shows the warning); a display label reads as absent. The lists are pinned here, and a walk over every reader the contracts export fails when a flag is in none of them without being on the strict list.
+describe("true-only flags read by what they do", () => {
+  it("pins the three lists", () => {
+    expect([...GRANT_FLAG_KEYS]).toEqual(["approved", "ask", "coOwner", "fix", "mayMerge", "notesOptIn", "notesSwitch"]);
+    expect([...WARNING_FLAG_KEYS]).toEqual([
+      "broken", "lastRunFailed", "linked", "madeByRovara", "neverStarted", "noOtherCompany", "notRevised", "offline", "otherCompanyFailed", "partialDiff", "programNotFound", "retireProposed", "reviewRequired",
+      "sameModelAsPlanner", "trialUsed", "truncated", "unlisted", "workflowBlocked",
+    ]);
+    expect([...DISPLAY_FLAG_KEYS]).toEqual(["process", "you"]);
+    expect(new Set([...GRANT_FLAG_KEYS, ...WARNING_FLAG_KEYS, ...DISPLAY_FLAG_KEYS]).size).toBe(GRANT_FLAG_KEYS.length + WARNING_FLAG_KEYS.length + DISPLAY_FLAG_KEYS.length);
+  });
+  it("every true-only flag in every reader the contracts export is on a list, or is on the named strict list (a new flag must be classified)", () => {
+    type Def = { type: string } & Record<string, unknown>;
+    const defOf = (schema: unknown): Def => (schema as { _zod: { def: Def } })._zod.def;
+    const found = new Map<string, "read" | "strict">();
+    const walk = (schema: unknown, seen: Set<unknown>): void => {
+      if (schema === undefined || seen.has(schema)) return;
+      seen.add(schema);
+      const def = defOf(schema);
+      switch (def.type) {
+        case "object":
+          for (const [key, field] of Object.entries((schema as z.ZodObject).shape)) {
+            let current: unknown = field; let optional = false; let caught = false;
+            for (;;) {
+              const inner = defOf(current);
+              if (inner.type === "optional") { optional = true; current = inner["innerType"]; } else if (inner.type === "catch") { caught = true; current = inner["innerType"]; } else if (["nullable", "default", "readonly", "nonoptional", "prefault"].includes(inner.type)) current = inner["innerType"]; else break;
+            }
+            const literal = defOf(current);
+            if (optional && literal.type === "literal" && [...(literal["values"] as unknown[])].every((value) => value === true)) found.set(key, caught ? "read" : "strict");
+            walk(current, seen);
+          }
+          return;
+        case "array": walk(def["element"], seen); return;
+        case "optional": case "nullable": case "default": case "readonly": case "nonoptional": case "prefault": case "catch": walk(def["innerType"], seen); return;
+        case "union": for (const option of def["options"] as unknown[]) walk(option, seen); return;
+        case "record": walk(def["valueType"], seen); return;
+        case "intersection": walk(def["left"], seen); walk(def["right"], seen); return;
+        default: return;
+      }
+    };
+    for (const [name, value] of Object.entries(web)) if (/ReaderSchema$/u.test(name) && value !== null && typeof value === "object" && "_zod" in value) walk(value, new Set());
+    const listed = new Set([...GRANT_FLAG_KEYS, ...WARNING_FLAG_KEYS, ...DISPLAY_FLAG_KEYS]);
+    expect([...found].filter(([, how]) => how === "read").map(([key]) => key).sort()).toEqual([...listed].sort());
+    // Not on a list: they keep the schema's own strict reading (an unreadable value refuses the answer), each in a reader that is hand-written or a design review.
+    expect([...found].filter(([, how]) => how === "strict").map(([key]) => key).sort()).toEqual(["fromQuick", "locked", "recordTruncated", "reset"]);
+  });
+  const Flags = z.object({ mayMerge: z.literal(true).optional(), lastRunFailed: z.literal(true).optional(), you: z.literal(true).optional(), oddFlag: z.literal(true).optional() }).strict();
+  const flags = forwardReader(Flags);
+  it.each([["a word", "yes"], ["a number", 1], ["an object", { reason: "x" }], ["false", false], ["null", null]])("a GRANT flag sent as %s reads as absent (grants nothing); only true grants", (_name, value) => {
+    expect((flags.parse({ mayMerge: value }) as { mayMerge?: unknown }).mayMerge).toBeUndefined();
+    expect((flags.parse({ mayMerge: true }) as { mayMerge?: unknown }).mayMerge).toBe(true);
+  });
+  it.each([["a word", "yes"], ["a number", 1], ["an object", { reason: "x" }], ["an array", []], ["the string false", "false"]])("a WARNING flag sent as %s reads as true: the warning is shown, never hidden", (_name, value) => {
+    expect((flags.parse({ lastRunFailed: value }) as { lastRunFailed?: unknown }).lastRunFailed).toBe(true);
+  });
+  it.each([["false", false], ["null", null]])("a WARNING flag Code sends as an explicit %s reads as absent (Code said there is no warning)", (_name, value) => {
+    expect((flags.parse({ lastRunFailed: value }) as { lastRunFailed?: unknown }).lastRunFailed).toBeUndefined();
+    expect("lastRunFailed" in (flags.parse({}) as object)).toBe(false);
+    expect((flags.parse({ lastRunFailed: true }) as { lastRunFailed?: unknown }).lastRunFailed).toBe(true);
+  });
+  it("a DISPLAY flag reads as absent when unreadable, and a flag on no list keeps the strict reading (an unreadable value refuses the answer)", () => {
+    expect((flags.parse({ you: "x" }) as { you?: unknown }).you).toBeUndefined();
+    expect(flags.safeParse({ oddFlag: "x" }).success).toBe(false);
+    expect((flags.parse({ oddFlag: true }) as { oddFlag?: unknown }).oddFlag).toBe(true);
+  });
+  it("on a real session view: an unreadable lastRunFailed shows the failure, an unreadable mayMerge grants nothing", () => {
+    const read = SessionViewReaderSchema.parse(codeSessionView({ top: { lastRunFailed: { why: "new" } }, you: { mayMerge: { by: "rule" } } }));
+    expect((read as { lastRunFailed?: unknown }).lastRunFailed).toBe(true);
+    expect(read.you.mayMerge).toBeUndefined();
   });
 });

@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { mergeReadinessAnswer } from "../../packages/cloud-server/src/merge-routes.js";
 import { projectView } from "../../packages/cloud-server/src/people-routes.js";
-import { liveTile, sessionStatus, sessionView, type CodeTask } from "../../packages/cloud-server/src/session-view.js";
+import { blockedReview, blockedStepRetry, liveTile, sessionRunning, sessionStatus, sessionView, type CodeTask } from "../../packages/cloud-server/src/session-view.js";
 import { MergeReadinessReader } from "../../packages/ui/src/api/session-actions.js";
 import { pressBound } from "../../packages/ui/src/screens/session/merge-facts.js";
 import { SessionViewReaderSchema, SessionPeopleResponseReaderSchema, LiveTileReaderSchema } from "@agentx/contracts/web";
@@ -84,6 +84,25 @@ describe("session status: a Code task status this Cloud does not know", () => {
     const read = SessionViewReaderSchema.parse(view);
     expect(read.status).toBe("unknown");
     expect(read.body.kind === "task" && read.body.task.taskId).toBe(task.taskId);
+  });
+  // Pre-review S2: an unknown status is not "running" (it stays off the project's Live board, which lists running work) and offers no Retry.
+  it.each(["PAUSED", "constructor", ""])("%j is not running: it stays off the Live board", (status) => {
+    expect(sessionRunning(taskWith(status))).toBe(false);
+  });
+  it("keeps the starting and running statuses on the Live board and the ended ones off it", () => {
+    expect(["STARTING", "RUNNING", "SUCCEEDED", "FAILED", "INTERRUPTED", "CANCELLED", "CLOSED"].map((status) => sessionRunning(taskWith(status)))).toEqual([true, true, false, false, false, false, false]);
+  });
+  it("offers no Retry on an unknown status even when the workflow is blocked at a retryable step, and still offers it on a known one", () => {
+    const blocked = { workflow: { stage: "PLAN", state: "BLOCKED", revision: 16 } };
+    for (const status of ["PAUSED", "constructor", ""]) {
+      const task = { ...taskWith(status), ...blocked } as unknown as CodeTask;
+      expect(blockedStepRetry(task)).toBeUndefined();
+      expect(blockedReview(task)?.retry).toBeUndefined();
+      expect(sessionView(sessionRecord(task.taskId), task, sessionPerson, "https://cell.example").you.actions).not.toContain("retry");
+    }
+    const known = { ...taskWith("FAILED"), ...blocked } as unknown as CodeTask;
+    expect(blockedStepRetry(known)).toEqual({ expectedRevision: 16 });
+    expect(sessionView(sessionRecord(known.taskId), known, sessionPerson, "https://cell.example").you.actions).toContain("retry");
   });
   it("gives a Live tile with plain words and no needs-you mark", () => {
     const task = taskWith("PAUSED");
