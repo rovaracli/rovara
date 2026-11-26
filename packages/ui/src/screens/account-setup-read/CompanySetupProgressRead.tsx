@@ -32,7 +32,7 @@ export function CompanySetupProgressRead({ actions = false }: { actions?: boolea
      }}</ReadState>
      <ReadState query={slack} label="company Slack connection" rowLabel="Company Slack">{data => data.workspace?.state === "connected"
       ? <RowBody mark="ok" title="Slack connected" detail={data.workspace.teamName === undefined ? undefined : <VisibleText text={data.workspace.teamName} />} aside={`Added ${localClock(data.workspace.connectedAt)}`} />
-      : data.workspace === null ? <RowBody mark="idle" title="Slack not added (optional)" aside="Not added" /> : <RowBody mark="attention" title="Slack connection needs attention" />}</ReadState>
+      : data.workspace === null ? <RowBody mark="idle" title="Slack not added (optional)" aside="Not added" /> : data.workspace.state === "unknown" ? <RowBody mark="idle" title="Slack connection status unavailable" aside="Can't tell yet" /> : <RowBody mark="attention" title="Slack connection needs attention" />}</ReadState>
     </Rows>
     <p className="g5-lede">{actions ? "Read back from Rovara. The steps below make the changes." : "Nothing here can be edited from this page."}</p>
     <div className="g5-next"><h3>Next: the project checklist</h3><p>Five steps for your first project: connect GitHub, connect Slack (optional), who pays for AI, pick repos, start setup. You can also stop here. The checklist waits in Inbox under Finish setting up.</p></div>

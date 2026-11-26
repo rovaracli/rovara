@@ -10,6 +10,6 @@ export function CompanySetupLine() {
  const github = useQuery({ queryKey: ["github", "connections"], queryFn: onboarding.githubConnections, retry: false });
  const slack = useQuery({ queryKey: ["slack", "status"], queryFn: integrations.slackStatus, retry: false });
  const githubWords = github.isPending ? "GitHub checking" : github.isError ? "GitHub unknown" : github.data.installations.length > 0 ? "GitHub connected" : "GitHub not connected";
- const slackWords = slack.isPending ? "Slack checking" : slack.isError ? "Slack unknown" : slack.data.workspace?.state === "connected" ? "Slack connected" : "Slack not added (optional)";
+ const slackWords = slack.isPending ? "Slack checking" : slack.isError ? "Slack unknown" : slack.data.workspace?.state === "connected" ? "Slack connected" : slack.data.workspace?.state === "unknown" ? "Slack unknown" : "Slack not added (optional)";
  return <p className="rv-checklist-company" data-testid="checklist-company">Company: {githubWords}, {slackWords}. <Link to="/app/admin/connections">Company settings, Connections</Link></p>;
 }

@@ -45,6 +45,8 @@ type SessionStatus = "starting" | "running" | "needs_person" | "stopped" | "succ
  * waiting for review, a blocked review, a pull request waiting for merge, the next step queued) it reads SUCCEEDED although the task is not
  * done. While the workflow is not COMPLETE and the task is neither closed nor cancelled, the workflow decides.
  */
+/** Code's workflow states (contracts task-workflow.ts `WorkflowStateSchema`; a test keeps this list equal to it). */
+export const KNOWN_WORKFLOW_STATES: ReadonlySet<string> = new Set(["READY", "RUNNING", "WAITING", "BLOCKED", "COMPLETE"]);
 const workflowOpen = (task: CodeTask): boolean =>
   task.workflow !== undefined && task.workflow.state !== "COMPLETE" && (task.status === "RUNNING" || task.status === "SUCCEEDED");
 
@@ -63,6 +65,8 @@ export function sessionStatus(task: CodeTask): SessionStatus {
   if (task.status === "FAILED" && ["READY", "RUNNING", "WAITING", "BLOCKED"].includes(task.workflow?.state ?? "") && advisoryFailureOnly(task)) {
     return task.workflow!.state === "WAITING" || task.workflow!.state === "BLOCKED" ? "needs_person" : "running";
   }
+  // A workflow state this build does not know (a newer Code adds one) is not "running": the task reads as unknown (no Stop, no Close, no Retry, off the Live board), never as Running or Done on a guess.
+  if (workflowOpen(task) && typeof task.workflow!.state === "string" && !KNOWN_WORKFLOW_STATES.has(task.workflow!.state)) return "unknown";
   if (workflowOpen(task)) return task.workflow!.state === "WAITING" || task.workflow!.state === "BLOCKED" ? "needs_person" : "running";
   const statuses: Record<CodeTask["status"], SessionStatus> = {
     STARTING: "starting", RUNNING: "running", SUCCEEDED: "succeeded", FAILED: "failed", INTERRUPTED: "failed", CANCELLED: "cancelled", CLOSED: "stopped",

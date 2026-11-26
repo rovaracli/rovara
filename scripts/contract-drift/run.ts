@@ -91,6 +91,21 @@ export const HAND_WRITTEN_EXACT_READERS: readonly string[] = [
 ];
 
 /**
+ * The 7 hand-written exact readers above that are compared with NOTHING, each with its reason (Opus N1): Code's snapshot has no schema named `XSchema` for them, so the map above finds nothing to compare. The gap is explicit; a
+ * test (tests/contract/decouple-t2-opus-review.test.ts and contract-drift.test.ts) pins this list to the readers that really have no counterpart, so one that gains a counterpart (or a new one without) fails until this is updated.
+ * To close a gap: give Code's schema the same name, or map the reader to the name Code uses.
+ */
+export const EXACT_READERS_NOT_COMPARED: Readonly<Record<string, string>> = {
+  JiraOrgAdminResultReaderSchema: "jira-org-admin-web.ts defines only the reader (`{ status: saved | cleared }`, the result of Cloud's own admin write); Code's snapshot has no `JiraOrgAdminResultSchema`.",
+  LoadedKnowledgeResponseReaderSchema: "loaded-knowledge.ts defines only the reader (the stages Code loaded); Code's snapshot has no `LoadedKnowledgeResponseSchema`.",
+  LoadedKnowledgeTextReaderSchema: "loaded-knowledge.ts defines only the reader (the loaded text or `available: false`); Code's snapshot has no `LoadedKnowledgeTextSchema`.",
+  OrgSlackWorkspaceEvidenceResponseReaderSchema: "org-slack-workspace-evidence.ts holds the strict schema and its `.strip()` reader, but Code's snapshot has no schema of that name (Code names or splits it differently).",
+  ProjectAllowedWebsitesResultReaderSchema: "app-allowed-websites.ts builds the result reader as a union of Cloud-named pieces; Code's snapshot has no `ProjectAllowedWebsitesResultSchema` to compare as a whole (its pieces are compared where named).",
+  TrackerPeopleReaderSchema: "tracker-people-web.ts defines only the reader (the tracker people list); Code's snapshot has no `TrackerPeopleSchema`.",
+  TrackerPeopleResultReaderSchema: "tracker-people-web.ts defines only the reader (`{ status: mapped | unmapped | auto_link_on | auto_link_off }`, the result of Cloud's own write); Code's snapshot has no `TrackerPeopleResultSchema`.",
+};
+
+/**
  * Schemas the server or the app checks Code's answer against BY HAND, field by field (it refuses an answer with a field or word it does not list), whose only mention in code is the comment that says what it mirrors (pre-review S5). Before
  * the identifier scan these were compared by accident (the comment counted); they stay compared on purpose, so a Code change to one of them still shows in the gate while the hand-written check would refuse it. Not here, on purpose: SessionViewSchema,
  * SessionMessageSchema, WorkflowSnapshotShapeSchema and ProjectOverviewSchema (Cloud reads those with forward readers: the #1516 failure was a comment counting them), LiveTileSchema, SessionEventSchema and SessionShareSchema (Cloud builds those itself), request bodies, and local names.

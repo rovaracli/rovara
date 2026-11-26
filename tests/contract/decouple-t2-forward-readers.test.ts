@@ -125,19 +125,21 @@ describe("an unknown word never grants and never becomes money", () => {
 // is absent; anything else shows the warning); a display label reads as absent. The lists are pinned here, and a walk over every reader the contracts export fails when a flag is in none of them without being on the strict list.
 describe("true-only flags read by what they do", () => {
   it("pins the three lists", () => {
-    expect([...GRANT_FLAG_KEYS]).toEqual(["approved", "ask", "coOwner", "fix", "mayMerge", "notesOptIn", "notesSwitch"]);
+    expect([...GRANT_FLAG_KEYS]).toEqual(["approved", "ask", "coOwner", "fix", "mayMerge", "notesSwitch"]);
     expect([...WARNING_FLAG_KEYS]).toEqual([
-      "broken", "lastRunFailed", "linked", "madeByRovara", "neverStarted", "noOtherCompany", "notRevised", "offline", "otherCompanyFailed", "partialDiff", "programNotFound", "retireProposed", "reviewRequired",
+      "broken", "lastRunFailed", "linked", "madeByRovara", "neverStarted", "noOtherCompany", "notRevised", "offline", "otherCompanyFailed", "partialDiff", "programNotFound", "retireProposed", "notesOptIn", "reviewRequired",
       "sameModelAsPlanner", "trialUsed", "truncated", "unlisted", "workflowBlocked",
     ]);
     expect([...DISPLAY_FLAG_KEYS]).toEqual(["process", "you"]);
     expect(new Set([...GRANT_FLAG_KEYS, ...WARNING_FLAG_KEYS, ...DISPLAY_FLAG_KEYS]).size).toBe(GRANT_FLAG_KEYS.length + WARNING_FLAG_KEYS.length + DISPLAY_FLAG_KEYS.length);
   });
-  it("every true-only flag in every reader the contracts export is on a list, or is on the named strict list (a new flag must be classified)", () => {
+  // Pre-review S1 / Opus S3: the flags are classified by PATH (reader and field), not by bare key name, so a new schema that reuses a listed key (a `fix: true` that means "a fix is needed") fails here until it is decided.
+  it("every true-only flag, at every path of every reader the contracts export, is pinned with its class (a new path must be classified; a listed key at a new path fails)", () => {
     type Def = { type: string } & Record<string, unknown>;
     const defOf = (schema: unknown): Def => (schema as { _zod: { def: Def } })._zod.def;
-    const found = new Map<string, "read" | "strict">();
-    const walk = (schema: unknown, seen: Set<unknown>): void => {
+    const found: Record<string, string> = {};
+    const classOf = (key: string, caught: boolean): string => !caught ? "strict" : GRANT_FLAG_KEYS.includes(key) ? "grant" : WARNING_FLAG_KEYS.includes(key) ? "warning" : DISPLAY_FLAG_KEYS.includes(key) ? "display" : "caught-unlisted";
+    const walk = (schema: unknown, reader: string, path: string, seen: Set<unknown>): void => {
       if (schema === undefined || seen.has(schema)) return;
       seen.add(schema);
       const def = defOf(schema);
@@ -150,23 +152,24 @@ describe("true-only flags read by what they do", () => {
               if (inner.type === "optional") { optional = true; current = inner["innerType"]; } else if (inner.type === "catch") { caught = true; current = inner["innerType"]; } else if (["nullable", "default", "readonly", "nonoptional", "prefault"].includes(inner.type)) current = inner["innerType"]; else break;
             }
             const literal = defOf(current);
-            if (optional && literal.type === "literal" && [...(literal["values"] as unknown[])].every((value) => value === true)) found.set(key, caught ? "read" : "strict");
-            walk(current, seen);
+            if (optional && literal.type === "literal" && [...(literal["values"] as unknown[])].every((value) => value === true)) found[`${reader}${path}.${key}`] = classOf(key, caught);
+            walk(current, reader, `${path}.${key}`, seen);
           }
           return;
-        case "array": walk(def["element"], seen); return;
-        case "optional": case "nullable": case "default": case "readonly": case "nonoptional": case "prefault": case "catch": walk(def["innerType"], seen); return;
-        case "union": for (const option of def["options"] as unknown[]) walk(option, seen); return;
-        case "record": walk(def["valueType"], seen); return;
-        case "intersection": walk(def["left"], seen); walk(def["right"], seen); return;
+        case "array": walk(def["element"], reader, `${path}[]`, seen); return;
+        case "optional": case "nullable": case "default": case "readonly": case "nonoptional": case "prefault": case "catch": walk(def["innerType"], reader, path, seen); return;
+        case "union": for (const option of def["options"] as unknown[]) walk(option, reader, path, seen); return;
+        case "record": walk(def["valueType"], reader, `${path}{}`, seen); return;
+        case "intersection": walk(def["left"], reader, path, seen); walk(def["right"], reader, path, seen); return;
         default: return;
       }
     };
-    for (const [name, value] of Object.entries(web)) if (/ReaderSchema$/u.test(name) && value !== null && typeof value === "object" && "_zod" in value) walk(value, new Set());
-    const listed = new Set([...GRANT_FLAG_KEYS, ...WARNING_FLAG_KEYS, ...DISPLAY_FLAG_KEYS]);
-    expect([...found].filter(([, how]) => how === "read").map(([key]) => key).sort()).toEqual([...listed].sort());
-    // Not on a list: they keep the schema's own strict reading (an unreadable value refuses the answer), each in a reader that is hand-written or a design review.
-    expect([...found].filter(([, how]) => how === "strict").map(([key]) => key).sort()).toEqual(["fromQuick", "locked", "recordTruncated", "reset"]);
+    for (const [name, value] of Object.entries(web)) if (/ReaderSchema$/u.test(name) && value !== null && typeof value === "object" && "_zod" in value) walk(value, name, "", new Set());
+    // The same flag classes as the key lists, listed per path. "strict" = on no list: it keeps the schema's own reading (an unreadable value refuses the answer), in a hand-written or design-review reader.
+    expect(found).toEqual(PINNED_FLAG_PATHS);
+    // Every key on a list is used at some pinned path (a dead list entry is removed), and no path is "caught-unlisted".
+    expect(Object.values(found)).not.toContain("caught-unlisted");
+    for (const key of [...GRANT_FLAG_KEYS, ...WARNING_FLAG_KEYS, ...DISPLAY_FLAG_KEYS]) expect(Object.keys(found).some((path) => path.endsWith(`.${key}`)), `${key} is used`).toBe(true);
   });
   const Flags = z.object({ mayMerge: z.literal(true).optional(), lastRunFailed: z.literal(true).optional(), you: z.literal(true).optional(), oddFlag: z.literal(true).optional() }).strict();
   const flags = forwardReader(Flags);
@@ -193,3 +196,125 @@ describe("true-only flags read by what they do", () => {
     expect(read.you.mayMerge).toBeUndefined();
   });
 });
+
+// Every `true`-only flag at every path of every `*ReaderSchema` the contracts export, with how it reads (Opus S3). A new path, or a listed key at a new path, fails the test above until it is added here with a decision.
+const PINNED_FLAG_PATHS: Record<string, string> = {
+  "AgentDiffResponseReaderSchema.comparison.after.chain[].process": "display",
+  "AgentDiffResponseReaderSchema.comparison.before.chain[].process": "display",
+  "AgentDraftResponseReaderSchema.base.chain[].process": "display",
+  "AgentDraftResponseReaderSchema.resolved.chain[].process": "display",
+  "AgentProfileResponseReaderSchema.current.recipe.chain[].process": "display",
+  "ChangesFeedPageReaderSchema.reset": "strict",
+  "DeveloperTaskViewReaderSchema.evidence.checks[].tests.names[].unlisted": "warning",
+  "DeveloperTaskViewReaderSchema.workflow.branchSync.approved": "grant",
+  "DeveloperTaskViewReaderSchema.workflow.critique.notRevised": "warning",
+  "DeveloperTaskViewReaderSchema.workflow.critique.sameModelAsPlanner": "warning",
+  "DeveloperTaskViewReaderSchema.workflow.designReview.fromQuick": "strict",
+  "DeveloperTaskViewReaderSchema.workflow.reviews[].partialDiff": "warning",
+  "DeveloperTaskViewReaderSchema.workflow.verification.results[].broken": "warning",
+  "DeveloperTaskViewReaderSchema.workflow.verification.results[].madeByRovara": "warning",
+  "DeveloperTaskViewReaderSchema.workflow.verification.results[].neverStarted": "warning",
+  "DeveloperTaskViewReaderSchema.workflow.verification.results[].programNotFound": "warning",
+  "EvidenceViewReaderSchema.checks[].tests.names[].unlisted": "warning",
+  "GithubChooseResponseReaderSchema.trialUsed": "warning",
+  "GithubConnectResultReaderSchema.trialUsed": "warning",
+  "LessonHistoryReaderSchema.versions[].approvedBy[].you": "display",
+  "LessonSourcesReaderSchema.sources[].notesOptIn": "warning",
+  "LessonsViewReaderSchema.active[].approvals[].by.you": "display",
+  "LessonsViewReaderSchema.active[].from[].you": "display",
+  "LessonsViewReaderSchema.active[].needs.first.you": "display",
+  "LessonsViewReaderSchema.active[].retireProposed": "warning",
+  "LessonsViewReaderSchema.active[].reviewRequired": "warning",
+  "LessonsViewReaderSchema.removed[].approvals[].by.you": "display",
+  "LessonsViewReaderSchema.removed[].from[].you": "display",
+  "LessonsViewReaderSchema.removed[].needs.first.you": "display",
+  "LessonsViewReaderSchema.removed[].retireProposed": "warning",
+  "LessonsViewReaderSchema.removed[].reviewRequired": "warning",
+  "LessonsViewReaderSchema.waiting[].approvals[].by.you": "display",
+  "LessonsViewReaderSchema.waiting[].from[].you": "display",
+  "LessonsViewReaderSchema.waiting[].needs.first.you": "display",
+  "LessonsViewReaderSchema.waiting[].retireProposed": "warning",
+  "LessonsViewReaderSchema.waiting[].reviewRequired": "warning",
+  "LiveResponseReaderSchema.tiles[].lastRunFailed": "warning",
+  "LiveTileReaderSchema.lastRunFailed": "warning",
+  "LoadedKnowledgeResponseReaderSchema.stages[].manifest.items[].locked": "strict",
+  "LoadedKnowledgeResponseReaderSchema.stages[].manifest.recordTruncated": "strict",
+  "ProjectOverviewReaderSchema.running[].lastRunFailed": "warning",
+  "SessionCloseResponseReaderSchema.session.body.task.evidence.checks[].tests.names[].unlisted": "warning",
+  "SessionCloseResponseReaderSchema.session.body.task.workflow.branchSync.approved": "grant",
+  "SessionCloseResponseReaderSchema.session.body.task.workflow.critique.notRevised": "warning",
+  "SessionCloseResponseReaderSchema.session.body.task.workflow.critique.sameModelAsPlanner": "warning",
+  "SessionCloseResponseReaderSchema.session.body.task.workflow.designReview.fromQuick": "strict",
+  "SessionCloseResponseReaderSchema.session.body.task.workflow.reviews[].partialDiff": "warning",
+  "SessionCloseResponseReaderSchema.session.body.task.workflow.verification.results[].broken": "warning",
+  "SessionCloseResponseReaderSchema.session.body.task.workflow.verification.results[].madeByRovara": "warning",
+  "SessionCloseResponseReaderSchema.session.body.task.workflow.verification.results[].neverStarted": "warning",
+  "SessionCloseResponseReaderSchema.session.body.task.workflow.verification.results[].programNotFound": "warning",
+  "SessionCloseResponseReaderSchema.session.lastRunFailed": "warning",
+  "SessionCloseResponseReaderSchema.session.you.coOwner": "grant",
+  "SessionCloseResponseReaderSchema.session.you.live.ask": "grant",
+  "SessionCloseResponseReaderSchema.session.you.live.fix": "grant",
+  "SessionCloseResponseReaderSchema.session.you.mayMerge": "grant",
+  "SessionListReaderSchema.sessions[].summary.lastRunFailed": "warning",
+  "SessionListReaderSchema.sessions[].summary.offline": "warning",
+  "SessionListReaderSchema.sessions[].summary.workflowBlocked": "warning",
+  "SessionResponseReaderSchema.session.body.task.evidence.checks[].tests.names[].unlisted": "warning",
+  "SessionResponseReaderSchema.session.body.task.workflow.branchSync.approved": "grant",
+  "SessionResponseReaderSchema.session.body.task.workflow.critique.notRevised": "warning",
+  "SessionResponseReaderSchema.session.body.task.workflow.critique.sameModelAsPlanner": "warning",
+  "SessionResponseReaderSchema.session.body.task.workflow.designReview.fromQuick": "strict",
+  "SessionResponseReaderSchema.session.body.task.workflow.reviews[].partialDiff": "warning",
+  "SessionResponseReaderSchema.session.body.task.workflow.verification.results[].broken": "warning",
+  "SessionResponseReaderSchema.session.body.task.workflow.verification.results[].madeByRovara": "warning",
+  "SessionResponseReaderSchema.session.body.task.workflow.verification.results[].neverStarted": "warning",
+  "SessionResponseReaderSchema.session.body.task.workflow.verification.results[].programNotFound": "warning",
+  "SessionResponseReaderSchema.session.lastRunFailed": "warning",
+  "SessionResponseReaderSchema.session.you.coOwner": "grant",
+  "SessionResponseReaderSchema.session.you.live.ask": "grant",
+  "SessionResponseReaderSchema.session.you.live.fix": "grant",
+  "SessionResponseReaderSchema.session.you.mayMerge": "grant",
+  "SessionStepTaskResponseReaderSchema.task.evidence.checks[].tests.names[].unlisted": "warning",
+  "SessionStepTaskResponseReaderSchema.task.workflow.branchSync.approved": "grant",
+  "SessionStepTaskResponseReaderSchema.task.workflow.critique.notRevised": "warning",
+  "SessionStepTaskResponseReaderSchema.task.workflow.critique.sameModelAsPlanner": "warning",
+  "SessionStepTaskResponseReaderSchema.task.workflow.designReview.fromQuick": "strict",
+  "SessionStepTaskResponseReaderSchema.task.workflow.reviews[].partialDiff": "warning",
+  "SessionStepTaskResponseReaderSchema.task.workflow.verification.results[].broken": "warning",
+  "SessionStepTaskResponseReaderSchema.task.workflow.verification.results[].madeByRovara": "warning",
+  "SessionStepTaskResponseReaderSchema.task.workflow.verification.results[].neverStarted": "warning",
+  "SessionStepTaskResponseReaderSchema.task.workflow.verification.results[].programNotFound": "warning",
+  "SessionTileReaderSchema.summary.lastRunFailed": "warning",
+  "SessionTileReaderSchema.summary.offline": "warning",
+  "SessionTileReaderSchema.summary.workflowBlocked": "warning",
+  "SessionViewReaderSchema.body.task.evidence.checks[].tests.names[].unlisted": "warning",
+  "SessionViewReaderSchema.body.task.workflow.branchSync.approved": "grant",
+  "SessionViewReaderSchema.body.task.workflow.critique.notRevised": "warning",
+  "SessionViewReaderSchema.body.task.workflow.critique.sameModelAsPlanner": "warning",
+  "SessionViewReaderSchema.body.task.workflow.designReview.fromQuick": "strict",
+  "SessionViewReaderSchema.body.task.workflow.reviews[].partialDiff": "warning",
+  "SessionViewReaderSchema.body.task.workflow.verification.results[].broken": "warning",
+  "SessionViewReaderSchema.body.task.workflow.verification.results[].madeByRovara": "warning",
+  "SessionViewReaderSchema.body.task.workflow.verification.results[].neverStarted": "warning",
+  "SessionViewReaderSchema.body.task.workflow.verification.results[].programNotFound": "warning",
+  "SessionViewReaderSchema.lastRunFailed": "warning",
+  "SessionViewReaderSchema.you.coOwner": "grant",
+  "SessionViewReaderSchema.you.live.ask": "grant",
+  "SessionViewReaderSchema.you.live.fix": "grant",
+  "SessionViewReaderSchema.you.mayMerge": "grant",
+  "SlackChannelsResponseReaderSchema.channels[].linked": "warning",
+  "SourceOptionsViewReaderSchema.truncated": "warning",
+  "SourcesAdminViewReaderSchema.notesSwitch": "grant",
+  "SourcesAdminViewReaderSchema.sources[].notesOptIn": "warning",
+  "StageModelsResponseReaderSchema.stages[].effective.noOtherCompany": "warning",
+  "StageModelsResponseReaderSchema.stages[].effective.otherCompanyFailed": "warning",
+  "TaskResponseReaderSchema.task.evidence.checks[].tests.names[].unlisted": "warning",
+  "TaskResponseReaderSchema.task.workflow.branchSync.approved": "grant",
+  "TaskResponseReaderSchema.task.workflow.critique.notRevised": "warning",
+  "TaskResponseReaderSchema.task.workflow.critique.sameModelAsPlanner": "warning",
+  "TaskResponseReaderSchema.task.workflow.designReview.fromQuick": "strict",
+  "TaskResponseReaderSchema.task.workflow.reviews[].partialDiff": "warning",
+  "TaskResponseReaderSchema.task.workflow.verification.results[].broken": "warning",
+  "TaskResponseReaderSchema.task.workflow.verification.results[].madeByRovara": "warning",
+  "TaskResponseReaderSchema.task.workflow.verification.results[].neverStarted": "warning",
+  "TaskResponseReaderSchema.task.workflow.verification.results[].programNotFound": "warning"
+};

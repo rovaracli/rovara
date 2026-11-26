@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 import type { z } from "zod";
 import * as web from "../../packages/contracts/src/web.js";
 import { TaskMoneyV1Schema } from "../../packages/contracts/src/task-money-schema.js";
-import { HAND_WRITTEN_EXACT_READERS, readSnapshot } from "../../scripts/contract-drift/run.js";
+import { EXACT_READERS_NOT_COMPARED, HAND_WRITTEN_EXACT_READERS, readSnapshot } from "../../scripts/contract-drift/run.js";
 
 type Def = { type: string } & Record<string, unknown>;
 const defOf = (schema: unknown): Def => (schema as { _zod: { def: Def } })._zod.def;
@@ -59,5 +59,8 @@ describe("drift gate: exact readers with nothing in Code to compare", () => {
       "JiraOrgAdminResultReaderSchema", "LoadedKnowledgeResponseReaderSchema", "LoadedKnowledgeTextReaderSchema", "OrgSlackWorkspaceEvidenceResponseReaderSchema",
       "ProjectAllowedWebsitesResultReaderSchema", "TrackerPeopleReaderSchema", "TrackerPeopleResultReaderSchema",
     ]);
+    // Each has its one-line reason in the gate's source (Opus N1), and only these have one.
+    expect(Object.keys(EXACT_READERS_NOT_COMPARED).sort()).toEqual(uncompared);
+    for (const reason of Object.values(EXACT_READERS_NOT_COMPARED)) expect(reason.length).toBeGreaterThan(30);
   });
 });
