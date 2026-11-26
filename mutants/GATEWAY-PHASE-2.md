@@ -21,3 +21,26 @@ Each mutant was applied singly, in place, to one product line, the tests named b
 | M15 | `readLiveCloudSha` reads the gateway stack again | KILLED | "a gateway stamped with a Cloud sha ... says nothing about which Cloud is live" |
 
 Result: 15 of 15 killed. Runner: the scratch script that applied each row; the exact search and replace strings are the rows above.
+
+## Pre-review fixes + rebase (added after the Sonnet pre-review; run at ed4a3e66d on cb4941c29)
+
+Same method (single in-place edit, `vitest run --maxWorkers=1` over `pipeline-gateway-keep-live`, `pipeline-gateway-floor-containment`, `pipeline-gateway-from-code`, `pipeline-gateway-from-code-review` and `pipeline-rollback-plan`, `ROVARA_CODE_REPO` set to the Code worktree so the real-git test runs, file restored; tree clean after the run).
+
+| # | Mutant | Result | Killed by (first failing test) |
+|---|--------|--------|---|
+| M16 | `keepsLiveGateway` does not compare the digest with the live ImageDigest | KILLED | "refuses a manifest with no Code commit ..." (gateway step) and the keep-live "does not keep a different digest ..." |
+| M17 | a malformed DeployedCodeSha counts as "deployed from Cloud" | KILLED | "a DeployedCodeSha that is present but not a 40-hex commit is NOT read as 'deployed from Cloud'" |
+| M18 | a valid DeployedCodeSha still allows the keep | KILLED | "does not keep a different digest, a missing stack, ... or a stack already deployed from Code" |
+| M19 | the gateway step skips on a missing Code commit without asking the live stack | KILLED | "a different digest (the live gateway runs another image) is still refused, by the image step and by the gateway step" |
+| M20 | a kept digest is not judged against the below-floor digest list | KILLED | "keeping a digest the floors file lists below the floor is refused ..." |
+| M21 | the entry with no Code commit wins when last-good and previous name the same image | KILLED | "returns the recorded Code commit without looking at the live stack, and prefers the entry that has one ..." |
+| M22 | a release run's unnamed GATEWAY_DIGEST is ROLLBACK_REFUSED again | KILLED | "refuses a digest the last-good record does not name, and one recorded with no Code commit" (review file) |
+| M23 | production follows beta's kept digest without asking its own live gateway | KILLED | "production copies beta's digest and keeps beta's Code commit; with none recorded it refuses" |
+| M24 | the keep check says yes for any live stack with an ImageDigest | KILLED | the same gateway-step test, and the keep-live production tests |
+| M25 | the rollback plan treats a kept gateway (no Code commit) as a Code commit to judge | KILLED | "KEEPS the gateway that runs now: a pre-change record whose digest is what the live gateway stack ... runs is planned" |
+| M26 | the containment rule ignores an added line the Code file lacks | KILLED | "reports an added line the Code file lacks" |
+| M27 | the containment rule ignores a removed line the Code file still has | KILLED | "reports a removed line the Code file still has" |
+| M28 | the first gatewayCode row says "blob-equal" again | KILLED | "no 'blob-equal' or 'byte-identical' claim covers a pair that is not ..." |
+| M29 | the install doc says "blob-equal" again | KILLED | the same test |
+
+Result: 14 of 14 killed (running total for the lane: 29 of 29). Runner: the scratch script that applied each row; the exact search and replace strings are the rows above.
