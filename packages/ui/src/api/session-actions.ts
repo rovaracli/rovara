@@ -30,7 +30,7 @@ export function createSessionActions(host: AppHost) {
   // The reader keeps unknown fields; the heads the page holds (and sends back with the press, which the engine reads strictly) are rebuilt with exactly the three fields, so a field a newer server adds never travels back.
   mergeReadiness: async (id: string): Promise<MergeReadiness> => { const read = await api.get(path(id) + "/merge", MergeReadinessReader, undefined, { retry: "never" }); return read.heads === undefined ? read : { ...read, heads: read.heads.map(({ repositoryId, number, headSha }) => ({ repositoryId, number, headSha })) }; },
   // The strict body Code reads names the heads and the risk the person saw; neither is ever dropped. With either missing nothing is sent.
-  merge: (id: string, requestId: string, shown: { expectedHeads: NonNullable<MergeReadiness["heads"]>; risk: NonNullable<MergeReadiness["risk"]> }) => {
+  merge: (id: string, requestId: string, shown: { expectedHeads: ReadonlyArray<{ repositoryId: string; number: number; headSha: string }>; risk: NonNullable<MergeReadiness["risk"]> }) => {
    if (shown.expectedHeads.length === 0 || shown.risk === undefined || shown.risk === "unknown") throw new Error("A merge is never sent without the heads and the risk the person saw.");
    return postWithTimeout(() => api.send("POST", path(id) + "/merge", { requestId, expectedHeads: shown.expectedHeads, risk: shown.risk }, MergeDoneReaderSchema, { retry: "never" }), 120_000);
   },
