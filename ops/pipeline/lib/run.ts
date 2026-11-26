@@ -114,7 +114,8 @@ export async function runStep(ctx: StepContext, step: StepFunction): Promise<voi
       stage.skipped = "CLOUD_PROD=off";
       await warnOlderProductionCloud(ctx, manifest, stage);
       ctx.log(`production ${ctx.step}: skipped (CLOUD_PROD is off)`);
-      writeOutputs(ctx, state, false);
+      // The skipped preflight still writes exports.env: the buildspec requires it, and the Code actions read CODE_RELEASE_EFFECTIVE from it (#373).
+      writeOutputs(ctx, state, ctx.step === "preflight");
       logEvent(ctx, "skipped", "CLOUD_PROD=off");
       return;
     }
