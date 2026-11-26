@@ -68,8 +68,8 @@ function event(overrides: Record<string, unknown> = {}): Record<string, unknown>
 
 describe("audit constants and errors", () => {
   it("pins every constant to the plan's value", () => {
-    expect(AUDIT_SEAL_INTERVAL_MINUTES).toBe(15);
-    expect(AUDIT_RETENTION_DAYS_DEFAULT).toBe(1096);
+    expect(AUDIT_SEAL_INTERVAL_MINUTES).toBe(5);
+    expect(AUDIT_RETENTION_DAYS_DEFAULT).toBe(365);
     expect(AUDIT_RETENTION_DAYS_MIN_COMPLIANCE).toBe(365);
     expect(AUDIT_GOVERNANCE_RETENTION_DAYS).toBe(1);
     expect(AUDIT_MAX_RELATED).toBe(8);

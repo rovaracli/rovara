@@ -41,8 +41,9 @@ export {
   type TimestampVerdict,
 } from "@rovara/audit-verifier";
 
-export const AUDIT_SEAL_INTERVAL_MINUTES = 15;
-export const AUDIT_RETENTION_DAYS_DEFAULT = 1096;
+// Owner DEC 254zzz575: seal every 5 minutes, keep sealed evidence 365 days (these two were 15 and 1096 before).
+export const AUDIT_SEAL_INTERVAL_MINUTES = 5;
+export const AUDIT_RETENTION_DAYS_DEFAULT = 365;
 export const AUDIT_RETENTION_DAYS_MIN_COMPLIANCE = 365;
 export const AUDIT_GOVERNANCE_RETENTION_DAYS = 1;
 
