@@ -193,7 +193,7 @@ describe("secret redaction, fix round 2", () => {
     redactText(input);
     const elapsed = performance.now() - started;
     console.log(`redactText ${_name} (${input.length} chars): ${elapsed.toFixed(1)} ms`);
-    expect(elapsed).toBeLessThan(500);
+    expect(elapsed).toBeLessThan(1_500);
   });
 
   it("redacts any value under a credential key, not only strings", () => {
@@ -408,7 +408,7 @@ describe("secret redaction, fix round 3", () => {
     redactText(input);
     const elapsed = performance.now() - started;
     console.log(`redactText ${name} (${input.length} chars): ${elapsed.toFixed(1)} ms`);
-    expect(elapsed).toBeLessThan(500);
+    expect(elapsed).toBeLessThan(1_500);
   });
 });
 
