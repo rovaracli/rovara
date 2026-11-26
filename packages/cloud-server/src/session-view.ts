@@ -138,7 +138,7 @@ export function sessionView(session: WorkSession, task: CodeTask, viewer: { deve
   // Code lets a task's readers read it and nothing else (take-over works only for tasks shared in Slack).
   // Anyone who can read the session can comment on it (Cloud keeps the comments, Rovara-cloud#24).
   // A session can remain open between steps; Stop only cancels work that is running now.
-  const actions = ["watch", "comment", ...(((owner || extras.coOwner === true) && blockedStepRetry(task) !== undefined) || (owner && blockedReview(task)?.retry !== undefined) ? ["retry"] : []), ...(owner && status === "running" && (task.workflow === undefined || task.workflow.state === "RUNNING") ? ["stop"] : []), ...(owner && status !== "stopped" ? ["close"] : [])];
+  const actions = ["watch", "comment", ...(((owner || extras.coOwner === true) && blockedStepRetry(task) !== undefined) || (owner && blockedReview(task)?.retry !== undefined) ? ["retry"] : []), ...(owner && status === "running" && (task.workflow === undefined || task.workflow.state === "RUNNING") ? ["stop"] : []), ...(owner && status !== "stopped" && status !== "unknown" ? ["close"] : [])];
   const follow = people ?? { ...followState(session, viewer.developerId), viewingNow: [] };
   return {
     contractVersion: 1,
