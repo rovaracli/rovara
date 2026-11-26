@@ -544,7 +544,9 @@ function approvalRoute<B>(tail: ApprovalKind | "host-decide", check: (body: unkn
   };
 }
 
-const confirmRoute = approvalRoute("confirm", confirmBody, (value) => confirmAnswer(value), "cloud.setup_confirm", () => ({}));
+/** What the log line of a confirm adds: the item ids a person ticked although the page said they do not match the code (bounded), and how many. Nothing when there are none. */
+export const confirmLogDetails = (sent: { useAnyway?: string[] }): Record<string, string> => (sent.useAnyway === undefined || sent.useAnyway.length === 0 ? {} : { useAnyway: sent.useAnyway.join(",").slice(0, 1_000), useAnywayCount: String(sent.useAnyway.length) });
+const confirmRoute = approvalRoute("confirm", confirmBody, (value) => confirmAnswer(value), "cloud.setup_confirm", confirmLogDetails);
 const discardRoute = approvalRoute("discard", runBody, (value) => { need(plain(value) && typeof value["discarded"] === "boolean", undefined); return { discarded: (value as Plain)["discarded"] }; }, "cloud.setup_discard", () => ({}));
 const decideRoute = approvalRoute("decide", decideBody, (value, project, sent) => {
   need(plain(value) && value["project"] === project && oneOf(value["decision"], ["approved", "rejected"] as const) && value["decision"] === (sent.outcome === "approve" ? "approved" : "rejected")

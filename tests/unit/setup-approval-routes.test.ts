@@ -3,9 +3,9 @@
 // rules (a project's managers confirm and discard; no step-up (owner DEC 254zzz73); low and medium risk need a maintainer, high a company owner or admin; a stale digest or revision is refused;
 // another company's project reads as "project not found"). Cloud must: pass the person's own token, put the project only into Code's path, forward only checked bodies, rebuild every answer
 // from known fields, never say Code's or the browser's own text, and add no rule of its own that could widen Code's.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  CodeClient, LocalSessionStore, LocalWorkSessionStore, SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_WORDS, applyAnswer, confirmBody, createCloudHandler, decideBody, type CloudRequest, type CodeSession,
+  CodeClient, LocalSessionStore, LocalWorkSessionStore, SETUP_APPROVAL_CODE_WORDS, SETUP_APPROVAL_WORDS, SETUP_CHECKLIST_WORDS, applyAnswer, confirmBody, confirmLogDetails, createCloudHandler, decideBody, type CloudRequest, type CodeSession,
 } from "../../packages/cloud-server/src/index.js";
 import { SetupAgentViewSchema, SetupConfirmReplySchema, SetupDecideReplySchema, SetupDiscardReplySchema } from "../../packages/contracts/src/setup-agent-web.js";
 
@@ -188,6 +188,24 @@ describe("Use this setup (confirm)", () => {
     expect(res.body).toEqual({ digest: digestOf(A, "payments"), used: ["setup-1"], unchecked: [], left: [{ id: "tests-2", reason: "unverified" }], candidateRevision: 5, proved: false, next: "check" });
     expect(w.codeCalls()).toEqual([expect.objectContaining({ method: "POST", path: "/v1/app/projects/payments/setup-agent/confirm", authorization: "Bearer pia-token", body: { requestId: UUID1, expectedRevision: 3, itemIds: ["setup-1"] } })]);
     for (const call of w.calls) expect(JSON.stringify(call.headers)).not.toContain(B);
+  });
+
+  it("forwards useAnyway to Code and logs which ticked rows did not match the code (ids and count only), and nothing extra when none", async () => {
+    const w = setUp();
+    w.candidates.get(key(A, "payments"))!.decided = "approve";
+    const lines: string[] = [];
+    const spy = vi.spyOn(console, "log").mockImplementation((line: unknown) => { lines.push(String(line)); });
+    try {
+      const headers = { ...await w.as("pia-token"), "x-rovara-company": B };
+      const res = await w.send("POST", "/v1/web/projects/payments/setup-agent/confirm?company=" + B, headers, { requestId: UUID1, expectedRevision: 3, itemIds: ["setup-1", "tests-2"], useAnyway: ["tests-2"] });
+      expect(res.status).toBe(200);
+      expect(w.codeCalls()).toEqual([expect.objectContaining({ body: { requestId: UUID1, expectedRevision: 3, itemIds: ["setup-1", "tests-2"], useAnyway: ["tests-2"] } })]);
+      expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>).filter((line) => line["event"] === "cloud.setup_confirm")).toEqual([{ event: "cloud.setup_confirm", project: "payments", useAnyway: "tests-2", useAnywayCount: "1" }]);
+    } finally { spy.mockRestore(); }
+    expect(confirmLogDetails({})).toEqual({});
+    expect(confirmLogDetails({ useAnyway: [] })).toEqual({});
+    expect(confirmLogDetails({ useAnyway: ["a", "b"] })).toEqual({ useAnyway: "a,b", useAnywayCount: "2" });
+    expect(confirmLogDetails({ useAnyway: Array.from({ length: 400 }, (_, i) => `item-${String(i)}`) }).useAnyway!.length).toBe(1_000);
   });
 
   it("refuses a body that is not exactly the checked one, without asking Code", async () => {
