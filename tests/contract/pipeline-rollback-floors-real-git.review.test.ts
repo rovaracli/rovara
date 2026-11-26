@@ -2,8 +2,9 @@
 // Proves the release-mode deviation does not block any current release, that older tags are refused, and documents that the digest floor is a deny-list only.
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { judgeDigest, judgeRef, loadFloors } from "../../ops/pipeline/lib/floors.ts";
+import { cloudFloors, judgeDigest, judgeRef, loadFloors } from "../../ops/pipeline/lib/floors.ts";
 import type { Ports } from "../../ops/pipeline/types.ts";
+import { localGateOnly } from "../support/local-gate-only.ts";
 import { makePorts, newState } from "./pipeline-stage-fakes.ts";
 
 const git = (...args: string[]): string => execFileSync("git", args, { encoding: "utf8" }).trim();
@@ -22,7 +23,9 @@ const realPorts = (): Ports => {
   return ports;
 };
 const tags = ["v0.13.10", "v0.13.11", "v0.13.17", "v0.13.19"];
-const runnable = tags.every(hasTag);
+// @local-gate-only: needs this repository's release tags v0.13.* and the history below them, and every Cloud floor commit.
+// In CI (no tags, depth 2) this file skips with one counted `LOCAL-GATE-ONLY:` line; the local gate runs it with ROVARA_REQUIRE_GIT_HISTORY=1, where a missing tag or commit THROWS (tests/support/local-gate-only.ts).
+const runnable = localGateOnly(import.meta.filename, { tags, commits: cloudFloors(loadFloors(realPorts(), process.cwd())).flatMap((floor) => (floor.sha === null ? [] : [floor.sha])) });
 
 describe.skipIf(!runnable)("review: shipped rollback floors vs the real repository", () => {
   const ports = realPorts();
