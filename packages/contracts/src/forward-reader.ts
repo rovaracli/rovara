@@ -1,5 +1,6 @@
 import { WorkflowDesignReviewSchema } from "./design-review.js";
 import type { TaskMoneyV1 } from "./task-money.js";
+import { TaskMoneyV1Schema } from "./task-money-schema.js";
 // Forward-compatible readers, shared by the chain session views (chain-session.ts) and the agent session views (session-views.ts).
 import { z } from "zod";
 
@@ -56,6 +57,9 @@ function designReviewReader(schema: z.ZodType): z.ZodType {
 
 export function readerOf(schema: z.ZodType): z.ZodType {
   if (schema === WorkflowDesignReviewSchema) return designReviewReader(schema);
+  // DECOUPLE T2: task money is read exactly or not at all (parseTaskMoneyV1 refuses any extra key or unknown word: unknown money never becomes exact money). A money block this build cannot read used to refuse the whole
+  // session; it now reads as no money ("Cost unavailable") and the rest of the answer is kept. Nothing in it is ever partly read or interpreted.
+  if (schema === TaskMoneyV1Schema) return schema.catch(undefined as never);
   const def = defOf(schema);
   switch (def.type) {
     case "object": {
@@ -66,8 +70,25 @@ export function readerOf(schema: z.ZodType): z.ZodType {
       return openEnum((schema as unknown as z.ZodEnum).options as unknown as readonly [string, ...string[]]);
     case "array":
       return z.array(readerOf(def.element as z.ZodType));
-    case "optional":
+    case "optional": {
+      const inner = defOf(def.innerType as z.ZodType);
+      // A flag that grants something by being `true` (`you.mayMerge`, `you.coOwner`, `live.ask`): any other value a newer Code sends reads as absent, which grants nothing, instead of refusing the whole answer.
+      if (inner.type === "literal" && [...(inner.values as unknown[])].every((value) => value === true)) return (def.innerType as z.ZodType).optional().catch(undefined as never);
       return readerOf(def.innerType as z.ZodType).optional();
+    }
+    // DECOUPLE T2: the wrappers are looked through too. Before, `x.nullable()` / `.default()` / `.readonly()` kept the strict object or closed enum inside as it was, so a newer Code's extra field (or new word)
+    // under a nullable object refused the whole answer. A `.catch()` already tolerates any inner failure and is left as it is.
+    case "nullable":
+      return readerOf(def.innerType as z.ZodType).nullable();
+    case "nonoptional":
+      return readerOf(def.innerType as z.ZodType).nonoptional();
+    case "readonly":
+      return readerOf(def.innerType as z.ZodType).readonly();
+    case "default": {
+      const inner = readerOf(def.innerType as z.ZodType);
+      // Keep the schema's own default, whether it is a value or a function. A default that is an unknown-able word keeps being that word.
+      return inner.default(def.defaultValue as never);
+    }
     case "record": {
       // Only a record keyed by plain strings with no checks of its own is rebuilt (its values are read like any other value: an enum in a record's list is open). An enum-keyed or partial record, or one with a
       // refinement, stays as the schema has it: rebuilding it would make it exhaustive or drop the refinement.
