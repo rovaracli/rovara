@@ -28,7 +28,7 @@ import { useTaskPlan } from "../../api/work.js";
 import { mergeActionRecords, claimLockSupported, clearAccepted, readAcceptedNow, useAccepted, type AcceptedAnswer, allMerged, clearPending, headsMoved, usePending } from "./merge-pending.js";
 
 const RISK_WORDS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
-/** The level the server named; a level this build does not know is "unknown": no risk line is drawn for it and it never matches the risk a Merge press carries (it is not read as medium: the page must not say a level Code did not). */
+/** The level the server named; a level this build does not know is "unknown": no risk line is drawn for it and it never equals a known risk, and a press needs a known risk (`pressBound`), so it never sends (it is not read as medium: the page must not say a level Code did not). */
 const levelOf = (risk: { level: string }): "low" | "medium" | "high" | "unknown" => (risk.level === "low" || risk.level === "medium" || risk.level === "high" ? risk.level : "unknown");
 /**
  * "Everything is merged" is claimed only when EVERY pull request the task lists (tracked or not) shows merged: tracking alone does not cover the task, so one open, unknown or untracked pull request means the page must not say
@@ -246,7 +246,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
   if (!pressBound(latestView)) return "Rovara can't tie this merge to the exact head and risk you were shown, so it wasn't sent. Merge it on GitHub.";
   if (shown === undefined || changedSince(shown, rows, latestView)) return "What you were shown has changed on GitHub. Nothing was merged. Read it again.";
   // The risk the person was shown must be the risk that is sent: the page's own risk line (the task's) and the readiness risk that goes in the body must agree (P2-1).
-  if (merge?.risk !== undefined && (levelOf(merge.risk) === "unknown" || levelOf(merge.risk) !== latestView.risk)) return "The risk shown for this merge doesn't match what Code says now. Nothing was sent. Review it again.";
+  if (merge?.risk !== undefined && levelOf(merge.risk) !== latestView.risk) return "The risk shown for this merge doesn't match what Code says now. Nothing was sent. Review it again.";
   return undefined;
  }
  async function press() {

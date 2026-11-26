@@ -34,3 +34,22 @@ Each mutant was applied singly to one product line (from the clean committed tre
 ### Rebase note (onto cloud/next cb4941c29)
 
 cloud/next gained `you.chargedTo` in the strict `SessionViewSchema` (the one-field single), so the #1516 drift-gate test in `tests/contract/decouple-t2-forward-readers.test.ts` now adds a made-up `you.futureNote` to Code's snapshot instead of `you.chargedTo` (the gate treats every such field alike). M6 was rerun after the rebase on that test: still KILLED (3 failed: the drift-gate test, "reads the schemas Cloud's app and server name in code, not in a comment or a string", "has no drift in a schema Cloud parses that is not accepted").
+
+## Pre-review fixes (S1 to S5; Sonnet pre-review of c8cb672dc)
+
+Each mutant applied singly to one product line from the committed tree (b6bc4ce5a), then `tests/contract/decouple-t2-forward-readers.test.ts`, `tests/contract/contract-drift.test.ts`, `tests/unit/decouple-t2-projections.test.ts`, `tests/web/decouple-t2-merge-no-risk.test.ts`, `tests/unit/cloud-server-step-retry.test.ts` (vitest, `--maxWorkers=1`; contracts rebuilt with `tsc -b`), restored with `git checkout`. 11 of 11 killed, plus one equivalent mutant that led to a code simplification.
+
+| # | Mutant | Result | Killed by |
+|---|--------|---|---|
+| P1 | a WARNING flag reads as absent when unreadable (the S1 bug: warnings caught to `undefined`) | KILLED (6 failed) | "a WARNING flag sent as a word / number / object / array reads as true" |
+| P2 | a WARNING flag Code sends as an explicit false/null reads as a warning | KILLED (2 failed) | "a WARNING flag Code sends as an explicit false / null reads as absent" |
+| P3 | `mayMerge` dropped from the grant list (an unreadable value refuses the answer) | KILLED (9 failed) | the grant-flag tests, the pinned list, the walk "every true-only flag ... is on a list" |
+| P3b | a GRANT flag reads as true when unreadable | KILLED (7 failed) | "a GRANT flag sent as ... reads as absent (grants nothing)", the session-view grant test |
+| P4 | `sessionRunning` counts an unknown status as running again | KILLED (3 failed) | "is not running: it stays off the Live board" |
+| P5 | `blockedStepRetry` offers Retry on an unknown status again | KILLED (1 failed) | "offers no Retry on an unknown status even when the workflow is blocked at a retryable step" |
+| P6 | `levelOf` reads an unknown risk level as medium again | KILLED (1 failed) | "a task risk level this build does not know draws no risk line and sends no Merge" |
+| P7 | the mismatch check no longer has its own `=== "unknown"` clause | SURVIVED, equivalent: an unknown level never equals a known readiness risk, and when both are unknown `pressBound` refuses first (MergeSection.tsx:246). The redundant clause was removed from the code instead. | n/a |
+| P7b | an unknown task level draws a risk line (display guard removed) | KILLED (1 failed) | the same Merge test (no "Medium risk", no reasons list) |
+| P8 | the gate no longer maps `XReaderSchema` to `XSchema` for the hand-written exact readers | KILLED (1 failed) | "compares Code with the strict schema of every hand-written exact reader ..." |
+| P9 | the gate drops the named mirrored schemas (the S5 loss) | KILLED (1 failed) | "keeps the named mirrored schemas compared ..." |
+| P10 | the mirrored list gains `SessionViewSchema` (the #1516 failure comes back) | KILLED (5 failed) | the #1516 drift-gate test, the exact-readers test, "has no drift in a schema Cloud parses that is not accepted" |
