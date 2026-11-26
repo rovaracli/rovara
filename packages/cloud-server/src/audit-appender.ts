@@ -1,6 +1,8 @@
 // The audit log's appender (lane AL-1): turns one pending item into the next record of its company's hash chain and commits it with its receipt.
-// Each record commits to the one before it (`prevHash`), so changing, removing or reordering a stored record breaks every later hash; the existing
-// offline verifier (`checkChain`) recomputes exactly what is written here. Two appenders racing cannot fork the chain: the commit is conditional on the head
+// Each record commits to the one before it (`prevHash`), so changing, removing or reordering a stored record breaks the link to the record after it (and
+// every later hash, unless the later records are rewritten too); the existing offline verifier (`checkChain`) recomputes exactly what is written here.
+// This is detection only against a copy the writer does not control: until seals are locked off the table (AL-2), whoever can write the table can rewrite
+// records, and their hashes, undetected. Two appenders racing cannot fork the chain: the commit is conditional on the head
 // the appender read (audit-ledger-store.ts), and the loser re-reads and takes the next position.
 //
 // This does not authenticate who sent the pending item (audit-contracts-v1.md: AUD-3 enablement gate) and does not seal anything (audit-sealer.ts).
@@ -20,7 +22,7 @@ export class AuditAppendRefused extends Error {
 /** The head kept moving under every attempt. Nothing was written; the caller may try again (the queue redelivers). */
 export class AuditAppendContended extends Error {
   constructor() {
-    super("audit append: the chain's head kept moving, nothing was written");
+    super("audit append: the chain's head did not take the record after several tries (a busy chain, or a head that does not match the chain), nothing was written");
     this.name = "AuditAppendContended";
   }
 }

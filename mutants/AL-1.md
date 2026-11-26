@@ -57,3 +57,25 @@ The reviewer's tests (`tests/unit/audit-appender-sealer-review.test.ts`, `.fails
 | P14 | no report of records held by a fast clock | KILLED | "holds back that company's later records ..." (now asserts the `blocked` entry) |
 
 A fifteenth, P15 (`readSeal` row-key check), was an equivalent mutant: the clause it removed (`item.sk !== companyId`) could not be false at either call site, so the clause was deleted from the code. 14 of 14 killed.
+
+## Opus review round (SHOULD-1 to SHOULD-7)
+
+Run against the lane, Sonnet and Opus test files together (80 tests). The old P12 (retention against the clock) no longer exists: the schema already requires a year from `writtenAt`, and the sealer now requires `writtenAt` to be after the start of the step, which makes a separate retention clause equivalent, so the clause was deleted. P10 (provider refusal) was replaced by Q2: a statement still waiting for a token follows the configured authority, and one with a token is judged by its own.
+
+| # | Mutant | Result | Killed by |
+|---|---|---|---|
+| Q1a | head missing though a seal exists: silent | KILLED | "a chain head deleted after a seal stops that company loudly" |
+| Q1b | head below the sealed seq: silent | KILLED | "a chain head rolled back below the company's last seal ..." |
+| Q1c | head at the sealed seq with another hash: silent | KILLED | "a head whose hash is not the sealed record's ..." |
+| Q2 | a waiting statement is not relabelled to the configured authority | KILLED | "follows the configured authority until a token is in hand" |
+| Q3a | evidence written before the step began accepted | KILLED | "storage evidence whose retention already ended is refused" and the lane's recency tests |
+| Q3b | evidence written in the future accepted | KILLED | "an answer written in the future is refused" |
+| Q4a | epoch tip ahead: silent | KILLED | "a planned statement for a later epoch (a tip ahead, with no fence) is reported as a hold" |
+| Q4b | fence ahead: silent | KILLED | "a fence set ahead of this tick's epoch is reported as a hold" |
+| Q4c | three refused plans: silent | KILLED | "three refused plans in a row are reported" |
+| Q5 | timestamped epochs read again on every tick | KILLED | "reads of timestamped epochs stop once they are timestamped" |
+| Q7a | a busy cancellation called a refusal | KILLED | "a conflict or throttle on planning a seal or a statement is retryable" |
+| Q7b | a statement refused with none planned called corrupt | KILLED | "a statement refused on a condition with none planned is a retryable condition" |
+| Q8 | a tick in an already planned epoch does not return early | KILLED | "a second tick in an epoch that is already planned plans nothing and adds no noise" |
+
+The re-read after an accepted repeat answer (Opus's "a storage target that answers a repeat call with the version it wrote earlier") and "an epoch whose token was already received finishes after the configured timestamp provider changes" pass as plain tests. 13 of 13 killed; nothing survives alone.

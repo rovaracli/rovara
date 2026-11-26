@@ -46,6 +46,14 @@ export class AuditLedgerCorrupt extends Error {
   }
 }
 
+/** A write was cancelled for a reason that is not a failed condition (a conflict with another transaction, throttling): nothing was written and trying again is right. Not corruption. */
+export class AuditStoreBusy extends Error {
+  constructor(what: string) {
+    super(`the audit ledger could not complete a write now (${what})`);
+    this.name = "AuditStoreBusy";
+  }
+}
+
 /** The chain side: what the appender needs. */
 export interface AuditChainStore {
   getReceipt(source: AuditSourceV1): Promise<ReceiptAuditV1 | undefined>;
@@ -76,6 +84,8 @@ export interface AuditSealStore extends AuditChainStore {
   /** Replaces a progress row, only while it is in the phase `from` holds. "stale": it is not (someone else advanced it). */
   advanceSeal(from: SealProgressV1, to: SealProgressV1): Promise<"advanced" | "stale">;
   closeEpoch(epochId: string, closedAt: string): Promise<"closed" | "exists">;
+  /** The epoch before which no seal may be planned (undefined: none yet). */
+  getFence(): Promise<string | undefined>;
   /** From now on no seal may be planned into an epoch before `epochId`. Only moves forward; a lower id is ignored. */
   fenceBefore(epochId: string): Promise<void>;
   /** The epochs after the done pointer that have a planned seal (closed or not), oldest first. */
@@ -273,7 +283,10 @@ export class DynamoAuditLedgerStore implements AuditSealStore {
       }));
       return "planned";
     } catch (error) {
-      if (failedItems(error) === undefined) throw error;
+      const failed = failedItems(error);
+      if (failed === undefined) throw error;
+      // Only a failed condition is a refusal. A conflict or throttling cancelled the transaction without one: busy, try again.
+      if (failed.length === 0) throw new AuditStoreBusy("transaction cancelled");
       return "refused";
     }
   }
@@ -301,6 +314,13 @@ export class DynamoAuditLedgerStore implements AuditSealStore {
       if (isConditionFailure(error)) return "exists";
       throw error;
     }
+  }
+
+  async getFence(): Promise<string | undefined> {
+    const item = await this.get(epochFenceKey);
+    if (item === undefined) return undefined;
+    if (typeof item.fenceEpochId !== "string") throw new AuditLedgerCorrupt("epoch fence");
+    return item.fenceEpochId;
   }
 
   async fenceBefore(epochId: string): Promise<void> {
@@ -361,7 +381,10 @@ export class DynamoAuditLedgerStore implements AuditSealStore {
       }));
       return "planned";
     } catch (error) {
-      if (failedItems(error) === undefined) throw error;
+      const failed = failedItems(error);
+      if (failed === undefined) throw error;
+      // Only a failed condition is a refusal. A conflict or throttling cancelled the transaction without one: busy, try again.
+      if (failed.length === 0) throw new AuditStoreBusy("transaction cancelled");
       return "refused";
     }
   }

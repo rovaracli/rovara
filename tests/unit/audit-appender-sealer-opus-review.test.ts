@@ -1,7 +1,7 @@
 // Opus security review additions for lane AL-1. Test-only. What the lane's file and the Sonnet pre-review file do not pin:
 //   - the fence/marker protocol when a tick dies right after the fence (plain tests: they pass on this code);
 //   - the fail-safe that a corrupt seal row in a closed epoch stops every later statement, for every company (plain: pins today's intended behaviour);
-//   - gaps, written as `it.fails` until the builder fixes them (see AL-1-REVIEW-OPUS.md): flip each to `it` with its fix.
+//   - former gaps (written as `it.fails` until fixed; see AL-1-REVIEW-OPUS.md): the fixes are in.
 import { describe, expect, it } from "vitest";
 import { CLOUD_AUDIT_ACTIONS } from "../../packages/cloud-server/src/audit-log.js";
 import { SealProgressV1Schema, mapCloudAuditV1, pendingAuditV1 } from "../../packages/cloud-server/src/audit-contracts-v1.js";
@@ -110,9 +110,9 @@ describe("opus review: a corrupt seal row in a closed epoch", () => {
   });
 });
 
-describe("opus review: gaps (it.fails until fixed)", () => {
+describe("opus review: former gaps, now fixed", () => {
   // SHOULD (reader checks): a head that is gone while the company has a seal tip is reported nowhere; the company is simply never sealed again.
-  it.fails("a chain head deleted after a seal stops that company loudly", async () => {
+  it("a chain head deleted after a seal stops that company loudly", async () => {
     const r = rig();
     await seed(r);
     at(r, "2026-11-25T12:05:10Z");
@@ -124,7 +124,7 @@ describe("opus review: gaps (it.fails until fixed)", () => {
   });
 
   // SHOULD (reader checks): a head rolled back below what is already sealed is not compared with the seal tip.
-  it.fails("a chain head rolled back below the company's last seal stops that company loudly", async () => {
+  it("a chain head rolled back below the company's last seal stops that company loudly", async () => {
     const r = rig();
     await seed(r);
     at(r, "2026-11-25T12:05:10Z");
@@ -138,7 +138,7 @@ describe("opus review: gaps (it.fails until fixed)", () => {
 
   // SHOULD (port trust): the port doc lets AL-2 answer a repeat call with the SAME version; the sealer's 15-minute recency check then refuses that answer for ever.
   // Fix either side (the port doc requires a fresh version per call and this test asserts the refusal is not permanent, or the sealer accepts its earlier answer).
-  it.fails("a storage target that answers a repeat call with the version it wrote earlier (as the port doc allows) still lets the seal lock", async () => {
+  it("a storage target that answers a repeat call with the version it wrote earlier (as the port doc allows) still lets the seal lock", async () => {
     const r = rig();
     await seed(r);
     class SameVersion extends LockedStorageDouble {
@@ -162,7 +162,7 @@ describe("opus review: gaps (it.fails until fixed)", () => {
   });
 
   // SHOULD (port trust): the provider check also runs after the token is in hand; changing the configured provider (DEC 254zzz102: configurable) strands it.
-  it.fails("an epoch whose token was already received finishes after the configured timestamp provider changes", async () => {
+  it("an epoch whose token was already received finishes after the configured timestamp provider changes", async () => {
     const r = rig();
     await seed(r);
     r.storage.failKeyPart = ".tst";
@@ -177,7 +177,7 @@ describe("opus review: gaps (it.fails until fixed)", () => {
   });
 
   // SHOULD (nothing dropped, but silently held): a sealer whose clock ran ahead plans a future epoch; every correct tick until then plans nothing and reports nothing.
-  it.fails("after a sealer with a fast clock ran, a correct tick says that sealing is held", async () => {
+  it("after a sealer with a fast clock ran, a correct tick says that sealing is held", async () => {
     const r = rig();
     await seed(r);
     at(r, "2026-11-25T12:05:10Z");

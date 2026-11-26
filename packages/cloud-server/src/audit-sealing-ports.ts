@@ -14,8 +14,10 @@ export type LockedObjectWrite = { key: string; body: Uint8Array; sha256: string 
 /**
  * TODO(AL-2): write `body` at `key` as a NEW object version under COMPLIANCE Object Lock (retention at least 365 days), never overwriting, then READ BACK the
  * version, mode, retain-until and digest from S3 and return those, not what was requested. The sealer parses the answer with `LockedEvidenceV1Schema` and checks
- * the key and digest, but parsing asserted metadata proves no lock (audit-contracts-v1.md). A repeat call with the same key and bytes must return the same version
- * or a new one of the same bytes (the sealer persists the first answer it gets).
+ * the key and digest, but parsing asserted metadata proves no lock (audit-contracts-v1.md). A repeat call with the same key and bytes (after a stop) may return
+ * the version written earlier or a new one of the same bytes; the sealer accepts either as long as `writtenAt` is no earlier than the start of the step (the row
+ * it continues, minus a 5-minute skew) and not in the future, and it persists the first answer it accepts. Set `retainUntil` to at least 365 days after `writtenAt`
+ * plus a margin explicitly rather than relying on a bucket default.
  */
 export interface AuditLockedStorage {
   putLocked(write: LockedObjectWrite): Promise<LockedEvidenceV1>;
