@@ -74,9 +74,11 @@ export function lifecycleBody(kind: Kind, value: unknown): LifecycleBody | undef
 
 /** Code's preview, strictly (Reviewed*PreviewSchema, with its optional `impact`), for this company and project. */
 function previewOk(kind: Kind, value: unknown, company: string, project: string): value is Plain & { status: "active" | "archived"; access: { actions: string[] } } {
-  if (!plain(value) || !only(value, ["orgId", "project", "status", "expectedRevision", "expectedProjectRevision", "checkedAt", "access", ...(kind === "restore" ? ["prerequisites"] : [])], ["impact"])) return false;
+  if (!plain(value) || !only(value, ["orgId", "project", "status", "expectedRevision", "expectedProjectRevision", "checkedAt", "access", ...(kind === "restore" ? ["prerequisites"] : [])], ["impact", "expectedProjectIncarnation"])) return false;
   if (value["orgId"] !== company || value["project"] !== project || (value["status"] !== "active" && value["status"] !== "archived")) return false;
   if (!whole(value["expectedRevision"], 0, MAX - 1) || !whole(value["expectedProjectRevision"], 1, MAX) || !iso(value["checkedAt"])) return false;
+  // Code's `expectedProjectIncarnation` (optional, a positive whole number: present for a project that has an incarnation). Any other member is still refused.
+  if (value["expectedProjectIncarnation"] !== undefined && !whole(value["expectedProjectIncarnation"], 1, MAX)) return false;
   if (kind === "restore" && value["prerequisites"] !== "checked" && value["prerequisites"] !== "not_required") return false;
   const access = value["access"];
   if (!plain(access) || !only(access, ["actions"]) || !Array.isArray(access["actions"]) || access["actions"].length > 1 || !access["actions"].every((action) => action === kind)) return false;
