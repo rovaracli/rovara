@@ -5,10 +5,14 @@ import type { Route, RouteAnswer } from "./routes.js";
 
 const RequestId = StartDeveloperTaskRequestSchema.shape.requestId;
 const base = { requestId: RequestId, operation: z.literal("start"), checkedAt: z.iso.datetime() };
-const Reply = z.discriminatedUnion("outcome", [
-  z.object({ ...base, outcome: z.literal("confirmed"), task: z.object({ taskId: z.uuid(), project: AgentXNameSchema, createdAt: z.iso.datetime() }).strict() }).strict(),
-  z.object({ ...base, outcome: z.literal("unknown") }).strict(),
-]);
+// DEC 582: a FORWARD reader. A newer Code may add fields to this answer, or an outcome word this build does not know. Extra fields are ignored (the answer is rebuilt from the fields read, so nothing unread is relayed).
+// An outcome other than "confirmed" reads as "unknown", the answer that means "not confirmed, check again": it carries no task, so it starts nothing, grants nothing and shows no success. Only an exact "confirmed" with a
+// readable task reads as a start; a "confirmed" whose task cannot be read stays refused (502), never an "unknown" that hides a broken success. A wrong request id, operation or time is still refused.
+const Task = z.object({ taskId: z.uuid(), project: AgentXNameSchema, createdAt: z.iso.datetime() });
+const Confirmed = z.object({ ...base, outcome: z.literal("confirmed"), task: Task });
+const NotConfirmed = z.object({ ...base, outcome: z.string().refine(word => word !== "confirmed") })
+  .transform(({ requestId, operation, checkedAt }) => ({ requestId, operation, checkedAt, outcome: "unknown" as const }));
+const Reply = z.union([Confirmed, NotConfirmed]);
 // Loose on purpose (F3-A0): a newer Code may add envelope fields (reason, writes) or error codes. Only code and message are read; anything else passes through unread.
 const ErrorBody = z.looseObject({ error: z.looseObject({ code: z.string(), message: z.string() }) });
 const failure = (status: number, code: string, message = "Start status is unavailable."): RouteAnswer => ({ status, body: { error: { code, message } } });

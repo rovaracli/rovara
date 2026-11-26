@@ -22,10 +22,36 @@ describe("original start Cloud reader through the real client and browser mount"
     const w = await httpWorld(confirmed); expect((await w.call(path + (kind === "query" ? "?actor=other" : ""), "GET", kind === "body" ? {} : undefined)).status).toBe(400); expect(w.calls).toHaveLength(0);
   });
   it.each([
-    { ...confirmed, requestId: "33333333-3333-4333-8333-333333333333" }, { ...confirmed, checkedAt: "yesterday" }, { ...confirmed, session: "invented" },
-    { ...confirmed, task: { ...confirmed.task, prompt: "private" } }, { ...confirmed, outcome: "refused" }, { ...confirmed, task: { ...confirmed.task, project: "unsafe/name" } },
+    { ...confirmed, requestId: "33333333-3333-4333-8333-333333333333" }, { ...confirmed, checkedAt: "yesterday" }, { ...confirmed, operation: "stop" },
+    { ...confirmed, task: { ...confirmed.task, project: "unsafe/name" } }, { ...confirmed, task: { ...confirmed.task, taskId: "not-a-uuid" } },
+    { ...confirmed, task: { ...confirmed.task, createdAt: "yesterday" } }, { ...confirmed, task: undefined }, { ...confirmed, task: null }, { ...confirmed, outcome: undefined }, { ...confirmed, outcome: 7 }, { ...confirmed, outcome: null },
+    { requestId: REQUEST, operation: "start", outcome: "unknown" },
   ])("rejects invalid success without reconstructing facts %j", async body => {
     const w = await httpWorld(body); expect(await w.call(path)).toMatchObject({ status: 502, body: { error: { code: "INVALID_RESPONSE", message: "Start status is unavailable." } } });
+  });
+  // DEC 582: this reader is a FORWARD reader. A newer Code's extra fields are ignored, and an outcome word this build does not know reads as "unknown" (not confirmed, check again).
+  it("ignores extra fields a newer Code adds, at every level, and does not relay them", async () => {
+    const body = { ...confirmed, session: "invented", reason: "x", task: { ...confirmed.task, prompt: "private", extra: { a: 1 } } };
+    const w = await httpWorld(body); const r = await w.call(path);
+    expect(r.status).toBe(200); expect(r.body).toEqual(confirmed);
+    expect(JSON.stringify(r.body)).not.toContain("private"); expect(JSON.stringify(r.body)).not.toContain("invented");
+  });
+  it("ignores extra fields on an unknown-outcome answer too", async () => {
+    const body = { requestId: REQUEST, operation: "start", checkedAt: TIME, outcome: "unknown", retryAfter: 30, task: { taskId: confirmed.task.taskId, project: "payments", createdAt: TIME } };
+    const w = await httpWorld(body); const r = await w.call(path);
+    expect(r.status).toBe(200); expect(r.body).toEqual({ requestId: REQUEST, operation: "start", checkedAt: TIME, outcome: "unknown" });
+  });
+  it.each(["refused", "started", "queued", "pending", "Confirmed", "confirmed ", ""])("an unknown outcome %j grants nothing: it reads as unknown, with no task and no success", async outcome => {
+    // Even a newer Code that sends a complete-looking task with the unknown word must not make this look like a start.
+    const w = await httpWorld({ ...confirmed, outcome, extra: true }); const r = await w.call(path);
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ requestId: REQUEST, operation: "start", checkedAt: TIME, outcome: "unknown" });
+    expect(r.body).not.toHaveProperty("task"); expect((r.body as { outcome: string }).outcome).not.toBe("confirmed");
+    expect(JSON.stringify(r.body)).not.toContain(confirmed.task.taskId);
+    expect(w.calls).toHaveLength(1); expect(w.calls.every(c => c.method === "GET")).toBe(true);
+  });
+  it("an unknown outcome that is not a string is still refused, not read as unknown", async () => {
+    const w = await httpWorld({ ...confirmed, outcome: { kind: "confirmed" } }); expect((await w.call(path)).status).toBe(502);
   });
   it.each([202, 201])("rejects unexpected success status %i even with a valid body", async status => {
     const w = await httpWorld(confirmed, status); expect((await w.call(path)).status).toBe(502);
