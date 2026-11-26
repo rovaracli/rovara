@@ -19,6 +19,8 @@ export const SetupApplyViewSchema = z.object({
   readiness: z.array(z.string().min(1).max(2_000)).max(64),
   /** L4-EVP: where the project's AI prompts live, as the candidate adds them, one plain line each (Code's words). */
   promptLocations: z.array(z.string().min(1).max(1_100)).max(40).optional(),
+  /** The candidate's commands (as in `setup` and `readiness`) used with no file evidence behind them; the approval card tags them. Absent: none, or a candidate made before Code kept it. */
+  usedWithoutMatch: z.array(z.string().min(1).max(2_000)).max(64).optional(),
   /** Where the candidate's check on a fresh workspace stands; a decision is offered only once it is `ready`. */
   check: z.object({ status: z.enum(SETUP_CHECK_STATES), failedStep: z.string().min(1).max(1_000).optional() }).passthrough(),
   risk: z.enum(SETUP_RISKS),

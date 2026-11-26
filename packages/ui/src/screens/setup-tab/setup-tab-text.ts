@@ -161,8 +161,8 @@ export const FOUND = Object.freeze({
   next: (p: string) => `Next, Rovara checks this on a second machine. Nothing changes in ${p} until you approve.`,
   checking: "Rovara is still checking where each suggestion came from.", saved: "Rovara is checking it on a second machine. When the check passes, approve it here.",
   leftOut: { unverified: "Left out: it doesn't match the code.", refused_command: "Left out: it downloads and runs code, or holds a secret.", not_a_command_item: "Left out: it isn't a command.", too_many: "Left out: there are too many commands.", invalid_command: "Left out: it couldn't be read as a command." },
-  unmatchedBefore: MISMATCH_WORDS.before, unmatchedAfter: MISMATCH_WORDS.after, unmatchedUnknown: MISMATCH_WORDS.unknown,
-  useAnyway: MISMATCH_WORDS.useAnyway, useAnywayUnknown: MISMATCH_WORDS.useAnywayUnknown, chosenAnyway: MISMATCH_WORDS.chosenAnyway, tickOne: MISMATCH_WORDS.tickOne,
+  unmatchedBefore: MISMATCH_WORDS.before, unmatchedAfter: MISMATCH_WORDS.after,
+  useAnyway: MISMATCH_WORDS.useAnyway, chosenAnyway: MISMATCH_WORDS.chosenAnyway, tickOne: MISMATCH_WORDS.tickOne,
   noInstall: "No install commands are ticked. The check runs the tests with the install commands this project already has, or with none if it has none.",
   readOnly: "Rovara has a setup waiting. A project admin, or a company owner or admin, reviews and approves it.",
 });

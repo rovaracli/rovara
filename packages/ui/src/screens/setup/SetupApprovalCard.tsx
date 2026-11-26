@@ -38,6 +38,7 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
   const [done, setDone] = useState(false), [busy, setBusy] = useState<"approve" | "reject" | "discard">(), [problem, setProblem] = useState<{ message: string; moved: boolean }>();
   const sending = useRef(false);
   const lines = changeLines(apply), more = lines.length - SHOWN_CHANGES;
+  const unmatched = new Set(apply.usedWithoutMatch ?? []);
   const ready = apply.check.status === "ready", failed = apply.check.status === "failed";
   const approval = apply.approval;
 
@@ -76,13 +77,14 @@ export function SetupApprovalCard({ project, apply, canManage, onDecided, onRefr
       {(apply.check.status === "unchecked" || apply.check.status === "outdated") && <span role="status">{T.check.stale}</span>}
     </p>
     <p className="rv-muted" data-testid="setup-approval-who">{T.who[apply.approver]}</p>
+    {unmatched.size > 0 && <p className="rv-proposal-meta" data-testid="setup-approval-unmatched-note">{T.withoutMatch.summary(unmatched.size)}</p>}
     <details className="rv-approval-details">
       <summary>Details</summary>
       {more > 0 && <ul aria-label="More changes">{lines.slice(SHOWN_CHANGES).map((text, index) => <li key={index}><VisibleText text={text} /></li>)}</ul>}
       <p className="rv-proposal-meta">Setup commands</p>
-      {apply.setup.length === 0 ? <p>None.</p> : <ul aria-label="Setup commands">{apply.setup.map((command, index) => <li key={index}><code><VisibleText text={command} /></code></li>)}</ul>}
+      {apply.setup.length === 0 ? <p>None.</p> : <ul aria-label="Setup commands">{apply.setup.map((command, index) => <li key={index}><code><VisibleText text={command} /></code>{unmatched.has(command) && <> <span className="rv-proposal-meta" data-testid="setup-approval-unmatched">{T.withoutMatch.tag}</span></>}</li>)}</ul>}
       <p className="rv-proposal-meta">Test commands</p>
-      {apply.readiness.length === 0 ? <p>None.</p> : <ul aria-label="Test commands">{apply.readiness.map((command, index) => <li key={index}><code><VisibleText text={command} /></code></li>)}</ul>}
+      {apply.readiness.length === 0 ? <p>None.</p> : <ul aria-label="Test commands">{apply.readiness.map((command, index) => <li key={index}><code><VisibleText text={command} /></code>{unmatched.has(command) && <> <span className="rv-proposal-meta" data-testid="setup-approval-unmatched">{T.withoutMatch.tag}</span></>}</li>)}</ul>}
     </details>
     <div className="rv-connect-actions rv-approval-actions">
       {allowed && apply.canApprove && <Button variant="primary" busy={busy === "approve"} disabled={busy !== undefined || done} data-testid="setup-approve" onClick={() => { void decide("approve"); }}>Approve</Button>}

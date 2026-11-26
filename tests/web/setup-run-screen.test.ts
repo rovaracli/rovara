@@ -118,18 +118,19 @@ it("with no session there is no steer box, and no command box at all", async () 
 const READY = view({ status: "ready", stop: "proposed", summary: SUMMARY, proposal: PROPOSAL, verified: true, taskId: TASK, verification: { "setup-web": "verified", "tests-web": "unverified" } });
 const REPLY = { digest: "b".repeat(64), used: ["setup-web"], unchecked: [], left: [], proved: false, next: "check" };
 
-it("Use this setup: an item that does not match the code is not ticked for the person; the rest is proposed, nothing is applied, and the page says what must happen first", async () => {
+it("Use this setup: an item whose cited lines are not in the file cannot be ticked (Rovara misread the files) and offers a way on; the rest is proposed, nothing is applied, and the page says what must happen first", async () => {
   const f = setup({ read: { status: 200, body: READY }, answers: { "/confirm": { status: 200, body: REPLY } } });
   const section = await region();
   const card = await within(section).findByRole("region", { name: "Use this setup" });
   expect(within(card).getByText(/saves it as a proposal in the test environment below; it does not change the project's settings/u)).toBeTruthy();
   expect(within(card).queryByText(/Nothing is saved until/u)).toBeNull();
-  expect(within(card).getByTestId("confirm-unmatched").textContent).toBe("Does not match the code: Rovara could not find what this cites.");
-  expect(within(card).getByTestId("confirm-anyway").textContent).toBe("Rovara could not match this to what it cites; tick to use it anyway.");
+  expect(within(card).getByTestId("confirm-misread-words").textContent).toBe("Rovara misread your files: the lines it quoted for this row are not in them, so it can't be used as it is.");
+  expect(within(card).getByRole("button", { name: "Run setup again" })).toBeTruthy();
+  expect(within(card).getByRole<HTMLButtonElement>("button", { name: "Change a command" }).disabled).toBe(true);
   const boxes = within(card).getAllByRole<HTMLInputElement>("checkbox");
   expect(boxes).toHaveLength(2);
   expect(boxes[0]!.checked).toBe(true);
-  expect(boxes[1]!.disabled).toBe(false);
+  expect(boxes[1]!.disabled).toBe(true);
   expect(boxes[1]!.checked).toBe(false);
   fireEvent.click(within(card).getByRole("button", { name: "Use this setup" }));
   await waitFor(() => expect(posts(f, "/setup-agent/confirm")).toHaveLength(1));
@@ -142,13 +143,27 @@ it("Use this setup: an item that does not match the code is not ticked for the p
   f.close();
 });
 
+it("a misread row's Run setup again starts a run, and Change a command is shown locked with its reason", async () => {
+  const f = setup({ read: { status: 200, body: READY }, answers: { "/setup-agent": { status: 200, body: view({ status: "running", taskId: TASK, startedAt: "2026-11-02T12:00:00.000Z" }) } } });
+  const card = await within(await region()).findByRole("region", { name: "Use this setup" });
+  expect(within(card).getByText("Locked: Changing a command is not available yet.")).toBeTruthy();
+  fireEvent.click(within(card).getByRole("button", { name: "Run setup again" }));
+  await waitFor(() => expect(posts(f, "/setup-agent")).toHaveLength(1));
+  expect(posts(f, "/setup-agent/confirm")).toHaveLength(0);
+  f.close();
+});
+
 it("a row that does not match names the command Rovara could not find, can be ticked after the warning, and is sent with useAnyway", async () => {
   const f = setup({ read: { status: 200, body: { ...READY, unmatched: { "tests-web": "pytest -q" } } }, answers: { "/confirm": { status: 200, body: { ...REPLY, used: ["setup-web", "tests-web"], unchecked: ["tests-web"] } } } });
   const card = await within(await region()).findByRole("region", { name: "Use this setup" });
   expect(within(card).getByTestId("confirm-unmatched").textContent).toBe("Does not match the code: Rovara could not find pytest -q in the lines it quoted.");
   expect(within(card).getByTestId("confirm-unmatched").querySelector("code")!.textContent).toBe("pytest -q");
   expect(within(card).getByTestId("confirm-anyway").textContent).toBe("Rovara could not find this command in the lines it quoted; tick to use it anyway.");
-  fireEvent.click(within(card).getAllByRole<HTMLInputElement>("checkbox")[1]!);
+  const box = within(card).getAllByRole<HTMLInputElement>("checkbox")[1]!;
+  expect(box.disabled).toBe(false);
+  expect(box.checked).toBe(false);
+  fireEvent.click(box);
+  expect(box.checked).toBe(true);
   expect(within(card).getByTestId("confirm-anyway").textContent).toBe("You chose to use this although it does not match the code. The second machine still checks it.");
   fireEvent.click(within(card).getByRole("button", { name: "Use this setup" }));
   await waitFor(() => expect(posts(f, "/setup-agent/confirm")).toHaveLength(1));

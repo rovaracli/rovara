@@ -5,6 +5,7 @@ import { ApiError } from "../../api/errors.js";
 import { Button } from "../../design/Button.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { CONFIRM_WORDS, MISMATCH_WORDS, REVIEW_WORDS, VERDICT_WORDS } from "./words.js";
+import { MisreadRow } from "./MisreadRow.js";
 
 type Ready = SetupAgentView & { proposal: NonNullable<SetupAgentView["proposal"]> };
 
@@ -18,7 +19,9 @@ export function ConfirmCard({ project, view, settingsRevision, onProposed, place
   const verdict = (id: string) => view.verification?.[id] ?? "unchecked";
   const [chosen, setChosen] = useState<Record<string, boolean>>({}), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<SetupConfirmReply>();
   // Only what the code host confirmed is ticked to begin with; an item that could not be checked against a file, or does not match the code, can be ticked by the person after the warning beside it.
-  const on = (id: string) => chosen[id] ?? verdict(id) === "verified";
+  // A row whose cited lines are not in the file at all (no command named) cannot be used: it is never ticked and offers re-running or changing a command instead.
+  const misread = (id: string) => verdict(id) === "unverified" && view.unmatched?.[id] === undefined;
+  const on = (id: string) => !misread(id) && (chosen[id] ?? verdict(id) === "verified");
   const ids = items.filter(item => on(item.id)).map(item => item.id);
   const anyway = ids.filter(id => verdict(id) === "unverified");
   const checked = view.verified === true;
@@ -35,11 +38,12 @@ export function ConfirmCard({ project, view, settingsRevision, onProposed, place
         const word = verdict(item.id);
         const unmatched = view.unmatched?.[item.id];
         return <li key={item.id} className="rv-proposal-item">
-          <label className="rv-onboarding-choice"><input type="checkbox" checked={on(item.id)} disabled={done !== undefined} onChange={event => { setChosen({ ...chosen, [item.id]: event.target.checked }); }} />
+          <label className="rv-onboarding-choice"><input type="checkbox" checked={on(item.id)} disabled={done !== undefined || misread(item.id)} onChange={event => { setChosen({ ...chosen, [item.id]: event.target.checked }); }} />
             <span>{item.kind === "setup" ? "Setup" : "Tests"} in <VisibleText text={value.repo} />: {value.commands.map(line => <code key={line}><VisibleText text={line} /> </code>)}</span></label>
-          {word === "unverified"
-            ? <><p className="rv-proposal-meta" data-testid="confirm-unmatched"><span>{unmatched === undefined ? MISMATCH_WORDS.unknown : <>{MISMATCH_WORDS.before}<code><VisibleText text={unmatched} /></code>{MISMATCH_WORDS.after}</>}</span></p><p role="note" data-testid="confirm-anyway">{on(item.id) ? MISMATCH_WORDS.chosenAnyway : unmatched === undefined ? MISMATCH_WORDS.useAnywayUnknown : MISMATCH_WORDS.useAnyway}</p></>
-            : <p className="rv-proposal-meta"><span>{VERDICT_WORDS[word]}</span></p>}
+          {misread(item.id) ? <MisreadRow project={project} testId="confirm-misread" />
+            : word === "unverified"
+              ? <><p className="rv-proposal-meta" data-testid="confirm-unmatched"><span>{MISMATCH_WORDS.before}<code><VisibleText text={unmatched!} /></code>{MISMATCH_WORDS.after}</span></p><p role="note" data-testid="confirm-anyway">{on(item.id) ? MISMATCH_WORDS.chosenAnyway : MISMATCH_WORDS.useAnyway}</p></>
+              : <p className="rv-proposal-meta"><span>{VERDICT_WORDS[word]}</span></p>}
         </li>;
       })}
     </ul>}
