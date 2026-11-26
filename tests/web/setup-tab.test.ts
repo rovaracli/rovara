@@ -275,11 +275,23 @@ describe("review and approve", () => {
     expect(f.sent("POST", "/setup-agent/confirm")[0]!.body).toMatchObject({ itemIds: ["setup-payments", "tests-payments"], useAnyway: ["setup-payments"] });
     f.close();
   });
-  it("a row that does not match with no command known still warns and can be ticked", async () => {
+  it("a row whose cited lines are not in the file (no command named) is blocked, never a dead end: it says Rovara misread the files and offers Run setup again and a locked Change a command", async () => {
     const f = reviewing({ verification: { "setup-payments": "unverified", "tests-payments": "verified" } });
     const found = await screen.findByTestId("setup-found");
-    expect(within(found).getByTestId("found-unmatched").textContent).toBe("Does not match the code: Rovara could not find what this cites.");
-    expect(within(found).getByTestId("found-anyway").textContent).toBe("Rovara could not match this to what it cites; tick to use it anyway.");
+    const group = within(within(found).getByTestId("found-setup"));
+    expect(group.getByTestId("found-misread-words").textContent).toBe("Rovara misread your files: the lines it quoted for this row are not in them, so it can't be used as it is.");
+    expect(group.queryByTestId("found-anyway")).toBeNull();
+    expect(group.getByRole("checkbox").matches(":disabled")).toBe(true);
+    expect(group.getByRole("checkbox").matches(":checked")).toBe(false);
+    const again = group.getByRole("button", { name: "Run setup again" });
+    expect(again.matches(":disabled")).toBe(false);
+    const change = group.getByRole("button", { name: "Change a command" });
+    expect(change.matches(":disabled")).toBe(true);
+    expect(within(found).getByText("Locked: Changing a command is not available yet.")).toBeTruthy();
+    f.world.write = request => request.path.endsWith("/setup-agent") && request.method === "POST" ? { status: 200, body: { status: "running", basedOnRevision: 3, canManage: true, startedAt: "2026-11-24T10:00:00.000Z" } } : undefined;
+    fireEvent.click(again);
+    await waitFor(() => expect(f.sent("POST", "/setup-agent")).toHaveLength(1));
+    expect(f.sent("POST", "/setup-agent/confirm")).toHaveLength(0);
     f.close();
   });
   it("with nothing ticked the button is disabled and a line says why; with the checks still running the line says that", async () => {
@@ -322,6 +334,25 @@ describe("review and approve", () => {
     expect(buttonsOf(screen.getByTestId("setup-status-card"))).toEqual([]);
     expect(screen.queryByTestId("setup-approval")).toBeNull();
     f.close();
+  });
+  it("the approval card tags the commands used without a match and says how many, at the same risk; with none recorded it shows no tag", async () => {
+    const f = mountSetupTab({
+      run: { ...ready, apply: apply({ usedWithoutMatch: ["npm test"] }) }, row: failedRow({ state: "needs_you", status: "ready", approval: "candidate", failure: undefined, failedCommand: undefined, check: { status: "ready" } }),
+    });
+    const approval = await screen.findByTestId("setup-approval");
+    expect(within(approval).getByTestId("setup-approval-unmatched-note").textContent).toBe("1 command was used without a match in the lines Rovara quoted. They are tagged under Details.");
+    const tags = within(approval).getAllByTestId("setup-approval-unmatched");
+    expect(tags.map(tag => tag.textContent)).toEqual(["Not matched to the code"]);
+    expect(tags[0]!.closest("li")!.textContent).toContain("npm test");
+    expect(within(approval).getByTestId("setup-approval-risk").textContent).toContain("Low risk");
+    f.close(); cleanup();
+    const old = mountSetupTab({
+      run: { ...ready, apply: apply() }, row: failedRow({ state: "needs_you", status: "ready", approval: "candidate", failure: undefined, failedCommand: undefined, check: { status: "ready" } }),
+    });
+    const plain = await screen.findByTestId("setup-approval");
+    expect(within(plain).queryByTestId("setup-approval-unmatched")).toBeNull();
+    expect(within(plain).queryByTestId("setup-approval-unmatched-note")).toBeNull();
+    old.close();
   });
   it("checked: Approve this setup is the primary in the status card; it decides with one press bound to the read's revision and digest, and the card says Setup is done", async () => {
     const f = mountSetupTab({

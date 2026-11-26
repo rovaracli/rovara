@@ -6,6 +6,7 @@ import { Button } from "../../design/Button.js";
 import { Checkbox } from "../../design/Checkbox.js";
 import { VisibleText } from "../../design/VisibleText.js";
 import { VERDICT_WORDS } from "../setup/words.js";
+import { MisreadRow } from "../setup/MisreadRow.js";
 import { ACTIONS, FOUND } from "./setup-tab-text.js";
 
 type Ready = SetupAgentView & { proposal: NonNullable<SetupAgentView["proposal"]> };
@@ -20,7 +21,9 @@ export function FoundSetupCard({ project, view, settingsRevision, onProposed, pr
   const verdict = (id: string) => view.verification?.[id] ?? "unchecked";
   const [chosen, setChosen] = useState<Record<string, boolean>>({}), [busy, setBusy] = useState(false), [error, setError] = useState<string>(), [done, setDone] = useState<SetupConfirmReply>();
   // Only what the code host confirmed is ticked to begin with; an item that could not be checked against a file, or does not match the code, can be ticked by the person after the warning beside it.
-  const on = (id: string) => chosen[id] ?? verdict(id) === "verified";
+  // A row whose cited lines are not in the file at all (no command named) cannot be used: it is never ticked and offers re-running or changing a command instead.
+  const misread = (id: string) => verdict(id) === "unverified" && view.unmatched?.[id] === undefined;
+  const on = (id: string) => !misread(id) && (chosen[id] ?? verdict(id) === "verified");
   const ids = items.filter(item => on(item.id)).map(item => item.id);
   const anyway = ids.filter(id => verdict(id) === "unverified");
   const checked = view.verified === true;
@@ -40,11 +43,12 @@ export function FoundSetupCard({ project, view, settingsRevision, onProposed, pr
         const word = verdict(item.id);
         const unmatched = view.unmatched?.[item.id];
         return <li key={item.id}>
-          <Checkbox label={value.repo} checked={on(item.id)} disabled={done !== undefined} onCheckedChange={next => { setChosen({ ...chosen, [item.id]: next === true }); }} />
+          <Checkbox label={value.repo} checked={on(item.id)} disabled={done !== undefined || misread(item.id)} onCheckedChange={next => { setChosen({ ...chosen, [item.id]: next === true }); }} />
           <ul className="rv-setup-found-commands" aria-label={`Commands in ${value.repo}`}>{value.commands.map(line => <li key={line}><code><VisibleText text={line} /></code></li>)}</ul>
-          {word === "unverified"
-            ? <><p className="rv-muted" data-testid="found-unmatched">{unmatched === undefined ? FOUND.unmatchedUnknown : <>{FOUND.unmatchedBefore}<code><VisibleText text={unmatched} /></code>{FOUND.unmatchedAfter}</>}</p><p role="note" data-testid="found-anyway">{on(item.id) ? FOUND.chosenAnyway : unmatched === undefined ? FOUND.useAnywayUnknown : FOUND.useAnyway}</p></>
-            : <p className="rv-muted">{VERDICT_WORDS[word]}</p>}
+          {misread(item.id) ? <MisreadRow project={project} testId="found-misread" />
+            : word === "unverified"
+              ? <><p className="rv-muted" data-testid="found-unmatched">{FOUND.unmatchedBefore}<code><VisibleText text={unmatched!} /></code>{FOUND.unmatchedAfter}</p><p role="note" data-testid="found-anyway">{on(item.id) ? FOUND.chosenAnyway : FOUND.useAnyway}</p></>
+              : <p className="rv-muted">{VERDICT_WORDS[word]}</p>}
         </li>;
       })}</ul>
     </div>;

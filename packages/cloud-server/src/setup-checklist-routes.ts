@@ -304,10 +304,13 @@ export function applyAnswer(value: unknown): Plain {
   need(Array.isArray(changes) && changes.length <= 16 && changes.every((one) => plain(one) && oneOf(one["area"], AREAS) && oneOf(one["risk"], RISKS)), undefined);
   need(approval === undefined || (plain(approval) && typeof approval["requestId"] === "string" && DECISION_ID.test(approval["requestId"]) && whole(approval["revision"], 1) && typeof approval["artifactDigest"] === "string" && HEX64.test(approval["artifactDigest"])
     && approval["kind"] === "setup" && oneOf(approval["risk"], RISKS)), undefined);
+  const without = v["usedWithoutMatch"];
+  need(without === undefined || lines(without, 64), undefined);
   const c = check as Plain, a = approval as Plain | undefined;
   return {
     candidateRevision: v["candidateRevision"], baseRevision: v["baseRevision"], setup: [...(v["setup"] as string[])], readiness: [...(v["readiness"] as string[])],
     ...(locations === undefined ? {} : { promptLocations: [...(locations as string[])] }),
+    ...(without === undefined || (without as string[]).length === 0 ? {} : { usedWithoutMatch: [...(without as string[])] }),
     check: { status: c["status"], ...(c["failedStep"] === undefined ? {} : { failedStep: c["failedStep"] }) },
     risk: v["risk"], changes: (changes as Plain[]).map((one) => ({ area: one["area"], risk: one["risk"] })), approver: v["approver"], canApprove: v["canApprove"], canReject: v["canReject"],
     ...(a === undefined ? {} : { approval: { requestId: a["requestId"], revision: a["revision"], artifactDigest: a["artifactDigest"], kind: "setup", risk: a["risk"] } }),
@@ -520,7 +523,7 @@ const runReadRoute: Route = {
 };
 
 /** One approval act (confirm, discard or decide): the checked body goes to Code as the person; Code's answer is rebuilt and its refusals are Cloud's fixed words. */
-function approvalRoute<B>(tail: ApprovalKind | "host-decide", check: (body: unknown) => B | undefined, rebuild: (value: unknown, project: string, sent: B) => Plain, event: string, describe: (sent: B) => Record<string, string>, refuse: (error: CodeError) => RouteAnswer = (error) => approvalRefusal(tail as ApprovalKind, error)): Route {
+function approvalRoute<B>(tail: ApprovalKind | "host-decide", check: (body: unknown) => B | undefined, rebuild: (value: unknown, project: string, sent: B) => Plain, event: string, describe: (sent: B) => Record<string, string | string[]>, refuse: (error: CodeError) => RouteAnswer = (error) => approvalRefusal(tail as ApprovalKind, error)): Route {
   return {
     method: "POST", path: new RegExp(`^/projects/([^/]+)/setup-agent/${tail}$`, "u"),
     answer: async (context) => {
@@ -544,8 +547,8 @@ function approvalRoute<B>(tail: ApprovalKind | "host-decide", check: (body: unkn
   };
 }
 
-/** What the log line of a confirm adds: the item ids a person ticked although the page said they do not match the code (bounded), and how many. Nothing when there are none. */
-export const confirmLogDetails = (sent: { useAnyway?: string[] }): Record<string, string> => (sent.useAnyway === undefined || sent.useAnyway.length === 0 ? {} : { useAnyway: sent.useAnyway.join(",").slice(0, 1_000), useAnywayCount: String(sent.useAnyway.length) });
+/** What the log line of a confirm adds: the item ids a person ticked although the page said they do not match the code (a list; the body already bounds it to 128 ids of at most 100 characters), and how many. Nothing when there are none. */
+export const confirmLogDetails = (sent: { useAnyway?: string[] }): Record<string, string | string[]> => (sent.useAnyway === undefined || sent.useAnyway.length === 0 ? {} : { useAnyway: [...sent.useAnyway], useAnywayCount: String(sent.useAnyway.length) });
 const confirmRoute = approvalRoute("confirm", confirmBody, (value) => confirmAnswer(value), "cloud.setup_confirm", confirmLogDetails);
 const discardRoute = approvalRoute("discard", runBody, (value) => { need(plain(value) && typeof value["discarded"] === "boolean", undefined); return { discarded: (value as Plain)["discarded"] }; }, "cloud.setup_discard", () => ({}));
 const decideRoute = approvalRoute("decide", decideBody, (value, project, sent) => {

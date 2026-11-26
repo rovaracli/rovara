@@ -171,6 +171,12 @@ describe("the run's read carries the waiting candidate", () => {
       expect(errorOf(res)).toEqual({ code: "RUNTIME_UNAVAILABLE", message: SETUP_CHECKLIST_WORDS.unavailable });
       expect(res.text).not.toContain(LEAK);
     }
+    const base = { candidateRevision: 2, baseRevision: 1, setup: ["a"], readiness: ["b"], check: { status: "ready" }, risk: "low", changes: [{ area: "setup_commands", risk: "low" }], approver: "maintainer", canApprove: true, canReject: true };
+    expect(applyAnswer({ ...base, usedWithoutMatch: ["a"] })).toMatchObject({ usedWithoutMatch: ["a"] });
+    expect(applyAnswer(base)).not.toHaveProperty("usedWithoutMatch");
+    expect(applyAnswer({ ...base, usedWithoutMatch: [] })).not.toHaveProperty("usedWithoutMatch");
+    expect(() => applyAnswer({ ...base, usedWithoutMatch: "a" })).toThrow();
+    expect(() => applyAnswer({ ...base, usedWithoutMatch: [""] })).toThrow();
     expect(() => applyAnswer([])).toThrow();
     expect(() => applyAnswer(null)).toThrow();
   });
@@ -200,12 +206,11 @@ describe("Use this setup (confirm)", () => {
       const res = await w.send("POST", "/v1/web/projects/payments/setup-agent/confirm?company=" + B, headers, { requestId: UUID1, expectedRevision: 3, itemIds: ["setup-1", "tests-2"], useAnyway: ["tests-2"] });
       expect(res.status).toBe(200);
       expect(w.codeCalls()).toEqual([expect.objectContaining({ body: { requestId: UUID1, expectedRevision: 3, itemIds: ["setup-1", "tests-2"], useAnyway: ["tests-2"] } })]);
-      expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>).filter((line) => line["event"] === "cloud.setup_confirm")).toEqual([{ event: "cloud.setup_confirm", project: "payments", useAnyway: "tests-2", useAnywayCount: "1" }]);
+      expect(lines.map((line) => JSON.parse(line) as Record<string, unknown>).filter((line) => line["event"] === "cloud.setup_confirm")).toEqual([{ event: "cloud.setup_confirm", project: "payments", useAnyway: ["tests-2"], useAnywayCount: "1" }]);
     } finally { spy.mockRestore(); }
     expect(confirmLogDetails({})).toEqual({});
     expect(confirmLogDetails({ useAnyway: [] })).toEqual({});
-    expect(confirmLogDetails({ useAnyway: ["a", "b"] })).toEqual({ useAnyway: "a,b", useAnywayCount: "2" });
-    expect(confirmLogDetails({ useAnyway: Array.from({ length: 400 }, (_, i) => `item-${String(i)}`) }).useAnyway!.length).toBe(1_000);
+    expect(confirmLogDetails({ useAnyway: ["a,b", "c"] })).toEqual({ useAnyway: ["a,b", "c"], useAnywayCount: "2" });
   });
 
   it("refuses a body that is not exactly the checked one, without asking Code", async () => {

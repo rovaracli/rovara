@@ -15,6 +15,7 @@ const SHOWN_CHANGES = 5;
  */
 export function ApproveCard({ apply, canManage, decision, newer = false }: { apply: SetupApplyView; canManage: boolean; decision: DecisionState; /** A newer setup beside the one in use: the status card's button only brings the person here, so the answer is given in this card (secondary buttons). */ newer?: boolean }) {
   const lines = changeLines(apply), more = lines.length - SHOWN_CHANGES;
+  const unmatched = new Set(apply.usedWithoutMatch ?? []);
   const ready = apply.check.status === "ready", failed = apply.check.status === "failed";
   const mayDecide = ready && apply.approval !== undefined && (apply.canApprove || apply.canReject);
   return <section id="setup-approve" className="rv-setup-card rv-setup-card-quiet" aria-labelledby="rv-setup-approve-title" data-testid="setup-approval" data-risk={apply.risk} data-check={apply.check.status}>
@@ -27,15 +28,16 @@ export function ApproveCard({ apply, canManage, decision, newer = false }: { app
     </p>
     {!failed && <p className="rv-approval-risk" data-testid="setup-approval-risk"><strong className={`rv-approval-chip rv-approval-${apply.risk}`}>{T.risk[apply.risk]}</strong> <span>{riskReason(apply)}</span></p>}
     {ready && !mayDecide && <p className="rv-muted" data-testid="setup-approval-who">{T.who[apply.approver]}</p>}
+    {unmatched.size > 0 && <p className="rv-muted" data-testid="setup-approval-unmatched-note">{T.withoutMatch.summary(unmatched.size)}</p>}
     <details className="rv-approval-details">
       <summary>{APPROVE.details}</summary>
       <p className="rv-muted">{APPROVE.whatChanged}</p>
       <ul aria-label="What changed">{lines.slice(0, SHOWN_CHANGES).map((text, index) => <li key={index}><VisibleText text={text} /></li>)}</ul>
       {more > 0 && <ul aria-label="More changes">{lines.slice(SHOWN_CHANGES).map((text, index) => <li key={index}><VisibleText text={text} /></li>)}</ul>}
       <p className="rv-muted">Setup commands</p>
-      {apply.setup.length === 0 ? <p>None.</p> : <ul aria-label="Setup commands">{apply.setup.map((command, index) => <li key={index}><code><VisibleText text={command} /></code></li>)}</ul>}
+      {apply.setup.length === 0 ? <p>None.</p> : <ul aria-label="Setup commands">{apply.setup.map((command, index) => <li key={index}><code><VisibleText text={command} /></code>{unmatched.has(command) && <> <span className="rv-muted" data-testid="setup-approval-unmatched">{T.withoutMatch.tag}</span></>}</li>)}</ul>}
       <p className="rv-muted">Test commands</p>
-      {apply.readiness.length === 0 ? <p>None.</p> : <ul aria-label="Test commands">{apply.readiness.map((command, index) => <li key={index}><code><VisibleText text={command} /></code></li>)}</ul>}
+      {apply.readiness.length === 0 ? <p>None.</p> : <ul aria-label="Test commands">{apply.readiness.map((command, index) => <li key={index}><code><VisibleText text={command} /></code>{unmatched.has(command) && <> <span className="rv-muted" data-testid="setup-approval-unmatched">{T.withoutMatch.tag}</span></>}</li>)}</ul>}
     </details>
     {newer && ready && apply.approval !== undefined && (apply.canApprove || apply.canReject) && <div className="rv-setup-card-actions" data-testid="newer-actions">
       {apply.canApprove && <Button disabled={decision.busy !== undefined || decision.done} busy={decision.busy === "approve"} data-testid="setup-approve" onClick={() => { void decision.decide("approve"); }}>{APPROVE.approveNewer}</Button>}
