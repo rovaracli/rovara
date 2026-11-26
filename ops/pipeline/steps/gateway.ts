@@ -4,6 +4,7 @@
 import { changeSetNameFor, stackName } from "../config.ts";
 import { StageError } from "../types.ts";
 import { buildCodeGateway } from "../lib/candidate.ts";
+import { keepsLiveGateway } from "../lib/gateway-code.ts";
 import type { StepContext } from "../lib/context.ts";
 import { discardChangeSets, executeRecorded, previewChangeSets, tidyChangeSets } from "../lib/changesets.ts";
 import { stageOf } from "../lib/manifest.ts";
@@ -20,7 +21,16 @@ export async function gatewayStep(ctx: StepContext, state: State): Promise<void>
   const digest = manifest.gateway.digest;
   if (digest === null) throw new StageError("REFUSED", "the manifest has no gateway digest: the image step did not complete");
   const codeSha = manifest.gateway.codeSha ?? null;
-  if (codeSha === null) throw new StageError("REFUSED", "the manifest has no Code commit for the gateway: the image step did not record one, so the gateway stack cannot be made from Code");
+  if (codeSha === null) {
+    // No Code commit: the only gateway that may go on is the live one, kept (an image recorded before the gateway moved to Code that the live stack, last deployed from Cloud, runs now).
+    // Judged again here on the live stack, never from the image step's word: no change set, no gates of this phase, nothing executes.
+    const kept = await keepsLiveGateway(ctx.ports, ctx.config, ctx.env, digest);
+    if (!kept.keep) throw new StageError("REFUSED", `the manifest has no Code commit for the gateway, so its stack cannot be made from Code, and the gateway that runs now cannot be kept: ${kept.why}`);
+    stage.changeSets = stage.changeSets.filter((cs) => cs.part !== "gateway");
+    stage.warnings.push(`the ${ctx.env} gateway was kept as it runs (${digest.slice(0, 19)}...): no gateway change set was made`);
+    ctx.log(`the ${ctx.env} gateway stack already runs ${digest.slice(0, 19)}... and was last deployed from Cloud: kept, no gateway change set`);
+    return;
+  }
   if (ctx.inputs.dryRun) { stage.warnings.push("dry run: the gateway change set was not created"); return; }
   const dir = await buildCodeGateway(ctx, codeSha);
   const name = stackName(ctx.config, ctx.env, "gateway");

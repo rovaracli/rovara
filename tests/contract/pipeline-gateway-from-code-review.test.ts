@@ -51,12 +51,12 @@ describe("a release run that names a gateway digest (GATEWAY_DIGEST): the Code c
   it("refuses a digest the last-good record does not name, and one recorded with no Code commit (an image from before the gateway moved to Code)", async () => {
     const unnamed = newState({ exec: withCodeClone() });
     unnamed.ssm["/rovara-cloud/beta/release/last-good"] = lastGood("beta", { digest: DIGEST_A, codeSha: CODE });
-    await failsWith(imageStep(makeCtx(unnamed, "beta", "image", { inputs: { gatewayDigest: DIGEST_B } }), stateOf(manifestOf()), supplied(DIGEST_B)), "ROLLBACK_REFUSED", /not one the beta last-good record names/);
+    await failsWith(imageStep(makeCtx(unnamed, "beta", "image", { inputs: { gatewayDigest: DIGEST_B } }), stateOf(manifestOf()), supplied(DIGEST_B)), "REFUSED", /release run names the gateway digest.*last-good record names no such image/);
     const before = newState({ exec: withCodeClone() });
     before.ssm["/rovara-cloud/beta/release/last-good"] = lastGood("beta", { digest: DIGEST_A });
-    await failsWith(imageStep(makeCtx(before, "beta", "image", { inputs: { gatewayDigest: DIGEST_A } }), stateOf(manifestOf()), supplied(DIGEST_A)), "ROLLBACK_REFUSED", /no Code commit for it/);
+    await failsWith(imageStep(makeCtx(before, "beta", "image", { inputs: { gatewayDigest: DIGEST_A } }), stateOf(manifestOf()), supplied(DIGEST_A)), "REFUSED", /no Code commit for it/);
     const none = newState({ exec: withCodeClone() });
-    await failsWith(imageStep(makeCtx(none, "beta", "image", { inputs: { gatewayDigest: DIGEST_A } }), stateOf(manifestOf()), supplied(DIGEST_A)), "ROLLBACK_REFUSED");
+    await failsWith(imageStep(makeCtx(none, "beta", "image", { inputs: { gatewayDigest: DIGEST_A } }), stateOf(manifestOf()), supplied(DIGEST_A)), "REFUSED", /release run names the gateway digest/);
   });
 });
 

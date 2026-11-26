@@ -10,7 +10,7 @@ import { CLOUD_RELEASE_CODE_CLONE_STEPS, releaseActionBuildCommands } from "../.
 import { gate as switchGate } from "../../ops/pipeline/gates/gateway-source-switch.gate.ts";
 import { gate as floorGate } from "../../ops/pipeline/gates/rollback-floor.gate.ts";
 import { ADDED_OUTPUT, DROPPED_OUTPUTS, judgeGatewaySwitch } from "../../ops/pipeline/lib/gateway-switch.ts";
-import { codeShaForBuild, codeShaForRecordedDigest, recordedGateways } from "../../ops/pipeline/lib/gateway-code.ts";
+import { codeShaForBuild, gatewayCodeForRecordedDigest, recordedGateways } from "../../ops/pipeline/lib/gateway-code.ts";
 import { cloudFloors, codeFloors, gatewayCodeFloors, judgeGatewayCodeSha, parseFloors } from "../../ops/pipeline/lib/floors.ts";
 import { buildLastGood, parseLastGood } from "../../ops/pipeline/lib/lastgood.ts";
 import { parseManifest } from "../../ops/pipeline/lib/manifest.ts";
@@ -123,10 +123,10 @@ describe("point 5, rollback: the gateway image is found with the Code sha record
     }
   });
 
-  it("refuses a recorded image that has no Code commit (recorded before the gateway moved to Code), and says what to do", async () => {
+  it("refuses a recorded image that has no Code commit (recorded before the gateway moved to Code) when it is not the image the live gateway runs, and says what is true", async () => {
     const state = newState({ exec: withCodeClone() });
     state.ssm["/rovara-cloud/beta/release/last-good"] = lastGood("beta", { previous: { cloudTag: "v0.13.2", cloudSha: sha("2"), gatewayDigest: DIGEST_B } });
-    await failsWith(imageStep(makeCtx(state, "beta", "image", { inputs: { gatewayDigest: DIGEST_B } }), stateOf(rollback()), okImage(DIGEST_B)), "ROLLBACK_REFUSED", /no Code commit for it.*Keep the gateway that runs now/su);
+    await failsWith(imageStep(makeCtx(state, "beta", "image", { inputs: { gatewayDigest: DIGEST_B } }), stateOf(rollback()), okImage(DIGEST_B)), "ROLLBACK_REFUSED", /no Code commit for it.*cannot keep it either.*does not exist.*by hand/su);
   });
 
   it("a digest the last-good record does not name is still refused (the supplied digest is never trusted for its Code commit)", async () => {
@@ -135,12 +135,13 @@ describe("point 5, rollback: the gateway image is found with the Code sha record
     await failsWith(imageStep(makeCtx(state, "beta", "image", { inputs: { gatewayDigest: `sha256:${"e".repeat(64)}` } }), stateOf(rollback()), okImage()), "ROLLBACK_REFUSED", /not one the beta last-good record names/);
   });
 
-  it("the helpers: the record's gateways in order, and a digest found by value", () => {
+  it("the helpers: the record's gateways in order, and a digest found by value", async () => {
     const record = parseLastGood(lastGood("beta"));
     expect(recordedGateways(record)).toEqual([{ digest: DIGEST_A, codeSha: CODE, which: "last-good" }, { digest: DIGEST_B, codeSha: OTHER_CODE, which: "previous" }]);
     expect(recordedGateways(null)).toEqual([]);
-    expect(codeShaForRecordedDigest(record, DIGEST_B, "beta")).toBe(OTHER_CODE);
-    expect(() => codeShaForRecordedDigest(record, `sha256:${"f".repeat(64)}`, "beta")).toThrow(/not one the beta last-good record names/);
+    const ports = makePorts(newState());
+    await expect(gatewayCodeForRecordedDigest(ports, config, record, DIGEST_B, "beta")).resolves.toBe(OTHER_CODE);
+    await expect(gatewayCodeForRecordedDigest(ports, config, record, `sha256:${"f".repeat(64)}`, "beta")).rejects.toThrow(/not one the beta last-good record names/);
     expect(codeShaForBuild(manifestOf(), "beta")).toBe(CODE);
   });
 

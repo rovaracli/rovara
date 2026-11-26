@@ -1,7 +1,8 @@
 // The L2 side of the image step: what is checked around L6's runImage. This file is L2's; L6 only replaces steps/image.ts.
 import { StageError } from "../types.ts";
 import { checkoutCodeTree } from "../lib/candidate.ts";
-import { codeShaForBuild, codeShaForRecordedDigest } from "../lib/gateway-code.ts";
+import { loadFloors, judgeDigest } from "../lib/floors.ts";
+import { codeShaForBuild, gatewayCodeForRecordedDigest, keepsLiveGateway } from "../lib/gateway-code.ts";
 import { readLastGood } from "../lib/lastgood.ts";
 import type { StepContext } from "../lib/context.ts";
 import { stageOf } from "../lib/manifest.ts";
@@ -11,6 +12,10 @@ import type { State } from "../lib/run.ts";
 import { runImage } from "./image.ts";
 
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
+
+function loadFloorsOrRefuse(ctx: StepContext): ReturnType<typeof loadFloors> {
+  try { return loadFloors(ctx.ports, ctx.pipelineDir); } catch (error) { throw new StageError("REFUSED", error instanceof Error ? error.message : String(error)); }
+}
 
 export async function imageStep(ctx: StepContext, state: State, run: typeof runImage = runImage): Promise<void> {
   const manifest = requireManifest(state);
@@ -39,13 +44,27 @@ export async function imageStep(ctx: StepContext, state: State, run: typeof runI
   if (inputs.dryRun) { stage.warnings.push("dry run: the image step did not run"); return; }
   // The Code commit this gateway comes from: a rollback to a recorded image takes the commit recorded with it; a build, the Code that will be live; production, beta's (the digest it copies).
   // An image chosen by digest (a rollback, or any supplied digest) was built from the Code recorded with it, never from the Code that will be live.
+  // `null` = KEEP the live gateway: the image has no recorded Code commit but is the one the live gateway stack runs, deployed from Cloud (the gateway step then makes no change set).
   const chosen = ctx.env === "beta" ? inputs.gatewayDigest : manifest.mode === "rollback" ? manifest.gateway.digest : null;
-  const codeSha = chosen !== null ? codeShaForRecordedDigest(await readLastGood(ctx.ports, ctx.config, ctx.env), chosen, ctx.env)
-    : ctx.env === "beta" ? codeShaForBuild(manifest, ctx.env)
-    : (manifest.gateway.codeSha ?? null);
-  if (codeSha === null) throw new StageError("REFUSED", "production has no Code commit for the gateway to copy: the beta image step of this execution did not record one");
+  const use = manifest.mode === "rollback" ? "rollback" : "release";
+  let codeSha: string | null;
+  if (chosen !== null) codeSha = await gatewayCodeForRecordedDigest(ctx.ports, ctx.config, await readLastGood(ctx.ports, ctx.config, ctx.env), chosen, ctx.env, use);
+  else if (ctx.env === "beta") codeSha = codeShaForBuild(manifest, ctx.env);
+  else {
+    // Production copies beta's digest and Code commit. Beta having kept its live gateway (no Code commit) is followed only when production runs that image too.
+    codeSha = manifest.gateway.codeSha ?? null;
+    if (codeSha === null && !(await keepsLiveGateway(ctx.ports, ctx.config, ctx.env, manifest.gateway.digest!)).keep) throw new StageError("REFUSED", "production has no Code commit for the gateway to copy: the beta image step of this execution did not record one, and production does not run that image from Cloud either");
+  }
+  if (codeSha === null) {
+    // Keeping the live gateway changes nothing in AWS, but the gateway change set is where the digest floors are judged: judge the digest here (the floors file is the pipeline's, never the candidate's).
+    const digest = chosen ?? manifest.gateway.digest!;
+    const floors = loadFloorsOrRefuse(ctx);
+    const below = judgeDigest(floors, digest);
+    if (below.length > 0) throw new StageError(use === "rollback" ? "ROLLBACK_REFUSED" : "REFUSED", `the ${ctx.env} gateway that runs now cannot be kept: ${below.join("; ")}`);
+    stage.warnings.push(`the ${ctx.env} gateway is kept as it runs (${digest.slice(0, 19)}...): it was recorded before the gateway moved to Code, so no gateway change set is made`);
+  }
   // Only a beta build needs a tree: production copies beta's digest and a supplied digest is only looked up.
-  const code = ctx.env === "beta" && inputs.gatewayDigest === null ? await checkoutCodeTree(ctx, codeSha) : null;
+  const code = ctx.env === "beta" && inputs.gatewayDigest === null && codeSha !== null ? await checkoutCodeTree(ctx, codeSha) : null;
   const result = await run({
     env: ctx.env, manifest, supplied: inputs.gatewayDigest === null ? null : { digest: inputs.gatewayDigest }, codeSha,
     dirs: { pipeline: ctx.pipelineDir, code, out: inputs.outDir, work: inputs.workDir }, ports: ctx.ports, log: ctx.log,
@@ -53,5 +72,5 @@ export async function imageStep(ctx: StepContext, state: State, run: typeof runI
   if (!DIGEST.test(result.digest)) throw new StageError("FAILED", "the image step returned a digest that is not sha256:<64 hex>");
   if (ctx.env === "production" && result.digest !== manifest.gateway.digest) throw new StageError("REFUSED", "the production image digest differs from the beta digest: the gateway must be byte-identical");
   manifest.gateway = { digest: result.digest, source: result.source, imageTag: result.imageTag, repository: result.repository, codeSha };
-  ctx.log(`gateway image: ${result.digest.slice(0, 19)}... (${result.source}), from Code ${codeSha.slice(0, 12)}`);
+  ctx.log(`gateway image: ${result.digest.slice(0, 19)}... (${result.source}), ${codeSha === null ? "kept as the live gateway runs it (no Code commit recorded for it)" : `from Code ${codeSha.slice(0, 12)}`}`);
 }

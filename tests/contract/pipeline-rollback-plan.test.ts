@@ -99,10 +99,34 @@ describe("rollback-plan: which release and which variables", () => {
     await refuses(plan(world({}, record({ gateway: { digest: `sha256:${"c".repeat(64)}`, codeSha: sha("c") } }))), "ROLLBACK_REFUSED", /no price bands/);
   });
 
-  it("names the Code commit the target gateway was built from, and refuses a target whose gateway has none recorded (an image from before the gateway moved to Code)", async () => {
+  it("names the Code commit the target gateway was built from, and refuses a target whose gateway has none recorded and is not the one that runs now (an image from before the gateway moved to Code)", async () => {
     expect((await plan(world(), "previous")).join("\n")).toContain(`Gateway: ${DIGEST_B}  (built from Code ${sha("b").slice(0, 12)})`);
-    await refuses(plan(world({}, record({ previous: { cloudTag: "v0.13.2", cloudSha: sha("2"), gatewayDigest: DIGEST_B } })), "previous"), "ROLLBACK_REFUSED", /no Code commit for it.*recorded before the gateway moved to Code/u);
-    await refuses(plan(world({}, record({ gateway: { digest: DIGEST_A } }))), "ROLLBACK_REFUSED", /no Code commit for it/u);
+    // the world's live gateway runs DIGEST_B (deployed from Cloud): a record that names DIGEST_A without a Code commit is not that image
+    await refuses(plan(world({}, record({ gateway: { digest: DIGEST_A } }))), "ROLLBACK_REFUSED", /no Code commit for it.*recorded before the gateway moved to Code.*runs sha256:[0-9a-f]{12}.*not that image.*by hand/u);
+    const live = world({}, record({ gateway: { digest: DIGEST_A } }));
+    live.stacks[stackFor("beta", "gateway")]!.parameters.ImageDigest = DIGEST_A;
+    live.stacks[stackFor("beta", "gateway")]!.outputs.DeployedCodeSha = sha("c");
+    await refuses(plan(live), "ROLLBACK_REFUSED", /already deployed from Code/u);
+  });
+
+  it("KEEPS the gateway that runs now: a pre-change record whose digest is what the live gateway stack (deployed from Cloud) runs is planned, with no Code commit and no gateway change set", async () => {
+    const lines = await plan(world({}, record({ previous: { cloudTag: "v0.13.2", cloudSha: sha("2"), gatewayDigest: DIGEST_B } })), "previous");
+    expect(lines).toContain(`  Gateway: ${DIGEST_B}  (kept: the image the gateway runs now, recorded before the gateway moved to Code; no gateway change set)`);
+    expect(lines).toContain(`    GATEWAY_DIGEST=${DIGEST_B}`);
+    expect(lines.join("\n")).toMatch(/WARN {3}: the gateway is kept as it runs now/u);
+    // a pre-change last-good record (the live gateway runs its digest) is planned the same way
+    const lastGood = world({}, record({ gateway: { digest: DIGEST_A } }));
+    lastGood.stacks[stackFor("beta", "gateway")]!.parameters.ImageDigest = DIGEST_A;
+    expect((await plan(lastGood)).join("\n")).toContain("(kept: the image the gateway runs now");
+    // a kept digest the floors file lists below the floor is refused like any other
+    const below = world({}, record({ gateway: { digest: `sha256:${"c".repeat(64)}` } }));
+    below.stacks[stackFor("beta", "gateway")]!.parameters.ImageDigest = `sha256:${"c".repeat(64)}`;
+    await refuses(plan(below), "ROLLBACK_REFUSED", /no price bands/u);
+  });
+
+  it("when previous names the same image as last-good (which has a Code commit), the plan uses last-good's Code commit: no refusal after the first Code-made record", async () => {
+    const lines = await plan(world({}, record({ previous: { cloudTag: "v0.13.2", cloudSha: sha("2"), gatewayDigest: DIGEST_A } })), "previous");
+    expect(lines).toContain(`  Gateway: ${DIGEST_A}  (built from Code ${sha("c").slice(0, 12)})`);
   });
 
   it("judges the target gateway's Code commit against the gatewayCode floors in the Code clone, and says when the plan was made without a clone", async () => {
