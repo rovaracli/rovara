@@ -20,6 +20,16 @@ export const VERDICT_WORDS = {
   unverified: "Does not match the code",
 } as const;
 
+/** A command row that does not match the code, on both "use this setup" cards. The check is "the command is not in the lines Rovara quoted", never "it is nowhere in the project" (DEC 540). */
+export const MISMATCH_WORDS = {
+  before: "Does not match the code: Rovara could not find ", after: " in the files it quoted.",
+  unknown: "Does not match the code: Rovara could not find what this cites.",
+  useAnyway: "Rovara could not find this command in the files it quoted; tick to use it anyway.",
+  useAnywayUnknown: "Rovara could not match this to what it cites; tick to use it anyway.",
+  chosenAnyway: "You chose to use this although it does not match the code. The second machine still checks it.",
+  tickOne: "Tick at least one command to check this setup.", tickOneUse: "Tick at least one command to use this setup.",
+} as const;
+
 export const CONFIRM_WORDS = {
   rule: "Using this setup saves it as a proposal in the test environment below; it does not change the project's settings. You approve it there, after a passing proof.",
   next: "Saved as a proposal. In the test environment below, run its check, prove it, then approve it; approving adds the commands to the settings.",
