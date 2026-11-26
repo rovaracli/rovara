@@ -32,6 +32,7 @@
   "packages/contracts/src/audit-search.ts",
   "packages/contracts/src/browser-evidence.ts",
   "packages/contracts/src/browser-ids.ts",
+  "packages/contracts/src/browser-runner-words.ts",
   "packages/contracts/src/browser-testing-web.ts",
   "packages/contracts/src/canonical-json.ts",
   "packages/contracts/src/chain-session.ts",

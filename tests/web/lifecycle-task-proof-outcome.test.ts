@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { expect, it } from "vitest";
 import { screen } from "@testing-library/react";
-import { DeveloperTaskViewReaderSchema } from "@agentx/contracts/web";
+import { DeveloperTaskViewReaderSchema, DeveloperTaskViewSchema } from "@agentx/contracts/web";
 import { createCandidateManifest } from "@agentx/contracts";
 import { TaskCheckOutcomeView } from "../../packages/ui/src/screens/session/TaskCheckOutcomeView.js";
 import { h } from "./support/h.js";
@@ -31,6 +31,18 @@ it("keeps an unavailable runner distinct from a failing customer test", () => {
  expect(screen.getByRole("heading", { name: "Couldn't run" })).toBeTruthy();
  expect(screen.queryByRole("heading", { name: "Code failed" })).toBeNull();
  expect(screen.getByText("the check runner failed")).toBeTruthy();
+ f.unmount();
+});
+
+it("says browser checks did not run for want of a browser runner, and does not call it passed or failed (Code BROWSER-SKIP-HONESTY)", () => {
+ const view = testing("blocked_by_environment", "blocked", "browser_runner_missing");
+ expect(DeveloperTaskViewSchema.shape.testing.safeParse(view).success).toBe(true);
+ const f = mount({ testing: view, workflow: { ...workspaceWorkflow(), candidate, verification: verification(candidate.digest, "UNKNOWN") } });
+ expect(screen.getByRole("heading", { name: "Couldn't run" })).toBeTruthy();
+ expect(screen.getByText("browser checks did not run: there is no browser runner")).toBeTruthy();
+ expect(screen.queryByText("Reason unavailable")).toBeNull();
+ expect(screen.queryByRole("heading", { name: "Code failed" })).toBeNull();
+ expect(screen.queryByRole("heading", { name: /^(Passed|Verified)$/u })).toBeNull();
  f.unmount();
 });
 
