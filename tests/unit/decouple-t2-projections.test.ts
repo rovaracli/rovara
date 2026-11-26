@@ -120,7 +120,7 @@ describe("session status: a Code task status this Cloud does not know", () => {
     expect(blockedStepRetry(task)).toBeUndefined();
   });
   it("keeps every known workflow state reading as before", () => {
-    const read = (status: string, state: string) => sessionStatus({ ...taskWith(status), workflow: { stage: "PLAN", state, revision: 1 } } as unknown as CodeTask);
+    const read = (status: string, state: string) => sessionStatus({ ...taskWith(status), workflow: { stage: "PLAN", state, revision: 1 } });
     expect([["SUCCEEDED", "READY"], ["SUCCEEDED", "RUNNING"], ["SUCCEEDED", "WAITING"], ["SUCCEEDED", "BLOCKED"], ["SUCCEEDED", "COMPLETE"], ["RUNNING", "RUNNING"]].map(([status, state]) => read(status!, state!)))
       .toEqual(["running", "running", "needs_person", "needs_person", "succeeded", "running"]);
   });
