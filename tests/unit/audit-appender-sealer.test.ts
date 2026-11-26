@@ -696,7 +696,7 @@ describe("sealer: the authority named on a statement (pre-review SHOULD-3)", () 
     at(r, "2026-11-25T12:05:10Z");
     const first = await tick(r); // the statement is locked naming "testtsa"; the stamp fails
     expect(await r.store.getEpochProgress(first.epochId)).toMatchObject({ phase: "waiting-timestamp", tsaProvider: "testtsa" });
-    class Other extends TimestampDouble { override readonly provider = "othertsa"; }
+    class Other extends TimestampDouble { override provider = "othertsa"; }
     at(r, "2026-11-25T12:06:00Z");
     const second = await tick(r, new AuditSealer(r.store, r.storage, new Other(), { now: r.now }));
     expect(second.blocked.some((entry) => entry.refused && entry.what === `epoch ${first.epochId}`)).toBe(true);
