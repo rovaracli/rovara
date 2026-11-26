@@ -11,7 +11,7 @@ import { sessionFixture } from "../web/support/session-fixture.js";
 // release failing closed). This is Code's view as Code serves it, so the strict schema Cloud holds refuses it and the reader Cloud parses with must not.
 function codeSessionView(extra: { you?: Record<string, unknown>; top?: Record<string, unknown> } = {}) {
   const base = sessionFixture();
-  return { ...base, display: { state: "needs_you", reason: "A person needs to decide what happens next.", next: "Open the plan." }, ...extra.top, you: { ...base.you, chargedTo: "Charged to Priya", ...extra.you } };
+  return { ...base, display: { state: "needs_you", reason: "A person needs to decide what happens next.", next: "Open the plan." }, ...extra.top, you: { ...base.you, owner: false, chargedTo: "Charged to Priya", ...extra.you } };
 }
 
 describe("#1516: Code's session view with fields Cloud's schema does not have", () => {
@@ -20,7 +20,7 @@ describe("#1516: Code's session view with fields Cloud's schema does not have", 
     expect(SessionViewSchema.safeParse(view).success).toBe(false);
     for (const read of [SessionViewReaderSchema.parse(view), SessionResponseReaderSchema.parse({ session: view }).session]) {
       expect(read.you.chargedTo).toBe("Charged to Priya");
-      expect(read.you.owner).toBe(view.you.owner);
+      expect(read.you.owner).toBe(false); // chargedTo names who pays; it never makes the reader the owner
       expect(read.sessionId).toBe(view.sessionId);
     }
   });
