@@ -45,7 +45,7 @@ export const doublePki = (): FakePki => (pki ??= makePki("AL1"));
 
 /** Mints a real-format token over the statement hash, signed by a throwaway test authority. */
 export class TimestampDouble implements AuditTimestampSource {
-  readonly provider = TSA_LABEL;
+  provider: string = TSA_LABEL;
   readonly asked: string[] = [];
   failNext = 0;
   async stamp(input: { epochId: string; statementHash: string }): Promise<Uint8Array> {
