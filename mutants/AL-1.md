@@ -34,3 +34,26 @@ Each mutant was applied singly, in place, to one production line, then `tests/un
 | M26 | tick guard and store planned-epoch check both removed | KILLED | "a late tick does not plan into an epoch that is already passed" (a record committed late by a clock that is behind) |
 
 26 mutants run: 22 killed alone; 4 survived alone (M3b, M3c, M12, M16), all halves of deliberately doubled guards (the record's own condition and the head's; the tick's check and the store's). Each doubled guard is killed when both halves are removed (M24, M25, M26), so nothing survives that removes a protection entirely.
+
+## Pre-review round (fixes for MUST-1 and SHOULD-1 to SHOULD-6)
+
+The reviewer's tests (`tests/unit/audit-appender-sealer-review.test.ts`, `.fails` removed once each fix was in) killed the four mutants that survived alone above: M3b, M3c, M12, M16 (re-run against both test files: all KILLED, so no mutant now survives alone). New mutants, run the same way against both test files:
+
+| # | Mutant | Result | Killed by |
+|---|---|---|---|
+| P1 | tick does not close earlier epochs that hold planned seals | KILLED | "a seal planned in an epoch whose tick stopped before closing it ..." |
+| P2 | tick does not fence earlier epochs | KILLED | "a seal planned into an earlier epoch after the next tick listed its sealed epochs is refused" |
+| P3 | planSeal: fence check removed | KILLED | "fencing an epoch refuses later seals into it ..." |
+| P4 | planSeal: epoch-sealed marker not written | KILLED | the MUST-1 restart test |
+| P5 | a statement is planned after an earlier closed epoch that has none | KILLED | "does not plan a later statement while an earlier closed epoch has none" |
+| P6 | a transaction conflict is thrown, not retried | KILLED | "an append that meets a transaction conflict is retried" |
+| P7 | chain end not checked against the head (too few rows) | KILLED | "a record that the head names but that is missing from the end ..." |
+| P8 | last record not compared with the head's hash | KILLED | "stops a company whose head names a record that is not the chain's last" |
+| P9 | a stand-in timestamp source may lock a statement | KILLED | "a statement locked while no timestamp source is wired ..." |
+| P10 | the authority named on a statement not enforced | KILLED | "refuses to stamp a statement with a source other than the one it names" |
+| P11 | seal row not compared with its progress row | KILLED | "a seal row changed after it was planned ..." |
+| P12 | retention not compared with the clock | KILLED | "refuses an answer written just now whose lock ends before the retention period is over" |
+| P13 | evidence time not compared with the clock | KILLED | "refuses an answer written long ago ..." |
+| P14 | no report of records held by a fast clock | KILLED | "holds back that company's later records ..." (now asserts the `blocked` entry) |
+
+A fifteenth, P15 (`readSeal` row-key check), was an equivalent mutant: the clause it removed (`item.sk !== companyId`) could not be false at either call site, so the clause was deleted from the code. 14 of 14 killed.

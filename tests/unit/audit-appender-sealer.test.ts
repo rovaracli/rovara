@@ -614,3 +614,166 @@ function stmt(epochId: string, prev: { epochId: string; statementHash: string } 
   const body = { v: 1 as const, epochId, closedAt: closedAtOfEpoch(epochId).toISOString(), prevEpochId: prev?.epochId ?? null, prevStatementHash: prev?.statementHash ?? null, sealsRoot: merkleRoot([new Uint8Array([1])]), sealCount: 1 };
   return { closedAt: body.closedAt, prevEpochId: body.prevEpochId, prevStatementHash: body.prevStatementHash, sealsRoot: body.sealsRoot, sealCount: body.sealCount, statementHash: statementHash(body) };
 }
+
+describe("sealer: an epoch is never left out (pre-review MUST-1)", () => {
+  it("a sealer that stalls between planning a seal and closing its epoch, while another sealer runs the next epoch, loses nothing", async () => {
+    const r = rig();
+    await seed(r);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let stalled: () => void = () => undefined;
+    const reached = new Promise<void>((resolve) => { stalled = resolve; });
+    class Stalls extends DynamoAuditLedgerStore {
+      override async closeEpoch(...args: Parameters<DynamoAuditLedgerStore["closeEpoch"]>) {
+        stalled();
+        await gate;
+        return super.closeEpoch(...args);
+      }
+    }
+    at(r, "2026-11-25T12:05:10Z");
+    const slow = new AuditSealer(new Stalls(r.db, "t"), r.storage, r.tsa, { now: r.now }).tick();
+    await reached; // its seals are planned into the 12:05 epoch; it has not closed it
+    await r.appender.append(pending(A, 6));
+    at(r, "2026-11-25T12:10:10Z");
+    const fast = await tick(r);
+    expect(fast.epochId).toBe("e20261125T1210Z");
+    release();
+    await slow;
+    r.epochs.push("e20261125T1205Z");
+    at(r, "2026-11-25T12:15:10Z");
+    await tick(r);
+    for (const company of [A, B]) {
+      const bundle = await assembleBundle({ store: r.store, storage: r.storage, companyId: company, epochIds: r.epochs });
+      expect(verifyBundle(bundle, { anchors: doubleAnchors() }).ok).toBe(true);
+    }
+    const first = await r.store.getEpochProgress("e20261125T1205Z");
+    const second = await r.store.getEpochProgress("e20261125T1210Z");
+    expect(first?.prevEpochId).toBeNull();
+    expect(second?.prevEpochId).toBe("e20261125T1205Z"); // the chain did not start again
+  });
+
+  it("fencing an epoch refuses later seals into it, and the epoch is listed as holding seals", async () => {
+    const store = new DynamoAuditLedgerStore(new FakeDynamoDb(), "t");
+    const plan = (company: string, epochId: string) => SealProgressV1Schema.parse({
+      v: 1, kind: "seal-progress", phase: "planned", companyId: company, checkpoint: { fromSeq: 1, toSeq: 2, headHash: "a".repeat(64), prevSealHash: "b".repeat(64), epochId },
+      batchRoot: "c".repeat(64), updatedAt: iso(T0),
+    });
+    expect(await store.planSeal(plan(A, "e20261125T1205Z"), { tip: undefined })).toBe("planned");
+    expect(await store.listSealedEpochs()).toEqual(["e20261125T1205Z"]);
+    await store.fenceBefore("e20261125T1210Z");
+    await store.fenceBefore("e20261125T1205Z"); // never moves back
+    expect(await store.planSeal(plan(B, "e20261125T1205Z"), { tip: undefined })).toBe("refused");
+    expect(await store.planSeal(plan(B, "e20261125T1210Z"), { tip: undefined })).toBe("planned");
+  });
+
+  it("does not plan a later statement while an earlier closed epoch has none", async () => {
+    const r = rig();
+    await seed(r);
+    class NoPlan extends DynamoAuditLedgerStore {
+      override async planEpoch(...args: Parameters<DynamoAuditLedgerStore["planEpoch"]>) {
+        if (args[0].epochId === "e20261125T1205Z") throw new Error("could not plan");
+        return super.planEpoch(...args);
+      }
+    }
+    const stuck = new AuditSealer(new NoPlan(r.db, "t"), r.storage, r.tsa, { now: r.now });
+    at(r, "2026-11-25T12:05:10Z"); await tick(r, stuck);
+    await r.appender.append(pending(A, 6));
+    at(r, "2026-11-25T12:10:10Z");
+    const report = await tick(r, stuck);
+    expect(await r.store.getEpochProgress("e20261125T1210Z")).toBeUndefined();
+    expect(report.blocked.map((entry) => entry.what)).toContain("epoch e20261125T1210Z");
+    at(r, "2026-11-25T12:15:10Z");
+    await tick(r); // a healthy sealer plans both, in order
+    expect((await r.store.getEpochProgress("e20261125T1210Z"))?.prevEpochId).toBe("e20261125T1205Z");
+  });
+});
+
+describe("sealer: the authority named on a statement (pre-review SHOULD-3)", () => {
+  it("refuses to stamp a statement with a source other than the one it names", async () => {
+    const r = rig();
+    await seed(r);
+    r.tsa.failNext = 1;
+    at(r, "2026-11-25T12:05:10Z");
+    const first = await tick(r); // the statement is locked naming "testtsa"; the stamp fails
+    expect(await r.store.getEpochProgress(first.epochId)).toMatchObject({ phase: "waiting-timestamp", tsaProvider: "testtsa" });
+    class Other extends TimestampDouble { override readonly provider = "othertsa"; }
+    at(r, "2026-11-25T12:06:00Z");
+    const second = await tick(r, new AuditSealer(r.store, r.storage, new Other(), { now: r.now }));
+    expect(second.blocked.some((entry) => entry.refused && entry.what === `epoch ${first.epochId}`)).toBe(true);
+    expect(await r.store.getEpochProgress(first.epochId)).toMatchObject({ phase: "waiting-timestamp" });
+  });
+});
+
+describe("sealer: the head and the chain's end (pre-review SHOULD-2, 5)", () => {
+  it("stops a company whose head names a record that is not the chain's last", async () => {
+    const r = rig();
+    await seed(r);
+    const [, headRow] = [...r.db.items.entries()].find(([, item]) => item.pk === `LEDGERHEAD#${A}`) as [string, Record<string, unknown>];
+    headRow.headHash = "e".repeat(64);
+    at(r, "2026-11-25T12:05:10Z");
+    const report = await tick(r);
+    expect(report.blocked.some((entry) => entry.refused && entry.what.includes(A))).toBe(true);
+    expect(report.planned.map((planned) => planned.companyId)).toEqual([B]);
+  });
+
+  it("refuses storage evidence that is not recent", async () => {
+    const r = rig();
+    await seed(r);
+    class Old extends LockedStorageDouble {
+      override async putLocked(write: Parameters<LockedStorageDouble["putLocked"]>[0]) {
+        const evidence = await super.putLocked(write);
+        return { ...evidence, writtenAt: "2025-01-01T00:00:00.000Z", retainUntil: "2027-01-01T00:00:00.000Z" };
+      }
+    }
+    at(r, "2026-11-25T12:05:10Z");
+    await tick(r, new AuditSealer(r.store, new Old(r.now), r.tsa, { now: r.now }));
+    expect((await r.store.getSealProgress(A, 1, 3))?.phase).toBe("planned");
+  });
+});
+
+describe("sealer: evidence is compared with the clock, each way (pre-review SHOULD-5)", () => {
+  async function sealedWith(change: (evidence: Awaited<ReturnType<LockedStorageDouble["putLocked"]>>, nowMs: number) => Awaited<ReturnType<LockedStorageDouble["putLocked"]>>) {
+    const r = rig();
+    await seed(r);
+    class Changed extends LockedStorageDouble {
+      override async putLocked(write: Parameters<LockedStorageDouble["putLocked"]>[0]) {
+        return change(await super.putLocked(write), r.clock.ms);
+      }
+    }
+    at(r, "2026-11-25T12:05:10Z");
+    await tick(r, new AuditSealer(r.store, new Changed(r.now), r.tsa, { now: r.now }));
+    return (await r.store.getSealProgress(A, 1, 3))?.phase;
+  }
+  const DAY = 86_400_000;
+  it("refuses an answer written long ago even when it is kept for a year from then and far into the future", async () => {
+    expect(await sealedWith((evidence, now) => ({ ...evidence, writtenAt: iso(now - 2 * 3_600_000), retainUntil: iso(now + 400 * DAY) }))).toBe("planned");
+  });
+  it("refuses an answer written just now whose lock ends before the retention period is over, though it is a year long on its own terms", async () => {
+    expect(await sealedWith((evidence, now) => ({ ...evidence, writtenAt: iso(now - 10 * 60_000), retainUntil: iso(now - 10 * 60_000 + 365 * DAY) }))).toBe("planned");
+  });
+  it("accepts an answer written just now and kept a year and a bit", async () => {
+    expect(await sealedWith((evidence) => evidence)).toBe("locked");
+  });
+});
+
+describe("sealer: the fence closes the window between listing and planning (pre-review MUST-1)", () => {
+  it("a seal planned into an earlier epoch after the next tick listed its sealed epochs is refused", async () => {
+    const r = rig();
+    await seed(r);
+    const outcomes: string[] = [];
+    class Races extends DynamoAuditLedgerStore {
+      override async listSealedEpochs() {
+        const listed = await super.listSealedEpochs();
+        // Another writer plans a seal into the earlier epoch right now: after this tick listed (and saw no seal there), before it plans anything.
+        outcomes.push(await r.store.planSeal(SealProgressV1Schema.parse({
+          v: 1, kind: "seal-progress", phase: "planned", companyId: B, checkpoint: { fromSeq: 1, toSeq: 2, headHash: "a".repeat(64), prevSealHash: "b".repeat(64), epochId: "e20261125T1205Z" },
+          batchRoot: "c".repeat(64), updatedAt: iso(T0),
+        }), { tip: undefined }));
+        return listed;
+      }
+    }
+    at(r, "2026-11-25T12:10:10Z");
+    await tick(r, new AuditSealer(new Races(r.db, "t"), r.storage, r.tsa, { now: r.now }));
+    expect(outcomes).toEqual(["refused"]);
+  });
+});

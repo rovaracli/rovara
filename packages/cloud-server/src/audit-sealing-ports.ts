@@ -43,7 +43,10 @@ export const unconfiguredLockedStorage: AuditLockedStorage = {
   putLocked: () => Promise.reject(new AuditSealingNotConfigured("locked-storage")),
 };
 
+/** The label of the stand-in; the sealer never writes it onto a statement. */
+export const UNCONFIGURED_PROVIDER = "unconfigured";
+
 export const unconfiguredTimestampSource: AuditTimestampSource = {
-  provider: "unconfigured",
+  provider: UNCONFIGURED_PROVIDER,
   stamp: () => Promise.reject(new AuditSealingNotConfigured("timestamp-source")),
 };

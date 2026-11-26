@@ -2,18 +2,22 @@
 // seals into an epoch statement chained to the last one, and drives both through the storage target and the timestamp source (audit-sealing-ports.ts).
 //
 // A tick, for the epoch that ends at the last five-minute boundary:
+//   0. every earlier epoch is fenced off (no seal may be planned into it any more) and every earlier epoch that holds a planned seal is closed, whoever
+//      planned the seal and whether or not that writer ever came back to close it;
 //   1. each company with records up to that boundary that no seal covers gets a seal planned (range, Merkle root, head, link to its last seal), after the
 //      sealer re-checks that range against the chain (`checkChain`): a stored record that was changed is refused, never sealed;
-//   2. the epoch is closed (no seal can join it), its statement is planned from the seals in it and chained to the previous statement;
+//   2. the epoch is closed (no seal can join it) and every closed epoch gets its statement planned, oldest first, chained to the previous statement. A later
+//      statement is never planned while an earlier closed epoch has none;
 //   3. every closed epoch not yet done is advanced as far as the ports allow: seal batch and seal locked, statement locked, token received, token locked.
-// Every step is written before the next and resumed from what is stored, so a sealer that stops anywhere is picked up by the next tick, and two sealers
-// racing give one seal chain and one epoch chain (conditional writes in audit-ledger-store.ts).
+// Every step is written before the next and resumed from what is stored, so a sealer that stops between any two steps is picked up by the next tick (tests
+// stop it after planning a seal, after closing, and while another sealer runs the next epoch), and two sealers racing give one seal chain and one epoch
+// chain (conditional writes in audit-ledger-store.ts). A step whose port is missing or fails is reported in `blocked` and retried by the next tick.
 //
 // The seals and statements are in the format the offline verifier checks. With the ports unconfigured nothing is locked or timestamped and every seal stays
 // "planned": this module claims nothing it did not do.
 import { createHash } from "node:crypto";
 import {
-  AUDIT_MAX_RECORDS_PER_ORG_EPOCH, AUDIT_SEAL_INTERVAL_MINUTES, auditCanonicalJson, checkChain, genesisHash, merkleRoot, recordLeafData, sealLeafData, statementHash,
+  AUDIT_MAX_RECORDS_PER_ORG_EPOCH, AUDIT_RETENTION_DAYS_MIN_COMPLIANCE, AUDIT_SEAL_INTERVAL_MINUTES, TIMESTAMP_SKEW_MS, auditCanonicalJson, checkChain, genesisHash, merkleRoot, recordLeafData, sealHash, sealLeafData, statementHash,
   type EpochStatementV1, type OrgSealV1,
 } from "@agentx/contracts";
 import type { AuditRecordV1 } from "@agentx/contracts/audit-record-v1";
@@ -22,12 +26,12 @@ import {
 } from "./audit-contracts-v1.js";
 import type { AuditSealStore, EpochTip, SealTip } from "./audit-ledger-store.js";
 import { AuditLedgerCorrupt } from "./audit-ledger-store.js";
-import type { AuditLockedStorage, AuditTimestampSource, LockedEvidenceV1, LockedObjectWrite } from "./audit-sealing-ports.js";
+import { AuditSealingNotConfigured, UNCONFIGURED_PROVIDER, type AuditLockedStorage, type AuditTimestampSource, type LockedEvidenceV1, type LockedObjectWrite } from "./audit-sealing-ports.js";
 
 /** A range that is about to be sealed does not check against the chain (or no longer matches what was planned). Nothing is sealed or locked. */
 export class AuditSealRefused extends Error {
-  constructor(readonly companyId: string, readonly problem: string) {
-    super(`audit seal: company ${companyId} was not sealed (${problem})`);
+  constructor(readonly subject: string, readonly problem: string) {
+    super(`audit seal: ${subject} was not sealed (${problem})`);
     this.name = "AuditSealRefused";
   }
 }
@@ -95,6 +99,11 @@ export class AuditSealer {
     const epochId = epochIdOf(boundary);
     const report: SealTickReport = { epochId, planned: [], blocked: [], completedEpochs: [] };
 
+    // Fence first, then close what holds seals: after the fence commits, no writer can add a seal to an earlier epoch, so what the close step lists is final.
+    await this.store.fenceBefore(epochId);
+    for (const earlier of await this.store.listSealedEpochs()) {
+      if (earlier < epochId) await this.store.closeEpoch(earlier, closedAtOfEpoch(earlier).toISOString());
+    }
     await this.planSeals(epochId, boundary, report);
     if ((await this.store.listEpochSeals(epochId)).length > 0) await this.store.closeEpoch(epochId, boundary.toISOString());
     await this.advanceEpochs(report);
@@ -122,14 +131,24 @@ export class AuditSealer {
       const fromSeq = (tip?.toSeq ?? 0) + 1;
       if (head === undefined || head.seq < fromSeq) return;
 
-      const read = await this.store.readRecords(companyId, fromSeq, Math.min(this.maxPerSeal, head.seq - fromSeq + 1));
+      const wanted = Math.min(this.maxPerSeal, head.seq - fromSeq + 1);
+      const read = await this.store.readRecords(companyId, fromSeq, wanted);
+      // The head names records up to head.seq: rows missing from the end, or a last row that is not the head's, mean rows were removed or the head is wrong.
+      if (read.length < wanted) throw new AuditLedgerCorrupt(`company ${companyId}: the head names seq ${head.seq} but the chain ends earlier`);
+      const reached = read[read.length - 1];
+      if (reached !== undefined && reached.seq === head.seq && reached.hash !== head.hash) throw new AuditLedgerCorrupt(`company ${companyId}: the head is not the last record`);
       // recordedAt never goes backwards along a chain (the appender), so the segment is the leading records up to the boundary.
       const firstLate = read.findIndex((record) => Date.parse(record.recordedAt) > boundary.getTime());
       const inSegment = firstLate === -1 ? read : read.slice(0, firstLate);
+      // Records stamped far ahead of this server's clock (a writer with a fast clock) hold the company's later records back until real time catches up. Say so.
+      const held = firstLate === -1 ? undefined : read[firstLate];
+      if (held !== undefined && Date.parse(held.recordedAt) > this.now().getTime() + 2 * this.interval * 60_000) {
+        report.blocked.push({ what: `hold ${companyId}`, reason: "AuditRecordsAheadOfClock", refused: false });
+      }
       if (inSegment.length === 0) return;
 
       const check = checkChain(inSegment, { seq: fromSeq - 1, hash: tip?.headHash ?? genesisHash(companyId), orgId: companyId });
-      if (!check.ok) throw new AuditSealRefused(companyId, `${check.problem} at seq ${check.seq}`);
+      if (!check.ok) throw new AuditSealRefused(`company ${companyId}`, `${check.problem} at seq ${check.seq}`);
 
       const last = inSegment[inSegment.length - 1] as AuditRecordV1;
       const progress = SealProgressV1Schema.parse({
@@ -147,10 +166,12 @@ export class AuditSealer {
 
   private async advanceEpochs(report: SealTickReport): Promise<void> {
     let contiguous = true;
+    // Statements are planned oldest first, and none after an earlier closed epoch that has none: the chain never skips an epoch that holds seals.
+    let canPlan = true;
     let tip: EpochTip | undefined = await this.store.getEpochTip();
     for (const epochId of await this.store.listOpenEpochs()) {
       try {
-        const result = await this.advanceEpoch(epochId, tip, report);
+        const result = await this.advanceEpoch(epochId, tip, canPlan, report);
         tip = result.tip;
         if (result.done && contiguous) {
           await this.store.markEpochDone(epochId);
@@ -158,20 +179,29 @@ export class AuditSealer {
         } else if (!result.done) contiguous = false;
       } catch (error) {
         contiguous = false;
+        if ((await this.store.getEpochProgress(epochId)) === undefined) canPlan = false;
         report.blocked.push({ what: `epoch ${epochId}`, reason: reason(error), refused: error instanceof AuditSealRefused || error instanceof AuditLedgerCorrupt });
       }
     }
   }
 
-  private async advanceEpoch(epochId: string, tipIn: EpochTip | undefined, report: SealTickReport): Promise<{ done: boolean; tip: EpochTip | undefined }> {
+  private async advanceEpoch(epochId: string, tipIn: EpochTip | undefined, canPlan: boolean, report: SealTickReport): Promise<{ done: boolean; tip: EpochTip | undefined }> {
     const seals = await this.store.listEpochSeals(epochId);
     if (seals.length === 0) throw new AuditLedgerCorrupt(`epoch ${epochId} is closed with no seals`);
+
+    // The leaf that goes into the statement must be the seal its own progress row describes.
+    const progressOf = new Map<string, SealProgressV1>();
+    for (const seal of seals) {
+      const progress = await this.store.getSealProgress(seal.orgId, seal.fromSeq, seal.toSeq);
+      if (progress === undefined) throw new AuditLedgerCorrupt(`seal ${seal.orgId} ${seal.fromSeq}`);
+      if (sealHash(sealOf(progress)) !== sealHash(seal)) throw new AuditSealRefused(`epoch ${epochId}`, `the seal row of ${seal.orgId} is not the seal that was planned`);
+      progressOf.set(seal.orgId, progress);
+    }
 
     let allLocked = true;
     for (const seal of seals) {
       try {
-        const progress = await this.store.getSealProgress(seal.orgId, seal.fromSeq, seal.toSeq);
-        if (progress === undefined) throw new AuditLedgerCorrupt(`seal ${seal.orgId} ${seal.fromSeq}`);
+        const progress = progressOf.get(seal.orgId) as SealProgressV1;
         if ((await this.advanceSeal(progress)).phase !== "locked") allLocked = false;
       } catch (error) {
         allLocked = false;
@@ -182,6 +212,7 @@ export class AuditSealer {
     let epoch = await this.store.getEpochProgress(epochId);
     let tip = tipIn;
     if (epoch === undefined) {
+      if (!canPlan) throw new AuditLedgerCorrupt(`epoch ${epochId} waits: an earlier closed epoch has no statement yet`);
       if (tip !== undefined && tip.epochId >= epochId) throw new AuditLedgerCorrupt(`epoch ${epochId} is closed after a later one was planned`);
       const sorted = [...seals].sort((a, b) => (a.orgId < b.orgId ? -1 : a.orgId > b.orgId ? 1 : 0));
       const statement: EpochStatementV1 = {
@@ -204,7 +235,12 @@ export class AuditSealer {
 
   private async lock(write: LockedObjectWrite): Promise<LockedEvidenceV1> {
     const evidence = LockedEvidenceV1Schema.parse(await this.storage.putLocked(write));
-    if (evidence.key !== write.key || evidence.sha256 !== write.sha256) throw new AuditSealRefused("-", "the storage target answered for other bytes than were sent");
+    if (evidence.key !== write.key || evidence.sha256 !== write.sha256) throw new AuditSealRefused(write.key, "the storage target answered for other bytes than were sent");
+    // The schema only compares the answer with itself (retainUntil against its own writtenAt). Compare it with the clock too.
+    const nowMs = this.now().getTime();
+    if (Math.abs(Date.parse(evidence.writtenAt) - nowMs) > 3 * TIMESTAMP_SKEW_MS || Date.parse(evidence.retainUntil) < nowMs + AUDIT_RETENTION_DAYS_MIN_COMPLIANCE * 86_400_000 - TIMESTAMP_SKEW_MS) {
+      throw new AuditSealRefused(write.key, "the storage target's answer is not recent or is kept for less than the retention period");
+    }
     return evidence;
   }
 
@@ -219,7 +255,7 @@ export class AuditSealer {
         const records = await this.store.readRecords(companyId, checkpoint.fromSeq, checkpoint.toSeq - checkpoint.fromSeq + 1);
         const check = checkChain(records, { seq: checkpoint.fromSeq - 1, hash: await this.hashBefore(companyId, checkpoint.fromSeq), orgId: companyId });
         if (!check.ok || merkleRoot(recordLeafData(records)) !== progress.batchRoot || records[records.length - 1]?.hash !== checkpoint.headHash) {
-          throw new AuditSealRefused(companyId, "the records no longer match the planned seal");
+          throw new AuditSealRefused(`company ${companyId}`, "the records no longer match the planned seal");
         }
         const body = utf8(auditCanonicalJson({ v: 1, orgId: companyId, fromSeq: checkpoint.fromSeq, toSeq: checkpoint.toSeq, records }));
         const batch = await this.lock({ key: `audit/${companyId}/records/${range16(checkpoint.fromSeq, checkpoint.toSeq)}.json`, body, sha256: sha256(body) });
@@ -253,6 +289,9 @@ export class AuditSealer {
     while (progress.phase !== "timestamped") {
       const stamp = this.now().toISOString();
       let next: EpochProgressV1;
+      // The statement's row names the authority that will stamp it. A stand-in's name is never written, and a source other than the one named is refused.
+      if (this.timestamps.provider === UNCONFIGURED_PROVIDER) throw new AuditSealingNotConfigured("timestamp-source");
+      if (progress.phase !== "planned" && progress.tsaProvider !== this.timestamps.provider) throw new AuditSealRefused(`epoch ${progress.epochId}`, "the statement names another timestamp authority");
       if (progress.phase === "planned") {
         const statement: EpochStatementV1 = {
           v: 1, epochId: progress.epochId, closedAt: progress.closedAt, prevEpochId: progress.prevEpochId, prevStatementHash: progress.prevStatementHash,

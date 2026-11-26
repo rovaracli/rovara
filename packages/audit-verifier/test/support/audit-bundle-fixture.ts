@@ -1,5 +1,5 @@
 /**
- * Builds consistent audit bundles for tests: two organizations, up to three 15-minute epochs, a
+ * Builds consistent audit bundles for tests: two organizations, up to three epochs (the fixture's own spacing, not an interval the verifier knows), a
  * hash chain per organization, seals, epoch statements chained by hash, and fake RFC 3161 tokens.
  * Organization A is exported. Everything is deterministic except the fake PKI's keys.
  */
