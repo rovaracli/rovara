@@ -1,4 +1,4 @@
-// L9 Opus review test (uncommitted): the SHIPPED floors file judged against this repository's real release tags with real `git merge-base --is-ancestor` (read-only git).
+// L9 Opus review test: the SHIPPED floors file judged against this repository's real release tags with real `git merge-base --is-ancestor` (read-only git).
 // Proves the release-mode deviation does not block any current release, that older tags are refused, and documents that the digest floor is a deny-list only.
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
@@ -28,12 +28,26 @@ describe.skipIf(!runnable)("review: shipped rollback floors vs the real reposito
   const ports = realPorts();
   const floors = loadFloors(ports, process.cwd());
 
-  it("every release tag from v0.13.11 to v0.13.19 is at or above every floor (a release is never blocked by the floor gate)", async () => {
-    for (let n = 11; n <= 19; n++) {
+  // The Bedrock no_answer floor (59edd60f2bff, Cloud train 40: the web and gateway rows) is the newest: v0.13.26 is the first release tag at or above it.
+  const BEDROCK_FLOOR = /below the (web|gateway) floor 59edd60f2bff: older readers reject the stored Bedrock model state no_answer/u;
+  it("every release tag from v0.13.26 on is at or above every floor (a current release is never blocked by the floor gate)", async () => {
+    let judged = 0;
+    for (let n = 26; n <= 99; n++) {
       const tag = `v0.13.${n}`;
       if (!hasTag(tag)) continue;
       const verdict = await judgeRef(ports, floors, { tag, sha: git("rev-parse", `${tag}^{commit}`) });
       expect(verdict.failures, tag).toEqual([]);
+      judged++;
+    }
+    expect(judged).toBeGreaterThan(0);
+  });
+
+  it("v0.13.11 to v0.13.25 are refused, by both the web and the gateway row of the Bedrock floor", async () => {
+    for (let n = 11; n <= 25; n++) {
+      const tag = `v0.13.${n}`;
+      if (!hasTag(tag)) continue;
+      const verdict = await judgeRef(ports, floors, { tag, sha: git("rev-parse", `${tag}^{commit}`) });
+      expect(verdict.failures.filter((failure) => BEDROCK_FLOOR.test(failure)).map((failure) => failure.match(BEDROCK_FLOOR)![1]).sort(), tag).toEqual(["gateway", "web"]);
     }
   });
 
@@ -45,9 +59,10 @@ describe.skipIf(!runnable)("review: shipped rollback floors vs the real reposito
     }
   });
 
-  it("the pending v0.13.19 row is reported but not enforced, so a rollback to v0.13.17 (prod) is still allowed today", async () => {
+  it("a rollback to v0.13.17 is refused by the Bedrock floor, and the pending v0.13.19 row is still reported but not enforced", async () => {
     const verdict = await judgeRef(ports, floors, { tag: "v0.13.17", sha: git("rev-parse", "v0.13.17^{commit}") });
-    expect(verdict.failures).toEqual([]);
+    expect(verdict.failures).toHaveLength(2);
+    for (const failure of verdict.failures) expect(failure).toMatch(BEDROCK_FLOOR);
     expect(verdict.notes.join(" ")).toMatch(/pending floor \(not enforced\): web v0\.13\.19 once Code train 27 is live/u);
   });
 
