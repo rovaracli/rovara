@@ -259,15 +259,15 @@ describe("review and approve", () => {
     const f = reviewing({ verification: { "setup-payments": "unverified", "tests-payments": "verified" }, unmatched: { "setup-payments": "pip install -r requirements.txt" } });
     const found = await screen.findByTestId("setup-found");
     const group = within(within(found).getByTestId("found-setup"));
-    expect(group.getByTestId("found-unmatched").textContent).toBe("Does not match the code: Rovara could not find pip install -r requirements.txt in your code.");
+    expect(group.getByTestId("found-unmatched").textContent).toBe("Does not match the code: Rovara could not find pip install -r requirements.txt in the files it quoted.");
     expect(group.getByTestId("found-unmatched").querySelector("code")!.textContent).toBe("pip install -r requirements.txt");
-    expect(group.getByTestId("found-anyway").textContent).toBe("Rovara could not find this command in your code; tick to use it anyway.");
+    expect(group.getByTestId("found-anyway").textContent).toBe("Rovara could not find this command in the files it quoted; tick to use it anyway.");
     const box = group.getByRole("checkbox");
     expect(box.matches(":disabled")).toBe(false);
     expect(box.matches(":checked") || box.getAttribute("aria-checked") === "true").toBe(false);
     f.world.write = request => request.path.endsWith("/setup-agent/confirm") ? { status: 200, body: { project: "payments", state: "candidate", left: [] } } : undefined;
     fireEvent.click(box);
-    expect(group.getByTestId("found-anyway").textContent).toContain("You chose to use this although Rovara could not find it in your code.");
+    expect(group.getByTestId("found-anyway").textContent).toContain("You chose to use this although it does not match the code.");
     const check = within(found).getByRole("button", { name: "Check this setup" });
     await waitFor(() => expect((check as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(check);
@@ -278,8 +278,8 @@ describe("review and approve", () => {
   it("a row that does not match with no command known still warns and can be ticked", async () => {
     const f = reviewing({ verification: { "setup-payments": "unverified", "tests-payments": "verified" } });
     const found = await screen.findByTestId("setup-found");
-    expect(within(found).getByTestId("found-unmatched").textContent).toBe("Does not match the code: Rovara could not find what this cites in your code.");
-    expect(within(found).getByTestId("found-anyway").textContent).toBe("Rovara could not match this to your code; tick to use it anyway.");
+    expect(within(found).getByTestId("found-unmatched").textContent).toBe("Does not match the code: Rovara could not find what this cites.");
+    expect(within(found).getByTestId("found-anyway").textContent).toBe("Rovara could not match this to what it cites; tick to use it anyway.");
     f.close();
   });
   it("with nothing ticked the button is disabled and a line says why; with the checks still running the line says that", async () => {

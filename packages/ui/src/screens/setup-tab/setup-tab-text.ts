@@ -10,6 +10,8 @@
  * Sentences whose truth depends on a fact Code has to confirm (FABLE-REVIEW "Open points"). Each is kept behind its flag: a `false` drops the sentence from the page. They are read from
  * briefs/codex/setup-tab/OPEN-POINTS.md when Code's answer arrives; until then each holds the value the contracts and the reads support (the comment says what supports it).
  */
+import { MISMATCH_WORDS } from "../setup/words.js";
+
 export const OPEN_POINTS = Object.freeze({
   /** Checked in Code (OPEN-POINTS.md, point 1): the commands a limit stop ran are ALWAYS kept; a proposal only when one could be read (the read then says `ready`). So "The commands it ran are kept below." is said always, "What it found so far" only with a proposal. */
   limitStopKeepsCommands: true,
@@ -160,12 +162,8 @@ export const FOUND = Object.freeze({
   next: (p: string) => `Next, Rovara checks this on a second machine. Nothing changes in ${p} until you approve.`,
   checking: "Rovara is still checking where each suggestion came from.", saved: "Rovara is checking it on a second machine. When the check passes, approve it here.",
   leftOut: { unverified: "Left out: it doesn't match the code.", refused_command: "Left out: it downloads and runs code, or holds a secret.", not_a_command_item: "Left out: it isn't a command.", too_many: "Left out: there are too many commands.", invalid_command: "Left out: it couldn't be read as a command." },
-  unmatchedBefore: "Does not match the code: Rovara could not find ", unmatchedAfter: " in your code.",
-  unmatchedUnknown: "Does not match the code: Rovara could not find what this cites in your code.",
-  useAnyway: "Rovara could not find this command in your code; tick to use it anyway.",
-  useAnywayUnknown: "Rovara could not match this to your code; tick to use it anyway.",
-  chosenAnyway: "You chose to use this although Rovara could not find it in your code. The second machine still checks it.",
-  tickOne: "Tick at least one command to check this setup.",
+  unmatchedBefore: MISMATCH_WORDS.before, unmatchedAfter: MISMATCH_WORDS.after, unmatchedUnknown: MISMATCH_WORDS.unknown,
+  useAnyway: MISMATCH_WORDS.useAnyway, useAnywayUnknown: MISMATCH_WORDS.useAnywayUnknown, chosenAnyway: MISMATCH_WORDS.chosenAnyway, tickOne: MISMATCH_WORDS.tickOne,
   noInstall: "No install commands are ticked. The check runs the tests with the install commands this project already has, or with none if it has none.",
   readOnly: "Rovara has a setup waiting. A project admin, or a company owner or admin, reviews and approves it.",
 });
