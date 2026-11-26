@@ -27,6 +27,23 @@ describe("local GitHub policy preview through the browser mount", () => {
   ])("rejects invalid/ambiguous success %j", async body => {
     const w = await httpWorld(body); expect((await w.call(path,"POST",previewInput)).status).toBe(502);
   });
+  // DEC 582: the task-start-request reader is a forward reader, this one is NOT. It gates a destructive disconnect, so an answer it cannot read exactly is refused (502) and never read as "no blockers".
+  it.each([
+    ["an extra top-level field", { ...preview, future: "x" }],
+    ["an extra field in the target", { ...preview, target: { installationId: 7, future: "x" } }],
+    ["an extra field in exact blockers", { ...preview, disconnectBlockers: { kind: "exact", count: 1, projects: ["payments"], future: "x" } }],
+    ["an extra field in unknown blockers", { ...preview, disconnectBlockers: { kind: "unknown", reason: "read_bound", future: "x" } }],
+    ["a blockers kind this build does not know", { ...preview, disconnectBlockers: { kind: "partial", count: 0, projects: [] } }],
+    ["a blockers kind this build does not know, shaped like none", { ...preview, disconnectBlockers: { kind: "none" } }],
+    ["an unknown-blockers reason this build does not know", { ...preview, disconnectBlockers: { kind: "unknown", reason: "timeout" } }],
+    ["an extra field in a repositories block", { ...preview, repositories: { kind: "unknown", reason: "not_projected", future: 1 } }],
+    ["a repositories block of another kind", { ...preview, repositories: { kind: "exact", count: 0 } }],
+    ["a snapshot word this build does not know", { ...preview, snapshot: "atomic" }],
+  ])("the disconnect preview reader stays strict: %s is refused, never read as no blockers", async (_name, body) => {
+    const w = await httpWorld(body); const r = await w.call(path, "POST", previewInput);
+    expect(r.status).toBe(502); expect(r.body).toMatchObject({ error: { code: "INVALID_RESPONSE" } });
+    expect(JSON.stringify(r.body)).not.toContain("disconnectBlockers");
+  });
   it.each(["read_bound", "read_unavailable"])("retains unknown %s without a partial list", async reason => {
     const body = { ...preview, disconnectBlockers: { kind: "unknown", reason } }; const w = await httpWorld(body);
     expect((await w.call(path,"POST",previewInput)).body).toEqual(body);
