@@ -28,8 +28,8 @@ import { useTaskPlan } from "../../api/work.js";
 import { mergeActionRecords, claimLockSupported, clearAccepted, readAcceptedNow, useAccepted, type AcceptedAnswer, allMerged, clearPending, headsMoved, usePending } from "./merge-pending.js";
 
 const RISK_WORDS = { low: "Low risk", medium: "Medium risk", high: "High risk" } as const;
-/** The level the server named; a level this build does not know is treated as medium (more careful than low). */
-const levelOf = (risk: { level: string }): "low" | "medium" | "high" => (risk.level === "low" || risk.level === "high" ? risk.level : "medium");
+/** The level the server named; a level this build does not know is "unknown": no risk line is drawn for it and it never equals a known risk, and a press needs a known risk (`pressBound`), so it never sends (it is not read as medium: the page must not say a level Code did not). */
+const levelOf = (risk: { level: string }): "low" | "medium" | "high" | "unknown" => (risk.level === "low" || risk.level === "medium" || risk.level === "high" ? risk.level : "unknown");
 /**
  * "Everything is merged" is claimed only when EVERY pull request the task lists (tracked or not) shows merged: tracking alone does not cover the task, so one open, unknown or untracked pull request means the page must not say
  * Merged or hide Merge (R4). This is a DISPLAY claim only: an unresolved request is never settled by it (see `settled`), only by an observed merged row for each pull request that request covered (P1-2).
@@ -267,7 +267,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
    refusalNow: () => refusalNow(validated), storageWords: STORAGE_WORDS,
    pending: () => {
     const frozen = shown, sentHeads = frozen.heads ?? [];
-    return { v: 1 as const, sessionId: subject, requestId: crypto.randomUUID(), startedAt: new Date().toISOString(), heads: sentHeads, risk: frozen.risk, sent: sentHeads.map(head => head.repositoryId + " #" + String(head.number) + " at " + shortSha(head.headSha)) };
+    return { v: 1 as const, sessionId: subject, requestId: crypto.randomUUID(), startedAt: new Date().toISOString(), heads: sentHeads, risk: frozen.risk === "unknown" ? undefined : frozen.risk, sent: sentHeads.map(head => head.repositoryId + " #" + String(head.number) + " at " + shortSha(head.headSha)) };
    },
    claimed: claim => {
     if (claim.kind !== "done") {
@@ -382,7 +382,7 @@ function MergeSectionFor({ sessionId, task, subject }: { sessionId: string; task
   {kind === "read_failed" && <div className="rv-merge-actions"><Button busy={readiness.isFetching} onClick={() => { void readiness.refetch(); }}>Read again</Button></div>}
   {dropped !== undefined && active === undefined && note === undefined && <p role="status" className="rv-merge-muted">The earlier merge request was dropped because the pull request has a new head. It can't be replayed against it.</p>}
   {note && <p role="status" className="rv-merge-muted"><VisibleText text={note} /></p>}
-  {merge?.risk && <div className="rv-merge-risk" aria-label="Risk"><p><strong>{RISK_WORDS[levelOf(merge.risk)]}</strong></p>{merge.risk.reasons.length > 0 && <ul>{merge.risk.reasons.map(reason => <li key={reason}><VisibleText text={reason} /></li>)}</ul>}</div>}
+  {merge?.risk && levelOf(merge.risk) !== "unknown" && <div className="rv-merge-risk" aria-label="Risk"><p><strong>{RISK_WORDS[levelOf(merge.risk) as "low" | "medium" | "high"]}</strong></p>{merge.risk.reasons.length > 0 && <ul>{merge.risk.reasons.map(reason => <li key={reason}><VisibleText text={reason} /></li>)}</ul>}</div>}
   {saved && <p role="status" className="rv-merge-receipt-line"><VisibleText text={saved.words} /></p>}
   {retiredNote && <p role="status" className="rv-merge-muted">{retiredNote.why === "closed" ? "A later read shows a pull request this merge covered closed without a merge, so the earlier answer no longer applies." : "A later read shows a different head for a pull request this merge covered, so the earlier answer no longer applies."}</p>}
   <Panel {...(taskPage ? { className: receipt ? "rv-merge-panel rv-merge-panel-receipt" : "rv-merge-panel" } : {})}>

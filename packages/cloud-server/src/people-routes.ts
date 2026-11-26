@@ -32,6 +32,12 @@ const isName = (value: unknown): value is string => typeof value === "string" &&
 const ROLES = ["owner", "commenter", "viewer", "denied"] as const;
 const ADD_ROLES = ["owner", "commenter", "viewer"] as const;
 const METHODS = ["slack", "oidc", "github", "cloud", "saml"] as const;
+/**
+ * T2 (DECOUPLE plan 9.10): a role word a newer Code adds is passed on as "unknown", never a reason the whole People list is refused. The page shows such a person with no
+ * role to change and no Remove (it reads "unknown" as no action), and nothing here treats "unknown" as owner (a co-owner check below asks for exactly "owner").
+ */
+const UNKNOWN_ROLE = "unknown" as const;
+const nonEmptyWord = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= 64;
 const oneOf = <T extends string>(list: readonly T[], value: unknown): value is T => typeof value === "string" && (list as readonly string[]).includes(value);
 /** True when `value` is an object holding exactly these keys (a body with any other member is refused, so nothing unexpected reaches Code). */
 const exactly = (value: unknown, keys: readonly string[]): value is Obj => isObj(value) && Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key));
@@ -47,17 +53,19 @@ function readBody(value: unknown, extra: Array<[string, (member: unknown) => boo
 
 interface PeopleView { revision: number; orphaned: boolean; people: Obj[]; canManage: boolean; canTakeOwnership: boolean }
 /** Code's People view as the app reads it, or undefined when it is not in the shape Cloud expects. Only the named fields are kept (`addPeopleUrl`, a chat invitation, is never shown). */
-function projectView(value: unknown): PeopleView | undefined {
+export function projectView(value: unknown): PeopleView | undefined {
   if (!isObj(value) || !isRevision(value["revision"]) || typeof value["orphaned"] !== "boolean" || typeof value["canManage"] !== "boolean" || typeof value["canTakeOwnership"] !== "boolean") return undefined;
   const list = value["people"];
   if (!Array.isArray(list) || list.length > PEOPLE_MAX) return undefined;
   const people: Obj[] = [];
   for (const person of list as unknown[]) {
-    if (!isObj(person) || !isUuid(person["personId"]) || !isName(person["name"]) || !oneOf(ROLES, person["role"]) || typeof person["you"] !== "boolean") return undefined;
+    if (!isObj(person) || !isUuid(person["personId"]) || !isName(person["name"]) || !(oneOf(ROLES, person["role"]) || nonEmptyWord(person["role"])) || typeof person["you"] !== "boolean") return undefined;
     const effective = person["effectiveRole"];
-    if (effective !== null && !oneOf(ADD_ROLES, effective)) return undefined;
+    // A missing or non-word effective role is still unreadable; a word Cloud does not know is "unknown" (it grants nothing).
+    if (effective !== null && !(oneOf(ADD_ROLES, effective) || nonEmptyWord(effective))) return undefined;
     people.push({
-      personId: person["personId"], name: person["name"], role: person["role"], you: person["you"], effectiveRole: effective,
+      personId: person["personId"], name: person["name"], role: oneOf(ROLES, person["role"]) ? person["role"] : UNKNOWN_ROLE, you: person["you"],
+      effectiveRole: effective === null || oneOf(ADD_ROLES, effective) ? effective : UNKNOWN_ROLE,
       // How the person signs in, when Code says; a word Cloud does not know is left out, not shown.
       ...(oneOf(METHODS, person["method"]) ? { method: person["method"] } : {}),
     });
@@ -108,8 +116,9 @@ async function sharedReaders(context: RouteContext, record: WorkSession): Promis
   if (!Array.isArray(list)) return [];
   const readers: Obj[] = [];
   for (const entry of list.slice(0, CANDIDATES_MAX) as unknown[]) {
-    if (!isObj(entry) || typeof entry["developerId"] !== "string" || !DEVELOPER_ID.test(entry["developerId"]) || !isName(entry["name"]) || !oneOf(ADD_ROLES, entry["role"])) continue;
-    readers.push({ developerId: entry["developerId"], name: entry["name"], role: entry["role"] });
+    if (!isObj(entry) || typeof entry["developerId"] !== "string" || !DEVELOPER_ID.test(entry["developerId"]) || !isName(entry["name"]) || !(oneOf(ADD_ROLES, entry["role"]) || nonEmptyWord(entry["role"]))) continue;
+    // A reader role Cloud does not know stays in the list as "unknown" (a person with access is never dropped from view).
+    readers.push({ developerId: entry["developerId"], name: entry["name"], role: oneOf(ADD_ROLES, entry["role"]) ? entry["role"] : UNKNOWN_ROLE });
   }
   return readers;
 }

@@ -336,6 +336,15 @@ describe("T9: the Public edition's notes-with-links switch", () => {
   await waitFor(() => { expect(f.posts).toHaveLength(1); });
   expect(f.posts[0]).toMatchObject({ action: "change", retention: "A", notesOptIn: null, expectedRevision: 3 });
  });
+ // Opus S1 (DEC 540): an unreadable notesOptIn on a row kept at B reads as opted in, so the switch shows ON and turning it off sends the change; it never shows OFF (which would say less is kept).
+ it("a Slack row kept at B whose notesOptIn arrives unreadable shows the switch ON, and a row with it explicitly false shows OFF", async () => {
+  const view = publicView({ sources: [slackRow({ retention: "B", notesOptIn: true }), slackRow({ scope: "slack:T1/C8", retention: "A" })] });
+  (view.sources[0] as unknown as Record<string, unknown>)["notesOptIn"] = "yes";
+  (view.sources[1] as unknown as Record<string, unknown>)["notesOptIn"] = false;
+  await openEditor({ view });
+  expect(within(slackRegion()).getByRole("switch", { name: "Keep notes with links" }).getAttribute("aria-checked")).toBe("true");
+  expect(within(row(/Slack slack:T1\/C8/u)).getByRole("switch", { name: "Keep notes with links" }).getAttribute("aria-checked")).toBe("false");
+ });
  it("when the company only allows retention A for Slack, the switch is shown disabled with the fixed reason, in the add form and in a row; Add still sends A", async () => {
   const REASON = "Your company keeps Slack sources live only.";
   const liveOnly = publicView({ sources: [slackRow()], offered: { github: ["A", "B", "C", "D"], rovara: ["A", "B", "C", "D"], slack: ["A"], linear: ["A", "B", "C"], jira: ["A", "B", "C"], codehost: ["A"], mcp: ["A"] } });
