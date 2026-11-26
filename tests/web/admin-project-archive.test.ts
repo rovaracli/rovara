@@ -153,3 +153,14 @@ for (const failure of ["invalid-preview", "read-refusal"]) it(`uses neutral comp
   const check = screen.getByRole("button", { name: "Check current state" });await waitFor(() => expect(check).toHaveProperty("disabled", false));fireEvent.click(check);await waitFor(() => expect(f.request.mock.calls.filter(([r]) => r.path.endsWith("/archive-preview"))).toHaveLength(2));await waitFor(() => expect(progress.textContent).toBe("Check finished. See the result below."));expect(f.posts()).toHaveLength(0);expect(document.body.textContent).not.toContain("private synthetic read refusal");
  } finally { f.close(); }
 });
+// STRICT-READERS-KNOWN-FIELDS: Code (since the project-incarnation lane) sends expectedProjectIncarnation on the preview and inside `current` of the outcome for a project with an incarnation. A recorded archive must read as confirmed, not "unconfirmed".
+it("reads an archive outcome whose current carries expectedProjectIncarnation as confirmed, not unconfirmed", async () => {
+  let f!: ReturnType<typeof mount>; let archived = false;
+  const current = () => ({ orgId: f.me.org.orgId, project: "payments", status: archived ? "archived" : "active", expectedRevision: archived ? 1 : 0, expectedProjectRevision: 3, expectedProjectIncarnation: 5, checkedAt: "2026-10-27T15:00:00.000Z", access: { actions: archived ? [] : ["archive"] } });
+  f = mount({ preview: () => ({ status: 200, body: current() }), post: async () => { archived = true; return { status: 200, body: { replayed: false, receipt: { project: "payments", status: "archived", revision: 1, projectRevision: 3, archivedAt: "2026-10-27T15:01:00.000Z", egressReconciliation: "pending" }, current: current(), effects: { egress: "synchronized", archiveHook: "not_configured" } } }; } });
+  await review(); acknowledge(); fireEvent.click(screen.getByRole("button", { name: "Archive project" }));
+  await screen.findByText("Current project status: Archived.");
+  expect(f.posts()).toHaveLength(1);
+  expect(document.body.textContent).not.toMatch(/unconfirmed/i);
+  f.close();
+});
