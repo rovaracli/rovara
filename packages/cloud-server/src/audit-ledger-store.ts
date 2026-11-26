@@ -9,11 +9,15 @@
 //   SEALSTATE#<company>         <from>#<to>             a seal's progress (audit-contracts-v1.ts sealProgressKeyV1)
 //   SEALTIP#<company>           TIP                     the company's last planned seal: the next seal must start after it
 //   EPOCHSEAL#<epoch>           <company>               a seal planned into the epoch (the epoch's leaves)
+//   EPOCHSEALED                 <epoch>                 an epoch that has at least one planned seal (written in the transaction that plans it)
+//   EPOCHFENCE                  FENCE                   no seal may be planned into an epoch before this one (moves forward only)
 //   EPOCHLOG                    <epoch>                 an epoch that is closed: no seal may join it any more
 //   EPOCHSTATE#<epoch>          STATE                   an epoch statement's progress (audit-contracts-v1.ts epochProgressKeyV1)
 //   EPOCHTIP                    TIP                     the last planned epoch: the next statement chains to it
 //   EPOCHDONE                   DONE                    every epoch up to this one is timestamped
 //
+// Every write is conditional except two that are idempotent by construction: the company listing and the epoch-sealed marker (a plain Put of the same key
+// and content). There is no update or delete expression, and no item has an `expiresAt`.
 // Nothing here proves a lock or a timestamp: a seal or an epoch is "locked" or "timestamped" here only when the storage target (AL-2) and the
 // timestamp source (AL-3) said so and the answer parsed (audit-sealing-ports.ts). Their IAM is not in this lane (see AL-1-DONE.md).
 import { TransactWriteCommand, GetCommand, PutCommand, QueryCommand, type DynamoDBDocumentClient, type TransactWriteCommandInput } from "@aws-sdk/lib-dynamodb";
@@ -64,14 +68,18 @@ export interface AuditSealStore extends AuditChainStore {
   /** Every seal planned into the epoch, in company order. */
   listEpochSeals(epochId: string): Promise<OrgSealV1[]>;
   /**
-   * Plans a seal: its progress row, the company's seal tip (which must still be `expected.tip`), the epoch's leaf. Refused when the epoch is closed,
-   * when an epoch at or after this one is already planned, when the tip moved, or when the company already has a seal in this epoch.
+   * Plans a seal: its progress row, the company's seal tip (which must still be `expected.tip`), the epoch's leaf and the epoch's sealed marker. Refused when
+   * the epoch is closed or fenced off, when an epoch at or after this one is already planned, when the tip moved, or when the company already has a seal in this epoch.
    */
   planSeal(progress: SealProgressV1, expected: { tip: SealTip | undefined }): Promise<"planned" | "refused">;
   getSealProgress(companyId: string, fromSeq: number, toSeq: number): Promise<SealProgressV1 | undefined>;
   /** Replaces a progress row, only while it is in the phase `from` holds. "stale": it is not (someone else advanced it). */
   advanceSeal(from: SealProgressV1, to: SealProgressV1): Promise<"advanced" | "stale">;
   closeEpoch(epochId: string, closedAt: string): Promise<"closed" | "exists">;
+  /** From now on no seal may be planned into an epoch before `epochId`. Only moves forward; a lower id is ignored. */
+  fenceBefore(epochId: string): Promise<void>;
+  /** The epochs after the done pointer that have a planned seal (closed or not), oldest first. */
+  listSealedEpochs(): Promise<string[]>;
   /** The closed epochs not yet done, oldest first. */
   listOpenEpochs(): Promise<string[]>;
   getEpochProgress(epochId: string): Promise<EpochProgressV1 | undefined>;
@@ -92,6 +100,8 @@ export const sealTipKey = (companyId: string): Key => ({ pk: `SEALTIP#${companyI
 export const epochSealKey = (epochId: string, companyId: string): Key => ({ pk: `EPOCHSEAL#${epochId}`, sk: companyId });
 export const epochLogKey = (epochId: string): Key => ({ pk: "EPOCHLOG", sk: epochId });
 export const epochTipKey: Key = { pk: "EPOCHTIP", sk: "TIP" };
+export const epochFenceKey: Key = { pk: "EPOCHFENCE", sk: "FENCE" };
+export const epochSealedKey = (epochId: string): Key => ({ pk: "EPOCHSEALED", sk: epochId });
 export const epochDoneKey: Key = { pk: "EPOCHDONE", sk: "DONE" };
 
 type Cancelled = { CancellationReasons?: Array<{ Code?: string }> };
@@ -103,6 +113,11 @@ function failedItems(error: unknown): number[] | undefined {
 }
 
 const isConditionFailure = (error: unknown): boolean => (error as { name?: string }).name === "ConditionalCheckFailedException";
+/** Two transactions touched the same item at the same instant: nothing was written, and trying again is right. */
+const CONFLICT_CODES = new Set(["TransactionConflict", "TransactionInProgress"]);
+const isConflict = (error: unknown): boolean =>
+  ["TransactionConflictException", "TransactionInProgressException"].includes((error as { name?: string }).name ?? "")
+  || ((error as Cancelled).CancellationReasons ?? []).some((reason) => CONFLICT_CODES.has(reason.Code ?? ""));
 
 export class DynamoAuditLedgerStore implements AuditSealStore {
   constructor(private readonly db: Db, private readonly table: string) {}
@@ -171,10 +186,13 @@ export class DynamoAuditLedgerStore implements AuditSealStore {
       return "committed";
     } catch (error) {
       const failed = failedItems(error);
-      if (failed === undefined) throw error;
-      // Item 2 is the receipt: that event is already committed, whatever else moved.
-      if (failed.includes(2)) return "receipt-exists";
-      if (failed.length > 0) return "head-moved";
+      if (failed !== undefined) {
+        // Item 2 is the receipt: that event is already committed, whatever else moved.
+        if (failed.includes(2)) return "receipt-exists";
+        if (failed.length > 0) return "head-moved";
+      }
+      // A conflict with another writer's transaction: read again, like a lost race.
+      if (isConflict(error)) return "head-moved";
       throw error;
     }
   }
@@ -213,11 +231,11 @@ export class DynamoAuditLedgerStore implements AuditSealStore {
 
   async getEpochSeal(epochId: string, companyId: string): Promise<OrgSealV1 | undefined> {
     const item = await this.get(epochSealKey(epochId, companyId));
-    return item === undefined ? undefined : readSeal(item);
+    return item === undefined ? undefined : readSeal(item, epochId, companyId);
   }
 
   async listEpochSeals(epochId: string): Promise<OrgSealV1[]> {
-    return (await this.queryAll(`EPOCHSEAL#${epochId}`)).map(readSeal);
+    return (await this.queryAll(`EPOCHSEAL#${epochId}`)).map((item) => readSeal(item, epochId, String(item.sk)));
   }
 
   async planSeal(progress: SealProgressV1, expected: { tip: SealTip | undefined }): Promise<"planned" | "refused"> {
@@ -235,6 +253,10 @@ export class DynamoAuditLedgerStore implements AuditSealStore {
           { ConditionCheck: { TableName: this.table, Key: epochLogKey(checkpoint.epochId), ConditionExpression: "attribute_not_exists(pk)" } },
           // No epoch at or after this one is planned: epochs are planned in order, so this seal's epoch is still ahead of the statements.
           { ConditionCheck: { TableName: this.table, Key: epochTipKey, ConditionExpression: "attribute_not_exists(pk) OR tipEpochId < :epoch", ExpressionAttributeValues: { ":epoch": checkpoint.epochId } } },
+          // Not fenced off: a tick for a later epoch has closed the door on this one (see fenceBefore).
+          { ConditionCheck: { TableName: this.table, Key: epochFenceKey, ConditionExpression: "attribute_not_exists(pk) OR fenceEpochId <= :epoch", ExpressionAttributeValues: { ":epoch": checkpoint.epochId } } },
+          // The epoch now has a seal, so a later tick knows to close it even if this writer never does.
+          { Put: { TableName: this.table, Item: { ...epochSealedKey(checkpoint.epochId) } } },
           // The company's seals form one chain: this seal starts where the tip this writer read ended.
           expected.tip === undefined
             ? { Put: { TableName: this.table, Item: { ...sealTipKey(companyId), ...tip }, ConditionExpression: "attribute_not_exists(pk)" } }
@@ -281,11 +303,31 @@ export class DynamoAuditLedgerStore implements AuditSealStore {
     }
   }
 
+  async fenceBefore(epochId: string): Promise<void> {
+    try {
+      await this.db.send(new PutCommand({
+        TableName: this.table, Item: { ...epochFenceKey, fenceEpochId: epochId },
+        ConditionExpression: "attribute_not_exists(pk) OR fenceEpochId < :epoch", ExpressionAttributeValues: { ":epoch": epochId },
+      }));
+    } catch (error) {
+      // Already at or past this epoch.
+      if (!isConditionFailure(error)) throw error;
+    }
+  }
+
+  async listSealedEpochs(): Promise<string[]> {
+    return this.epochsAfterDone("EPOCHSEALED");
+  }
+
   async listOpenEpochs(): Promise<string[]> {
+    return this.epochsAfterDone("EPOCHLOG");
+  }
+
+  private async epochsAfterDone(partition: string): Promise<string[]> {
     const done = await this.get(epochDoneKey);
     const after = done === undefined ? undefined : done.doneEpochId;
     if (done !== undefined && typeof after !== "string") throw new AuditLedgerCorrupt("epoch done pointer");
-    const rows = await this.queryAll("EPOCHLOG", after === undefined ? undefined : { after: after as string });
+    const rows = await this.queryAll(partition, after === undefined ? undefined : { after: after as string });
     return rows.map((row) => String(row.sk));
   }
 
@@ -355,8 +397,14 @@ export class DynamoAuditLedgerStore implements AuditSealStore {
   }
 }
 
-function readSeal(item: Record<string, unknown>): OrgSealV1 {
-  const seal = item.seal as OrgSealV1 | undefined;
-  if (seal === undefined || seal.v !== 1 || typeof seal.orgId !== "string" || typeof seal.epochId !== "string") throw new AuditLedgerCorrupt("epoch seal");
-  return seal;
+const HEX64 = /^[0-9a-f]{64}$/u;
+/** A seal row, checked: its key says the epoch and company, and every field is the shape the verifier reads. */
+function readSeal(item: Record<string, unknown>, epochId: string, companyId: string): OrgSealV1 {
+  const seal = item.seal as Partial<OrgSealV1> | undefined;
+  if (
+    seal === undefined || seal.v !== 1 || seal.orgId !== companyId || seal.epochId !== epochId || item.pk !== `EPOCHSEAL#${epochId}`
+    || !Number.isSafeInteger(seal.fromSeq) || !Number.isSafeInteger(seal.toSeq) || (seal.fromSeq as number) < 1 || (seal.toSeq as number) < (seal.fromSeq as number)
+    || ![seal.batchRoot, seal.headHash, seal.prevSealHash].every((hash) => typeof hash === "string" && HEX64.test(hash))
+  ) throw new AuditLedgerCorrupt("epoch seal");
+  return seal as OrgSealV1;
 }

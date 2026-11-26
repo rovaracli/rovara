@@ -1,7 +1,7 @@
 // Pre-review additions for lane AL-1 (Sonnet reviewer). Test-only. Cases the lane's own file does not pin:
 //   - the guards that M3b, M3c, M12 and M16 showed were only ever tested together with their twin guard;
 //   - restart and late-record paths of the epoch protocol;
-//   - known gaps, written as `it.fails` (they PASS today because the behaviour is wrong; when the product is fixed they FAIL, and the fixer removes `.fails`).
+//   - former gaps (written as `it.fails` until fixed; the fixes are in).
 import { describe, expect, it } from "vitest";
 import { PutCommand } from "@aws-sdk/lib-dynamodb";
 import { checkChain, genesisHash } from "../../packages/audit-verifier/src/index.js";
@@ -168,9 +168,9 @@ describe("review: restarts and late records", () => {
   });
 });
 
-describe("review: KNOWN GAPS (it.fails: these pass while the gap exists; remove `.fails` with the fix)", () => {
+describe("review: former gaps, now fixed", () => {
   // MUST-1: an epoch that holds a planned seal is closed only by a tick that runs inside that same five minutes.
-  it.fails("a seal planned in an epoch whose tick stopped before closing it still ends up in a closed epoch with a statement, and the chain verifies", async () => {
+  it("a seal planned in an epoch whose tick stopped before closing it still ends up in a closed epoch with a statement, and the chain verifies", async () => {
     const r = rig();
     for (let n = 1; n <= 3; n += 1) await r.appender.append(pending(A, n));
     class StopsBeforeClose extends DynamoAuditLedgerStore {
@@ -188,14 +188,14 @@ describe("review: KNOWN GAPS (it.fails: these pass while the gap exists; remove 
   });
 
   // SHOULD-1: a TransactionCanceledException that is a conflict with another transaction (no failed condition) is thrown out, not retried like a lost race.
-  it.fails("an append that meets a transaction conflict is retried like a lost race", async () => {
+  it("an append that meets a transaction conflict is retried like a lost race", async () => {
     const r = rig();
     r.db.injectFault({ command: "TransactWriteCommand", error: { name: "TransactionCanceledException", cancellationReasons: [{ Code: "TransactionConflict" }, { Code: "None" }, { Code: "None" }, { Code: "None" }] }, times: 1 });
     expect((await r.appender.append(pending(A, 1))).outcome).toBe("appended");
   });
 
   // SHOULD-2: the stored head says seq 3 but the row for 3 is gone: the sealer seals 1..2 and says nothing.
-  it.fails("a record that the head names but that is missing from the end of the chain stops that company", async () => {
+  it("a record that the head names but that is missing from the end of the chain stops that company", async () => {
     const r = rig();
     for (let n = 1; n <= 3; n += 1) await r.appender.append(pending(A, n));
     r.db.items.delete(rowOf(r, chainRecordKey(A, 3))?.[0] ?? "");
@@ -206,7 +206,7 @@ describe("review: KNOWN GAPS (it.fails: these pass while the gap exists; remove 
   });
 
   // SHOULD-3: the statement's timestamp provider label is stored when the statement is locked, before any timestamp source exists.
-  it.fails("a statement locked while no timestamp source is wired is not stamped with the label of the stand-in once a real source comes", async () => {
+  it("a statement locked while no timestamp source is wired is not stamped with the label of the stand-in once a real source comes", async () => {
     const r = rig();
     await r.appender.append(pending(A, 1));
     at(r, "2026-11-25T12:05:10Z");
@@ -217,7 +217,7 @@ describe("review: KNOWN GAPS (it.fails: these pass while the gap exists; remove 
   });
 
   // SHOULD-4: the seal row that goes into the statement is not compared with the seal's own progress row.
-  it.fails("a seal row changed after it was planned is not put into the epoch statement", async () => {
+  it("a seal row changed after it was planned is not put into the epoch statement", async () => {
     const r = rig();
     await r.appender.append(pending(A, 1));
     class ChangesTheLeaf extends DynamoAuditLedgerStore {
@@ -235,7 +235,7 @@ describe("review: KNOWN GAPS (it.fails: these pass while the gap exists; remove 
   });
 
   // SHOULD-5: the evidence is checked for its own length of retention, not against the clock: a version whose lock has already run out is taken.
-  it.fails("storage evidence whose retention already ended is refused", async () => {
+  it("storage evidence whose retention already ended is refused", async () => {
     const r = rig();
     await r.appender.append(pending(A, 1));
     class Expired extends LockedStorageDouble {
@@ -259,7 +259,9 @@ describe("review: a record whose clock ran ahead (documented, not asserted as fi
     at(r, "2026-11-25T12:05:10Z");
     expect((await tick(r)).planned).toEqual([{ companyId: A, fromSeq: 1, toSeq: 1 }]);
     at(r, "2026-11-25T18:00:10Z");
-    expect((await tick(r)).planned).toEqual([]); // records 2 and 3 wait about a day
+    const held = await tick(r);
+    expect(held.planned).toEqual([]); // records 2 and 3 wait about a day
+    expect(held.blocked).toContainEqual({ what: `hold ${A}`, reason: "AuditRecordsAheadOfClock", refused: false }); // and the report says so
     const records = await r.store.readRecords(A, 1, 10);
     expect(checkChain(records, { seq: 0, hash: genesisHash(A), orgId: A })).toEqual({ ok: true });
   });

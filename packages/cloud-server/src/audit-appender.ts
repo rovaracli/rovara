@@ -9,10 +9,10 @@ import { encodeAuditEventIdV1, type AuditRecordV1 } from "@agentx/contracts/audi
 import { PendingAuditV1Schema, materializeAuditRecordV1, type PendingAuditV1, type ReceiptAuditV1 } from "./audit-contracts-v1.js";
 import type { AuditChainStore, ChainHead } from "./audit-ledger-store.js";
 
-/** The same event identity arrived with other facts: nothing was written. Fixed words, never the offending values. */
+/** The same event identity arrived with a different facts digest: nothing was written. Fixed words, never the offending values. (Only identity and digest are compared; the digest commits to the raw source, and the item is not authenticated, see AUD-3.) */
 export class AuditAppendRefused extends Error {
   constructor() {
-    super("audit append: this event was already committed with different facts");
+    super("audit append: this event was already committed with a different facts digest");
     this.name = "AuditAppendRefused";
   }
 }
@@ -29,15 +29,17 @@ export type AppendResult =
   | { outcome: "appended"; record: AuditRecordV1; receipt: ReceiptAuditV1 }
   | { outcome: "already-appended"; receipt: ReceiptAuditV1 };
 
-export type AppenderOptions = { now?: () => Date; maxAttempts?: number };
+export type AppenderOptions = { now?: () => Date; maxAttempts?: number; /** Waits between attempts (default: a short random wait that grows with the attempt, so writers that collided do not collide again). */ pause?: (ms: number) => Promise<void> };
 
 export class AuditAppender {
   private readonly now: () => Date;
   private readonly maxAttempts: number;
+  private readonly pause: (ms: number) => Promise<void>;
 
   constructor(private readonly store: AuditChainStore, options: AppenderOptions = {}) {
     this.now = options.now ?? (() => new Date());
     this.maxAttempts = options.maxAttempts ?? 8;
+    this.pause = options.pause ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
   }
 
   /** Appends the item, or says it already was. Repeating a call is harmless: one event identity is one record. */
@@ -64,7 +66,8 @@ export class AuditAppender {
       };
       const result = await this.store.commitAppend({ record, receipt, expectedHead: head });
       if (result === "committed") return { outcome: "appended", record, receipt };
-      // "receipt-exists" and "head-moved" both mean: read again.
+      // "receipt-exists" and "head-moved" (a lost race or a conflict with another writer's transaction) both mean: wait a little, then read again.
+      await this.pause(Math.random() * 10 * (attempt + 1));
     }
     throw new AuditAppendContended();
   }
