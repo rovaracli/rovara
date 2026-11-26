@@ -6,6 +6,8 @@
 import { describe, expect, it } from "vitest";
 import { CodeClient, LIFECYCLE_ANSWERS, LIFECYCLE_WORDS, LocalSessionStore, LocalWorkSessionStore, createCloudHandler, type CloudRequest, type CodeSession } from "../../packages/cloud-server/src/index.js";
 import { PROJECT_LIFECYCLE_WORDS } from "../../packages/contracts/src/project-lifecycle.js";
+import { ReviewedProjectArchiveOutcomeReaderSchema, ReviewedProjectArchivePreviewReaderSchema } from "../../packages/contracts/src/reviewed-project-archive.js";
+import { ReviewedProjectRestoreOutcomeReaderSchema, ReviewedProjectRestorePreviewReaderSchema } from "../../packages/contracts/src/reviewed-project-restore.js";
 
 const CODE = "https://code.example.test";
 const A = "org_aaaaaaaaaaaaaaaaaaaa", B = "org_bbbbbbbbbbbbbbbbbbbb";
@@ -352,5 +354,37 @@ describe("Code's refusals in Cloud's fixed words", () => {
         expect(words(res).message).toBe(words(expected).message);
       });
     }
+  }
+});
+
+// LIFECYCLE-SERVER-INCARNATION: Code serves `expectedProjectIncarnation` on the preview, and inside `current` of the outcome, for a project that has an incarnation. Cloud's server refused
+// the unknown member, so such a project's preview and outcome answered "unavailable" (503) here. It is accepted now, with Code's exact shape, and the check is strict otherwise.
+describe("an incarnation on Code's preview and outcome passes through the server", () => {
+  const preview = (kind: "archive" | "restore", extra: Record<string, unknown> = {}) => ({
+    orgId: A, project: "payments", status: kind === "archive" ? "active" : "archived", expectedRevision: kind === "archive" ? 0 : 1, expectedProjectRevision: 3, expectedProjectIncarnation: 5, checkedAt: "2026-11-17T10:00:00.000Z",
+    ...(kind === "restore" ? { prerequisites: "not_required" } : {}), access: { actions: [kind] }, ...extra,
+  });
+  const outcome = (kind: "archive" | "restore", current: Record<string, unknown>) => kind === "archive"
+    ? { receipt: { project: "payments", status: "archived", revision: 1, projectRevision: 3, archivedAt: "2026-11-17T10:01:00.000Z", egressReconciliation: "pending" }, replayed: false, current, effects: { egress: "not_attempted", archiveHook: "not_configured" } }
+    : { receipt: { project: "payments", status: "active", revision: 2, projectRevision: 3, restoredAt: "2026-11-17T10:01:00.000Z", egressReconciliation: "pending" }, replayed: false, current, effects: { egress: "not_attempted" } };
+  const readers = { archive: [ReviewedProjectArchivePreviewReaderSchema, ReviewedProjectArchiveOutcomeReaderSchema], restore: [ReviewedProjectRestorePreviewReaderSchema, ReviewedProjectRestoreOutcomeReaderSchema] } as const;
+  for (const kind of ["archive", "restore"] as const) {
+    it(`${kind}: a preview and an outcome that name the incarnation are answered (not 503), and the app's readers keep it`, async () => {
+      const w = setUp((call) => call.path.endsWith(`/${kind}-preview`) ? json(200, preview(kind)) : call.method === "POST" ? json(200, outcome(kind, preview(kind, { status: kind === "archive" ? "archived" : "active", access: { actions: [] } }))) : undefined);
+      const headers = await w.as("ada-token");
+      const seen = await w.send("GET", `/v1/web/projects/payments/${kind}-preview`, headers);
+      expect(seen).toMatchObject({ status: 200, body: { expectedProjectIncarnation: 5 } });
+      expect(readers[kind][0].parse(seen.body)).toMatchObject({ expectedProjectIncarnation: 5 });
+      const done = await w.send("POST", `/v1/web/projects/payments/reviewed-${kind}`, headers, kind === "archive" ? change() : restoreChange());
+      expect(done.status).toBe(200);
+      expect(readers[kind][1].parse(done.body)).toMatchObject({ current: { expectedProjectIncarnation: 5 } });
+    });
+    it(`${kind}: a preview with no incarnation still passes, and one that is not a positive whole number, or an unknown member beside it, is still refused`, async () => {
+      for (const [what, extra, ok] of [["none", {}, true], ["a string", { expectedProjectIncarnation: "5" }, false], ["0", { expectedProjectIncarnation: 0 }, false], ["a fraction", { expectedProjectIncarnation: 1.5 }, false], ["null", { expectedProjectIncarnation: null }, false], ["an unknown member", { somethingElse: 1 }, false]] as const) {
+        const body = preview(kind, extra); if (what === "none") delete (body as Record<string, unknown>)["expectedProjectIncarnation"];
+        const w = setUp((call) => call.path.endsWith(`/${kind}-preview`) ? json(200, body) : undefined);
+        expect((await w.send("GET", `/v1/web/projects/payments/${kind}-preview`, await w.as("ada-token"))).status, what).toBe(ok ? 200 : 503);
+      }
+    });
   }
 });
