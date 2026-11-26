@@ -180,8 +180,32 @@ describe("points 2 and 3, CloudGateway: the stack is made by Code's CDK app at t
     const builds = (state.execRuns ?? []).filter((r) => r.cmd === "bash");
     expect(builds.map((r) => r.args[1])).toEqual(["npm ci --ignore-scripts --no-audit --no-fund", "npx tsc -b infra"]);
     expect(builds.every((r) => r.cwd === dir && r.awsRemoved)).toBe(true);
+    // credential variables removed; the credential files point at /dev/null (not unset: that falls back to ~/.aws) and the instance-metadata lookup is off
+    for (const r of builds) {
+      expect(r.env).toMatchObject({ AWS_SHARED_CREDENTIALS_FILE: "/dev/null", AWS_CONFIG_FILE: "/dev/null", AWS_EC2_METADATA_DISABLED: "true" });
+      for (const name of ["AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN"]) {
+        expect(Object.hasOwn(r.env ?? {}, name) && r.env![name] === undefined, name).toBe(true);
+      }
+    }
     // no Cloud tree: no Cloud worktree, and no `npm run build:web` etc.
     expect(state.calls.filter((c) => c.startsWith("git worktree"))).toEqual([]);
+  });
+
+  it("reuses an existing Code tree only when it is at the Code commit asked for; a tree at another commit is refused, with no build", async () => {
+    const dir = `/work/code-${CODE.slice(0, 12)}`;
+    const at = (head: string): FakeState => {
+      const state = world();
+      state.dirs.add(dir);
+      state.exec = withCodeClone((cmd, args) => (cmd === "git" && args.includes("rev-parse") ? { code: 0, stdout: `${head}\n`, stderr: "" } : { code: 0, stdout: "", stderr: "" }));
+      return state;
+    };
+    const good = at(CODE);
+    await gatewayStep(makeCtx(good, "beta", "gateway"), stateOf(gatewayManifest()));
+    expect(good.calls.filter((c) => c.includes("worktree add"))).toEqual([]);
+    expect(good.cdkRuns).toHaveLength(1);
+    const wrong = at(OTHER_CODE);
+    await failsWith(gatewayStep(makeCtx(wrong, "beta", "gateway"), stateOf(gatewayManifest())), "REFUSED", /exists but is not at the Code commit cccccccccccc/);
+    expect(wrong.cdkRuns ?? []).toEqual([]);
   });
 
   it("refuses a manifest with no Code commit for the gateway before any build or synth", async () => {
@@ -283,9 +307,9 @@ describe("the beta gate: the first change set made from Code changes no resource
     env: "beta", phase: "change-sets", region: "us-east-1", config, manifest: manifestOf({ gateway: { digest: DIGEST_A, source: "built", imageTag: null, repository: null, codeSha } }), changeSets: records,
     dirs: { pipeline: "/p", cloud: null, out: "/out", work: "/w" }, ports: makePorts(state), log: () => undefined,
   });
-  const switchWorld = (outputs: Record<string, string>): FakeState => {
+  const switchWorld = (outputs: Record<string, string>, liveDigest: string = DIGEST_B): FakeState => {
     const state = newState();
-    state.stacks[stackFor("beta", "gateway")] = { status: "UPDATE_COMPLETE", parameters: {}, outputs, templateSha: "live" };
+    state.stacks[stackFor("beta", "gateway")] = { status: "UPDATE_COMPLETE", parameters: { ImageDigest: liveDigest }, outputs, templateSha: "live" };
     state.templates = { [`live:${stackFor("beta", "gateway")}`]: live, [`cs:${stackFor("beta", "gateway")}/${NAME}`]: next() };
     return state;
   };
@@ -294,6 +318,26 @@ describe("the beta gate: the first change set made from Code changes no resource
     const outcome = await switchGate.run(gateInput(switchWorld({ DeployedCloudSha: sha("3") }), [record()]));
     expect(outcome.result).toBe("pass");
     expect(outcome.notes?.join(" ")).toMatch(/changes no resource/);
+  });
+
+  it("with the SAME image (live ImageDigest = this run's digest) the change set must have no row at all: a row means a stack-level property outside the template changed (tags, role, termination protection)", async () => {
+    const same = await switchGate.run(gateInput(switchWorld({ DeployedCloudSha: sha("3") }, DIGEST_A), [record()]));
+    expect(same.result).toBe("fail");
+    expect(same.failures?.join(" ")).toMatch(/image is unchanged .* must have no resource row, but it has 1: something outside the template changed/u);
+    // an outputs-only change set (no row) with the same image passes, and the rows of a NEW image are the image rows the template comparison already covers
+    expect((await switchGate.run(gateInput(switchWorld({ DeployedCloudSha: sha("3") }, DIGEST_A), [record({ rows: [] })]))).result).toBe("pass");
+    expect((await switchGate.run(gateInput(switchWorld({ DeployedCloudSha: sha("3") }, DIGEST_B), [record()]))).result).toBe("pass");
+  });
+
+  it("when the live stack has no ServiceArn (a hand deploy without the sha context drops DeployedCloudSha and ServiceArn) the refusal NAMES the cause and the way out", async () => {
+    const state = switchWorld({}, DIGEST_B);
+    const handDeployed = structuredClone(live);
+    delete handDeployed.Outputs!.ServiceArn;
+    delete handDeployed.Outputs!.DeployedCloudSha;
+    state.templates![`live:${stackFor("beta", "gateway")}`] = handDeployed;
+    const outcome = await switchGate.run(gateInput(state, [record()]));
+    expect(outcome.result).toBe("fail");
+    expect(outcome.failures?.join(" ")).toMatch(/the change adds the output\(s\) ServiceArn.*deployed by hand without the sha context.*-c rovaraCloudSha=<the 40-hex Cloud commit>.*-c rovaraCodeSha=<the 40-hex Code commit>/su);
   });
 
   it("the gate FAILS the step when the Code-made template differs from the live one in a resource", async () => {

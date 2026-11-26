@@ -44,3 +44,21 @@ Same method (single in-place edit, `vitest run --maxWorkers=1` over `pipeline-ga
 | M29 | the install doc says "blob-equal" again | KILLED | the same test |
 
 Result: 14 of 14 killed (running total for the lane: 29 of 29). Runner: the scratch script that applied each row; the exact search and replace strings are the rows above.
+
+## Opus round 1 fixes
+
+Same method (single in-place edit, one worker, `ROVARA_CODE_REPO` set; tests: `pipeline-gateway-phase2-opus-review`, `pipeline-drift-gates`, `pipeline-gateway-keep-live`, `pipeline-gateway-floor-containment`, `pipeline-gateway-from-code`, `pipeline-gateway-from-code-review`, `pipeline-rollback-plan`; file restored after each; tree otherwise unchanged).
+
+| # | Mutant | Result | Killed by (first failing test) |
+|---|--------|--------|---|
+| M30 | a malformed DeployedCodeSha on the live stack is used as the Code commit | KILLED | rollback-plan "... refuses a target whose gateway has none recorded ..." (and the keep-live malformed cases) |
+| M31 | a pre-change record is refused again when the live stack carries a valid DeployedCodeSha (MUST-1 undone) | KILLED | the same plan test; keep-live "a stack already deployed from Code ... the Code commit it attests is used" |
+| M32 | the live ImageDigest is not compared with the digest | KILLED | the same plan test; keep-live "... a stack running another image, is still refused" |
+| M33 | the switch gate no longer fails a row when the image is unchanged | KILLED | "with the SAME image ... the change set must have no row at all" |
+| M34 | that row rule applies whatever the image | KILLED | "the gate passes the first Code-made change set when only the outputs differ" |
+| M35 | the switch refusal does not name the hand-deploy cause | KILLED | "when the live stack has no ServiceArn ... the refusal NAMES the cause and the way out" |
+| M36 | NO_AWS_ENV unsets AWS_CONFIG_FILE instead of /dev/null | KILLED | "synthesizes in the Code checkout ..." (build env) and the drift-gates env tests |
+| M37 | NO_AWS_ENV leaves the instance-metadata lookup on | KILLED | the same tests |
+| M38 | an existing Code tree is reused without checking its HEAD | KILLED | "reuses an existing Code tree only when it is at the Code commit asked for" |
+
+Result: 9 of 9 killed (running total for the lane: 38 of 38 in Cloud).

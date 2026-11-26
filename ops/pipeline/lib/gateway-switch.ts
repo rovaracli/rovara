@@ -9,6 +9,9 @@ const SHA40 = /^[0-9a-f]{40}$/u;
 export const DROPPED_OUTPUTS: readonly string[] = ["DeployedCloudSha"];
 export const ADDED_OUTPUT = "DeployedCodeSha";
 
+/** The usual cause of a live gateway stack without ServiceArn: a hand deploy of Cloud's copy without the sha context drops DeployedCloudSha and ServiceArn. */
+export const HAND_DEPLOY_HINT = ` (the live gateway stack has no ServiceArn output: it was probably deployed by hand without the sha context, which drops DeployedCloudSha and ServiceArn. Deploy it by hand again from Cloud's copy with -c rovaraCloudSha=<the 40-hex Cloud commit>, or from Code's app with -c rovaraCodeSha=<the 40-hex Code commit>, with the same gateway context the pipeline passes; then run the pipeline again)`;
+
 const same = (a: unknown, b: unknown): boolean => canonicalJson(a) === canonicalJson(b);
 const list = (names: readonly string[]): string => `${names.slice(0, 8).join(", ")}${names.length > 8 ? `, and ${names.length - 8} more` : ""}`;
 
@@ -47,7 +50,7 @@ export function judgeGatewaySwitch(live: unknown, next: unknown, codeSha: string
   const strayRemoved = removed.filter((key) => !DROPPED_OUTPUTS.includes(key));
   if (strayRemoved.length > 0) failures.push(`the change drops the output(s) ${list(strayRemoved)}: only ${DROPPED_OUTPUTS.join(", ")} may go`);
   const strayAdded = added.filter((key) => key !== ADDED_OUTPUT);
-  if (strayAdded.length > 0) failures.push(`the change adds the output(s) ${list(strayAdded)}: only ${ADDED_OUTPUT} may be new`);
+  if (strayAdded.length > 0) failures.push(`the change adds the output(s) ${list(strayAdded)}: only ${ADDED_OUTPUT} may be new${strayAdded.includes("ServiceArn") ? HAND_DEPLOY_HINT : ""}`);
   if (changed.length > 0) failures.push(`the change alters the output(s) ${list(changed)}`);
   const recorded = isObject(after[ADDED_OUTPUT]) ? after[ADDED_OUTPUT].Value : undefined;
   if (typeof recorded !== "string" || !SHA40.test(recorded)) failures.push(`the new template has no ${ADDED_OUTPUT} output with a 40-hex commit`);

@@ -19,6 +19,12 @@ export const gate: Gate = {
     const deployedFrom = liveGatewayCodeSha(live.outputs);
     if (deployedFrom !== null) return { result: "skipped", skippedReason: `the live gateway was already deployed from Code (${deployedFrom.slice(0, 12)})` };
     if (record.noChanges) return { result: "pass", notes: ["the gateway change set has no changes at all"], data: { noChanges: true } };
+    // Stack-level properties outside the template (the stack tags, the role ARNs, termination protection) are not in the two templates compared below. With the same image (the live ImageDigest
+    // equals this run's digest) and templates equal outside the Outputs, the change set must have NO row at all: any row means something outside the template changed.
+    const liveDigest = live.parameters.ImageDigest;
+    if (record.rows.length > 0 && liveDigest !== undefined && liveDigest === input.manifest.gateway.digest) {
+      return { result: "fail", failures: [`the gateway image is unchanged (${liveDigest.slice(0, 19)}...), so the first change set made from Code must have no resource row, but it has ${record.rows.length}: something outside the template changed (stack tags, role, termination protection?)`], data: { rows: record.rows.length } };
+    }
     const codeSha = input.manifest.gateway.codeSha ?? null;
     if (codeSha === null) return { result: "fail", failures: ["the manifest names no Code commit for the gateway, so the switch from Cloud cannot be judged"] };
     const [liveTemplate, nextTemplate] = [await input.ports.cfn.liveTemplateBody(name), await input.ports.cfn.templateBody(name, record.changeSetName)];

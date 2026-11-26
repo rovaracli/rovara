@@ -106,7 +106,10 @@ describe("rollback-plan: which release and which variables", () => {
     const live = world({}, record({ gateway: { digest: DIGEST_A } }));
     live.stacks[stackFor("beta", "gateway")]!.parameters.ImageDigest = DIGEST_A;
     live.stacks[stackFor("beta", "gateway")]!.outputs.DeployedCodeSha = sha("c");
-    await refuses(plan(live), "ROLLBACK_REFUSED", /already deployed from Code/u);
+    // the live stack attests the Code commit: the plan names it (the change set from it is a no-op)
+    expect((await plan(live)).join("\n")).toContain(`Gateway: ${DIGEST_A}  (built from Code ${sha("c").slice(0, 12)})`);
+    live.stacks[stackFor("beta", "gateway")]!.outputs.DeployedCodeSha = "not-40-hex";
+    await refuses(plan(live), "ROLLBACK_REFUSED", /not a 40-hex commit/u);
   });
 
   it("KEEPS the gateway that runs now: a pre-change record whose digest is what the live gateway stack (deployed from Cloud) runs is planned, with no Code commit and no gateway change set", async () => {

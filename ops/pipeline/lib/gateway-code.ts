@@ -46,36 +46,51 @@ function findRecorded(record: LastGoodRecord | null, digest: string, env: Pipeli
 function refusedNoCode(env: PipelineEnv, hit: RecordedGateway, digest: string, use: DigestUse, why: string): StageError {
   return new StageError(use === "release" ? "REFUSED" : "ROLLBACK_REFUSED",
     `the ${env} ${hit.which} record names the gateway image ${digest.slice(0, 19)}... but no Code commit for it: it was recorded before the gateway moved to Code, so its stack cannot be made from Code, and the pipeline cannot keep it either (${why}). `
-    + "The pipeline keeps a gateway only when it is the image the live gateway stack runs now and that stack was last deployed from Cloud (no DeployedCodeSha); otherwise deploy that older gateway by hand. "
+    + "The pipeline keeps a gateway only when it is the image the live gateway stack runs now (deployed from Cloud, no DeployedCodeSha, or deployed from Code with a valid DeployedCodeSha, which then names its Code commit); otherwise deploy that older gateway by hand (from Cloud's copy with `-c rovaraCloudSha=<40-hex Cloud commit>`, or from Code's app with `-c rovaraCodeSha=<40-hex Code commit>`, plus the pipeline's gateway context). "
     + "To roll back the web side and keep the gateway that runs now, name the digest it runs (it must be one the last-good record names) as GATEWAY_DIGEST");
+}
+
+/** What the live gateway stack says about a recorded digest that has no Code commit: `cloud` = it runs that image and was last deployed from Cloud (keep it); `code` = it runs that image and carries a valid DeployedCodeSha; `no` = neither. */
+export type LiveGatewayVerdict = { kind: "cloud" } | { kind: "code"; codeSha: string } | { kind: "no"; why: string };
+
+/**
+ * Reads the live gateway stack for `digest` (read-only: one DescribeStacks). It must run exactly this digest (its ImageDigest parameter). Then a stack with NO DeployedCodeSha was last
+ * deployed from Cloud (`cloud`: nothing to change, keep it), and one with a VALID 40-hex DeployedCodeSha X was deployed by this pipeline from Code at X (`code`: the pair (digest, X) is
+ * attested by the stack itself; a change set from X is a no-op). A DeployedCodeSha that is present but not 40-hex is NOT read as either: it is refused (an unknown state).
+ */
+export async function liveGatewayFor(ports: Ports, config: PipelineConfig, env: PipelineEnv, digest: string): Promise<LiveGatewayVerdict> {
+  const name = stackName(config, env, "gateway");
+  const live = await ports.cfn.describeStack(name);
+  if (live === null) return { kind: "no", why: `the gateway stack ${name} does not exist` };
+  const running = live.parameters.ImageDigest;
+  if (running !== digest) return { kind: "no", why: `the ${env} gateway stack runs ${running === undefined ? "no image digest" : `${running.slice(0, 19)}...`}, not that image` };
+  const stamped = live.outputs.DeployedCodeSha;
+  if (stamped === undefined) return { kind: "cloud" };
+  if (!SHA40.test(stamped)) return { kind: "no", why: `the ${env} gateway stack's DeployedCodeSha output is not a 40-hex commit` };
+  return { kind: "code", codeSha: stamped };
 }
 
 export type KeepVerdict = { keep: true } | { keep: false; why: string };
 
-/**
- * Whether the pipeline may KEEP the gateway that runs now instead of making a gateway change set: the live gateway stack runs exactly this digest (its ImageDigest parameter), and it was last
- * deployed from Cloud (it has NO DeployedCodeSha output). Then there is nothing to change. A DeployedCodeSha that is present but not a 40-hex commit is NOT read as "from Cloud": it is refused
- * (an unknown state). Read-only: one DescribeStacks.
- */
+/** Whether the pipeline may KEEP the gateway that runs now (no gateway change set): the live stack runs exactly this digest and was last deployed from Cloud (no DeployedCodeSha). */
 export async function keepsLiveGateway(ports: Ports, config: PipelineConfig, env: PipelineEnv, digest: string): Promise<KeepVerdict> {
-  const name = stackName(config, env, "gateway");
-  const live = await ports.cfn.describeStack(name);
-  if (live === null) return { keep: false, why: `the gateway stack ${name} does not exist` };
-  const running = live.parameters.ImageDigest;
-  if (running !== digest) return { keep: false, why: `the ${env} gateway stack runs ${running === undefined ? "no image digest" : `${running.slice(0, 19)}...`}, not that image` };
-  const stamped = live.outputs.DeployedCodeSha;
-  if (stamped === undefined) return { keep: true };
-  return { keep: false, why: SHA40.test(stamped) ? `the ${env} gateway stack was already deployed from Code (${stamped.slice(0, 12)}), so a record without a Code commit does not describe it` : `the ${env} gateway stack's DeployedCodeSha output is not a 40-hex commit` };
+  const verdict = await liveGatewayFor(ports, config, env, digest);
+  if (verdict.kind === "cloud") return { keep: true };
+  if (verdict.kind === "code") return { keep: false, why: `the ${env} gateway stack was already deployed from Code (${verdict.codeSha.slice(0, 12)}), so a record without a Code commit does not describe it` };
+  return { keep: false, why: verdict.why };
 }
 
 /**
- * The Code commit the gateway of a run that names `digest` is made from, or `null` = KEEP the live gateway (no gateway change set): the digest has no recorded Code commit but is the image the
- * live gateway stack runs, deployed from Cloud (see keepsLiveGateway). Anything else without a Code commit is refused.
+ * The Code commit the gateway of a run that names `digest` is made from, or `null` = KEEP the live gateway (no gateway change set). With a Code commit recorded beside the digest, that
+ * commit. With none (an image recorded before the gateway moved to Code): the live gateway stack decides (liveGatewayFor): it runs the image and was deployed from Cloud, so keep it (null);
+ * or it runs the image and carries a valid DeployedCodeSha X (a run that switched the gateway to Code and failed before last-good was written), so X (the change set from X is a no-op and
+ * every gate of that phase runs). Anything else is refused.
  */
 export async function gatewayCodeForRecordedDigest(ports: Ports, config: PipelineConfig, record: LastGoodRecord | null, digest: string, env: PipelineEnv, use: DigestUse = "rollback"): Promise<string | null> {
   const hit = findRecorded(record, digest, env, use);
   if (isSha(hit.codeSha)) return hit.codeSha;
-  const verdict = await keepsLiveGateway(ports, config, env, digest);
-  if (verdict.keep) return null;
+  const verdict = await liveGatewayFor(ports, config, env, digest);
+  if (verdict.kind === "cloud") return null;
+  if (verdict.kind === "code") return verdict.codeSha;
   throw refusedNoCode(env, hit, digest, use, verdict.why);
 }

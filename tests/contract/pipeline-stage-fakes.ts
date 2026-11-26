@@ -67,7 +67,7 @@ export interface FakeState {
   account: string;
   calls: string[];
   /** Each `exec` call's working directory and whether AWS credential variables were removed from its environment (set to undefined), in order. */
-  execRuns?: Array<{ cmd: string; args: readonly string[]; cwd: string | undefined; awsRemoved: boolean }>;
+  execRuns?: Array<{ cmd: string; args: readonly string[]; cwd: string | undefined; awsRemoved: boolean; env: Record<string, string | undefined> | undefined }>;
   /** The directory and the context of each cdk call, in order. */
   cdkRuns?: Array<{ dir: string; context: Record<string, string>; parameters: Record<string, string> }>;
   now: number;
@@ -122,7 +122,7 @@ export function makePorts(state: FakeState, env: PipelineEnv = "beta"): Ports {
   const ports: Ports = {
     exec: (cmd, args, opts) => {
       state.calls.push(`exec ${cmd} ${args.join(" ")}`);
-      (state.execRuns ??= []).push({ cmd, args, cwd: opts?.cwd, awsRemoved: opts?.env !== undefined && "AWS_ACCESS_KEY_ID" in opts.env && opts.env.AWS_ACCESS_KEY_ID === undefined });
+      (state.execRuns ??= []).push({ cmd, args, cwd: opts?.cwd, awsRemoved: opts?.env !== undefined && "AWS_ACCESS_KEY_ID" in opts.env && opts.env.AWS_ACCESS_KEY_ID === undefined, env: opts?.env });
       return Promise.resolve(state.exec(cmd, args));
     },
     aws: { json: (args) => { state.calls.push(`aws ${args.join(" ")}`); return Promise.resolve(null); } },

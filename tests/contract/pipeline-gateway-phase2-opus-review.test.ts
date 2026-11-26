@@ -3,8 +3,8 @@
 //     properties that are not in the template, such as the stack tags cdk passes, are outside it).
 //  2. gateway-runprice (the gateway-check step) judges the live gateway against the Code that will be live in THAT environment, not against the Code commit the gateway was built from:
 //     a production release that copies beta's gateway built from a newer Code fails closed when the run-price versions differ.
-//  3. The rollback window as the code has it today: when the switch run deployed the gateway from Code (same image, outputs only) and then failed before last-good was written, the
-//     pre-change last-good record cannot be kept (the live stack has a DeployedCodeSha now), so a pipeline rollback is refused. The PR must name this case for the owner.
+//  3. The post-switch case: when the switch run deployed the gateway from Code (same image, outputs only) and then failed before last-good was written, the pre-change last-good
+//     record is completed by the DeployedCodeSha the live stack attests (fixed after this review; it used to be refused).
 // No AWS, no network.
 import { describe, expect, it } from "vitest";
 import { gate as runprice } from "../../ops/pipeline/gates/gateway-runprice.gate.ts";
@@ -94,11 +94,14 @@ describe("the rollback window today: the switch run deployed the gateway from Co
     code: { sha: CODE_NEW }, proofGates: [], previous: { cloudTag: "v0.13.28", cloudSha: sha("2"), gatewayDigest: DIGEST_B },
   });
 
-  it("a rollback that names the running digest is REFUSED (not kept): the pipeline cannot roll the web side back until a forward run records last-good", async () => {
+  it("a rollback that names the running digest uses the Code commit the stack attests (the change set from it is a no-op); a malformed DeployedCodeSha is still refused", async () => {
     const state = newState();
     liveStack(state, stackFor("beta", "gateway"), { parameters: { ImageDigest: DIGEST_A }, outputs: { DeployedCodeSha: CODE_NEW, ServiceArn: "arn:svc" } });
-    const attempt = gatewayCodeForRecordedDigest(makePorts(state), config, parseLastGood(preChange), DIGEST_A, "beta", "rollback");
+    await expect(gatewayCodeForRecordedDigest(makePorts(state), config, parseLastGood(preChange), DIGEST_A, "beta", "rollback")).resolves.toBe(CODE_NEW);
+    const bad = newState();
+    liveStack(bad, stackFor("beta", "gateway"), { parameters: { ImageDigest: DIGEST_A }, outputs: { DeployedCodeSha: "garbage", ServiceArn: "arn:svc" } });
+    const attempt = gatewayCodeForRecordedDigest(makePorts(bad), config, parseLastGood(preChange), DIGEST_A, "beta", "rollback");
     await expect(attempt).rejects.toMatchObject({ exitName: "ROLLBACK_REFUSED" });
-    await expect(attempt).rejects.toThrow(/already deployed from Code/u);
+    await expect(attempt).rejects.toThrow(/not a 40-hex commit/u);
   });
 });

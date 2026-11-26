@@ -44,8 +44,12 @@ export async function checkoutCodeTree(ctx: StepContext, sha: string): Promise<s
   if (repo === null) throw new StageError("REFUSED", `${CODE_REPO_ENV} is not set: the gateway comes from Code, so the build action must provide a full clone of Rovara Code (the pipeline's Source input)`);
   if (!await commitInRepo(ctx.ports, repo, sha)) throw new StageError("REFUSED", `the Code commit ${sha.slice(0, 12)} the gateway comes from is not in the Code clone at ${CODE_REPO_ENV}`);
   const dir = codeTreeDir(ctx, sha);
-  if (ctx.ports.fs.exists(dir)) ctx.log(`Code tree ${dir} exists; reusing it`);
-  else {
+  if (ctx.ports.fs.exists(dir)) {
+    // A tree that is already there is reused only when it is at the commit asked for (the image step makes the same check before it hashes the tree).
+    const head = await ctx.ports.exec("git", ["-C", dir, "rev-parse", "HEAD"]);
+    if (head.code !== 0 || head.stdout.trim() !== sha) throw new StageError("REFUSED", `the Code tree ${dir} exists but is not at the Code commit ${sha.slice(0, 12)} the gateway comes from: it is not reused`);
+    ctx.log(`Code tree ${dir} exists at ${sha.slice(0, 12)}; reusing it`);
+  } else {
     ctx.ports.fs.mkdirp(ctx.inputs.workDir);
     const added = await ctx.ports.exec("git", ["-C", repo, "worktree", "add", "--detach", dir, sha]);
     if (added.code !== 0) throw new StageError("FAILED", `git worktree add of the Code commit ${sha.slice(0, 12)} failed: ${added.stderr.trim().split("\n").slice(-1)[0] ?? ""}`);

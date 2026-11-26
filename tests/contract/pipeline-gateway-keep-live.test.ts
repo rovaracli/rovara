@@ -78,9 +78,17 @@ describe("gatewayCodeForRecordedDigest: a recorded Code commit wins; none record
     expect(await gatewayCodeForRecordedDigest(makePorts(world("beta", null, null)), config, later, DIGEST_A, "beta")).toBe(sha("b"));
   });
 
+  it("a record whose codeSha is not a 40-hex commit reads as pre-change (never used as a commit): it keeps the live image, and is refused otherwise", async () => {
+    const odd = parseLastGood(preChange("beta", { gateway: { digest: DIGEST_A, codeSha: "not-a-commit" } }));
+    expect(await gatewayCodeForRecordedDigest(makePorts(world("beta", null, DIGEST_A)), config, odd, DIGEST_A, "beta")).toBeNull();
+    await failsWith(gatewayCodeForRecordedDigest(makePorts(world("beta", null, DIGEST_B)), config, odd, DIGEST_A, "beta"), "ROLLBACK_REFUSED", /no Code commit for it/u);
+  });
+
   it("pre-change record + the live image = null (keep); pre-change record + another live image = refused", async () => {
     const record = parseLastGood(preChange("beta"));
     expect(await gatewayCodeForRecordedDigest(makePorts(world("beta", null, DIGEST_A)), config, record, DIGEST_A, "beta")).toBeNull();
+    expect(await gatewayCodeForRecordedDigest(makePorts(world("beta", null, DIGEST_A, { DeployedCodeSha: CODE })), config, record, DIGEST_A, "beta")).toBe(CODE);
+    await failsWith(gatewayCodeForRecordedDigest(makePorts(world("beta", null, DIGEST_A, { DeployedCodeSha: "head" })), config, record, DIGEST_A, "beta"), "ROLLBACK_REFUSED", /not a 40-hex commit/u);
     await failsWith(gatewayCodeForRecordedDigest(makePorts(world("beta", null, DIGEST_B)), config, record, DIGEST_A, "beta"), "ROLLBACK_REFUSED", /no Code commit for it.*not that image/u);
     await failsWith(gatewayCodeForRecordedDigest(makePorts(world("beta", null, DIGEST_B)), config, record, DIGEST_A, "beta", "release"), "REFUSED", /no Code commit for it.*not that image/u);
   });
@@ -123,9 +131,21 @@ describe("a rollback of the web side with pre-change last-good records: the imag
     noCdk(state);
   });
 
-  it("a stack already deployed from Code does not 'keep' a record that has no Code commit", async () => {
+  it("a stack already deployed from Code (a switch run that failed before last-good was written) runs the same image: the Code commit it attests is used, so the rollback proceeds with a no-op gateway change set", async () => {
     const state = world("beta", preChange("beta"), DIGEST_A, { DeployedCodeSha: CODE });
-    await failsWith(imageStep(makeCtx(state, "beta", "image", { inputs: { gatewayDigest: DIGEST_A } }), stateOf(manifestOf("beta", "rollback")), supplied(DIGEST_A)), "ROLLBACK_REFUSED", /already deployed from Code/u);
+    const manifest = manifestOf("beta", "rollback");
+    const seen: ImageStepInput[] = [];
+    await imageStep(makeCtx(state, "beta", "image", { inputs: { gatewayDigest: DIGEST_A } }), stateOf(manifest), supplied(DIGEST_A, seen));
+    expect(manifest.gateway).toMatchObject({ digest: DIGEST_A, source: "supplied", codeSha: CODE });
+    expect(seen.map((s) => s.codeSha)).toEqual([CODE]);
+    expect(manifest.stages.beta!.warnings.join(" ")).not.toMatch(/kept as it runs/u);
+  });
+
+  it("... but a DeployedCodeSha that is not 40-hex, or a stack running another image, is still refused", async () => {
+    const bad = world("beta", preChange("beta"), DIGEST_A, { DeployedCodeSha: "not-a-sha" });
+    await failsWith(imageStep(makeCtx(bad, "beta", "image", { inputs: { gatewayDigest: DIGEST_A } }), stateOf(manifestOf("beta", "rollback")), supplied(DIGEST_A)), "ROLLBACK_REFUSED", /not a 40-hex commit/u);
+    const other = world("beta", preChange("beta"), DIGEST_B, { DeployedCodeSha: CODE });
+    await failsWith(imageStep(makeCtx(other, "beta", "image", { inputs: { gatewayDigest: DIGEST_A } }), stateOf(manifestOf("beta", "rollback")), supplied(DIGEST_A)), "ROLLBACK_REFUSED", /not that image/u);
   });
 
   it("a digest the last-good record does not name is refused before the live stack is asked", async () => {
@@ -172,6 +192,9 @@ describe("production: a rollback and a release that follow a kept gateway", () =
     expect(manifest.gateway.codeSha ?? null).toBeNull();
     const other = world("production", null, DIGEST_B);
     await failsWith(imageStep(makeCtx(other, "production", "image"), stateOf(manifestOf("production", "release", beta)), copied(DIGEST_A)), "REFUSED", /no Code commit for the gateway to copy.*does not run that image from Cloud/u);
+    // beta kept a Cloud-built gateway, but production's stack was already switched to Code: refused (production would have no Code commit to copy)
+    const switched = world("production", null, DIGEST_A, { DeployedCodeSha: CODE });
+    await failsWith(imageStep(makeCtx(switched, "production", "image"), stateOf(manifestOf("production", "release", beta)), copied(DIGEST_A)), "REFUSED", /no Code commit for the gateway to copy/u);
     const none = world("production", null, null);
     await failsWith(imageStep(makeCtx(none, "production", "image"), stateOf(manifestOf("production", "release", beta)), copied(DIGEST_A)), "REFUSED", /no Code commit for the gateway to copy/u);
   });
