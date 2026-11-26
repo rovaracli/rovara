@@ -2,8 +2,8 @@
   "format": 1,
   "source": {
     "repository": "PrepLabsAI/Rovara",
-    "ref": "origin/code/next",
-    "sha": "7f334a6efc504615afc4cdb3b4503061d42f8f6f"
+    "ref": "ae914d62b",
+    "sha": "ae914d62b5ea734538797395c1fef85849c03e6f"
   },
   "values": {
     "setup-repair-card-body/card-body": "The project's setup stopped working after recent code changes (setup step 2 (npm ci in ./web) exited 1). Work continues; results may be less reliable until setup is fixed.",
