@@ -88,10 +88,14 @@ describe("pipeline stage CLI: real ports (a fake aws on the PATH, a real git rep
     await p.cfn.describeChangeSet("s", "rovara-pipeline-1a2b3c4d");
     await p.cfn.templateSha256("s", "rovara-pipeline-1a2b3c4d");
     await p.cfn.liveTemplateSha256("s");
+    await p.cfn.templateBody("s", "rovara-pipeline-1a2b3c4d");
+    await p.cfn.liveTemplateBody("s");
     await p.cfn.listChangeSetNames("s");
     const lines = log().filter((l) => l.split("|")[2]!.startsWith("cloudformation "));
     expect(lines.map((l) => l.split("|")[2])).toEqual([
       "cloudformation describe-change-set --stack-name s --change-set-name rovara-pipeline-1a2b3c4d --region us-east-1 --output json",
+      "cloudformation get-template --stack-name s --change-set-name rovara-pipeline-1a2b3c4d --template-stage Original --region us-east-1 --output json",
+      "cloudformation get-template --stack-name s --template-stage Original --region us-east-1 --output json",
       "cloudformation get-template --stack-name s --change-set-name rovara-pipeline-1a2b3c4d --template-stage Original --region us-east-1 --output json",
       "cloudformation get-template --stack-name s --template-stage Original --region us-east-1 --output json",
       "cloudformation list-change-sets --stack-name s --region us-east-1 --output json",

@@ -158,10 +158,30 @@ Approve the run in the CodePipeline console. The Deploy stage runs `npm ci`, bui
 app, then deploys the web stack and the first address with the release check around them. It takes a few
 minutes.
 
+## The gateway comes from Code (#1478 phase 2)
+
+The release pipeline builds and deploys the model gateway from the CODE commit, not the Cloud one. In each stage:
+
+- `CloudImage` checks out the Code commit the run releases (with Code skipped: the Code that stays, the stage's pinned commit) from the full Code clone the pipeline hands every Cloud action (`ROVARA_CODE_REPO`, the `Source`
+  input) and builds the image from it with `node scripts/model-gateway-image.ts` (the same script and context files as here, so the same source gives the same hash and the same tag). Production copies beta's digest and keeps beta's Code commit.
+- `CloudGateway` installs and builds that Code checkout without AWS credential variables (`build.codeGateway` in `ops/pipeline/config.json`; the credential and config files are also pointed at `/dev/null` and the instance-metadata lookup is turned off. This is defence in depth, not a sandbox: `cdk` then runs the same Code tree WITH the role's credentials, so the real boundary is which Code commit is checked out and the lockfile) and makes the stack with Code's CDK app (`-c rovaraModelGateway=<env> -c rovaraCodeSha=<commit>`).
+- The stack records the commit as its own `DeployedCodeSha` output (no resource), and no longer writes `DeployedCloudSha`. Cloud's live sha is read from the WEB stack only. `last-good` records the gateway's Code commit beside its digest, and a rollback goes back to the image by that recorded Code commit
+  (`stage.ts <env> rollback-plan` prints it). An image recorded before this change has no Code commit, so its stack cannot be made from today's Code. For a rollback (or a release run naming `GATEWAY_DIGEST`) the live gateway stack then decides, and only when it runs exactly that image:
+  - **No `DeployedCodeSha`** (last deployed from Cloud): the pipeline KEEPS the gateway. The image step records no Code commit, the gateway step makes no change set (nothing executes there), the settled and digest-equal gates still read the live stack, and a rollback of the web side works with pre-change `last-good` records.
+  - **A valid 40-hex `DeployedCodeSha` X** (a run that switched the gateway to Code and failed before `last-good` was written): the pipeline uses X. The stack itself attests the pair (this image, X), the change set from X is a no-op and every gate of that phase runs, including the `gatewayCode` floors.
+  - **A `DeployedCodeSha` that is present but not 40-hex**, a different image, or no stack: refused. A kept digest that the floors file lists below the floor is refused.
+  What the pipeline still cannot do (roll back by hand): move the GATEWAY back to a pre-change image that is not the one running now; roll back after a run that changed the gateway image and failed after the gateway step before `last-good` was written (the live gateway then runs an image no record names); roll back after beta kept its Cloud-built gateway if production's gateway stack was already switched to Code (a production release that follows beta's kept digest is refused unless production runs that image from Cloud). To roll back the web side and keep the running gateway while `rollback-plan` offers an older digest, run the rollback with `GATEWAY_DIGEST` set to the `last-good` digest.
+  **A hand deploy of the gateway needs the sha context.** Deploy it from Cloud's copy with `-c rovaraCloudSha=<the 40-hex Cloud commit>`, or from Code's app with `-c rovaraCodeSha=<the 40-hex Code commit>`, in both cases with the same gateway context the pipeline passes (`contextArgs(<env>, "gateway")` in `ops/pipeline/switches.ts`). Without the flag the stack loses its `DeployedCloudSha` and `ServiceArn` outputs, and the `gateway-source-switch` gate then refuses every later gateway change set (its message names this cause) until the gateway is deployed by hand again with the flag.
+- **The first change set made from Code** must change no resource of the stack Cloud deployed: the `gateway-source-switch` gate compares the change set's template with the live one and stops the step on any difference outside the Outputs (only `DeployedCloudSha` may go, only `DeployedCodeSha` may come). Stack-level properties that are not in the template (tags, role ARN, termination protection) are not compared; so when the image is unchanged the change set must also have NO resource row, and the gate fails on any row.
+- **Rollback floors.** A floor written as a Cloud sha cannot judge a gateway built from Code. Each `gateway` floor has a `gatewayCode` row in `ops/pipeline/rollback-floors.json`: a Code commit that contains the change the Cloud floor commit made to the gateway files (every line it added is present, every line it removed is absent; for the first floor 4 of the 7 files are byte-identical and 3 are later versions that still carry the change, for the second all 5 are identical); the Code commit a gateway is built from must equal or descend from every such row
+  (judged in the Code clone by the rollback-floor gate, and by `rollback-plan` when the operator has a Code clone; without one `rollback-plan` only notes it). The Cloud-sha rows stay and keep judging the Cloud ref. A new gateway floor is a `gatewayCode` row (a Code commit) AND a new pair in `tests/contract/pipeline-gateway-floor-containment.test.ts` (the test fails without it); add a Cloud-sha `gateway` row only when the Cloud ref must be held back too.
+
+Never two deployers of one gateway: this pipeline is the only one. Cloud's own `infra/lib/model-gateway.ts` and `packages/model-gateway` are no longer deployed from here and are deleted in the next step of #1478.
+
 ## The gateway image tag
 
 The release pipeline tags the model gateway image by its content: `ctx-` plus the 64 hex of the hash of the exact build context
-(`npx tsx scripts/model-gateway-image.ts context --out <dir>` prints it as `contextSha256`: the Dockerfile with its base image digest,
+(`node scripts/model-gateway-image.ts context --out <dir>`, run in the Code checkout, prints it as `contextSha256`: the Dockerfile with its base image digest,
 the lockfiles, the package files and every source file, plus the script's own bytes and its `IMAGE_FORMAT_VERSION`, so a change to how
 the image is built makes a new tag by itself; bump the constant for a builder change that touches no file). The same context always has the same tag, so a release whose gateway files did
 not change (for example a Code-only run) finds the tag in beta's repository, reuses its digest, builds and pushes nothing, and the
@@ -240,7 +260,7 @@ This needs the client registered with `--loopback`. See `packages/cloud-server/R
 
 ## The model gateway's provider keys
 
-The model gateway (`-c rovaraModelGateway=<env>`, deployed by hand, never by the pipeline) keeps each provider's key in a
+The model gateway (`-c rovaraModelGateway=<env>`, deployed by the release pipeline from Code, or by hand with Code's CDK app) keeps each provider's key in a
 retained secret. By default CloudFormation generates the secret's name: a fixed name stays reserved for its recovery window
 after a failed create and a delete, which blocks making the stack again. The gateway reads the secret by ARN, so the name
 doesn't matter to it.

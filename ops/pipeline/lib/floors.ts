@@ -11,6 +11,12 @@ const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 
 /** The one floors group that is judged against a Code rollback target (in the Code clone), not against the Cloud ref (L9b). */
 export const CODE_GROUP = "code";
+/**
+ * The floors group of the gateway's SOURCE since the gateway moved to Code (#1478 phase 2): Code commits the Code commit a gateway image was built from must equal or descend from
+ * (judged in the Code clone, in the gateway step; see judgeGatewayCodeSha). A floor written as a Cloud sha (group `gateway`) can only be judged against a Cloud commit, and a gateway
+ * built from Code has none, so each gateway floor has a counterpart here; the Cloud rows stay and keep judging the Cloud ref.
+ */
+export const GATEWAY_CODE_GROUP = "gatewayCode";
 
 export interface Floor { group: string; sha: string | null; reason: string }
 export interface DigestFloor { digest: string; reason: string }
@@ -61,8 +67,10 @@ export function loadFloors(ports: Ports, pipelineDir: string): Floors {
   return parseFloors(ports.fs.readText(path));
 }
 
-/** The floors that apply to the Cloud ref: every group but `code`. */
-export const cloudFloors = (floors: Floors): Floor[] => floors.floors.filter((floor) => floor.group !== CODE_GROUP);
+/** The floors that apply to the Cloud ref: every group but the two judged against a Code commit (`code`, `gatewayCode`). */
+export const cloudFloors = (floors: Floors): Floor[] => floors.floors.filter((floor) => floor.group !== CODE_GROUP && floor.group !== GATEWAY_CODE_GROUP);
+/** The floors of the `gatewayCode` group: each is a Code commit a gateway's Code commit must equal or descend from. */
+export const gatewayCodeFloors = (floors: Floors): Floor[] => floors.floors.filter((floor) => floor.group === GATEWAY_CODE_GROUP);
 /** The floors of the `code` group: each is a Code commit a Code rollback target must equal or descend from. */
 export const codeFloors = (floors: Floors): Floor[] => floors.floors.filter((floor) => floor.group === CODE_GROUP);
 
@@ -87,6 +95,31 @@ export async function judgeRef(ports: Ports, floors: Floors, target: { tag: stri
 export function judgeDigest(floors: Floors, digest: string): string[] {
   const hit = floors.belowFloorDigests.find((entry) => entry.digest === digest);
   return hit === undefined ? [] : [`gateway digest ${digest.slice(0, 19)}... is below the gateway floor: ${hit.reason}`];
+}
+
+async function judgeInCodeClone(ports: Ports, list: readonly Floor[], repo: string, target: string, subject: string, floorName: string): Promise<string[]> {
+  const failures: string[] = [];
+  const known = async (sha: string): Promise<boolean> => (await ports.exec("git", ["-C", repo, "cat-file", "-e", `${sha}^{commit}`])).code === 0;
+  if (!await known(target)) return [`${subject} is not in the Code clone, so it cannot be judged against the ${floorName} floors`];
+  for (const floor of list) {
+    if (floor.sha === null) { failures.push(`a ${floorName} floor in ${FLOORS_PATH} is not a full 40-hex sha, so ${subject} cannot be judged against it (${floor.reason})`); continue; }
+    if (!await known(floor.sha)) { failures.push(`the ${floorName} floor ${floor.sha.slice(0, 12)} is not in the Code clone, so ${subject} cannot be judged against it (${floor.reason})`); continue; }
+    const run = await ports.exec("git", ["-C", repo, "merge-base", "--is-ancestor", floor.sha, target]);
+    if (run.code === 1) failures.push(`${subject} is below the ${floorName} floor ${floor.sha.slice(0, 12)}: ${floor.reason}`);
+    else if (run.code !== 0) failures.push(`git could not compare ${subject} with the ${floorName} floor ${floor.sha.slice(0, 12)} (exit ${run.code})`);
+  }
+  return failures;
+}
+
+/**
+ * The Code commit a gateway is built from (#1478 phase 2) must equal or descend from every `gatewayCode` floor, judged in the Code clone the build action provides. Nothing is assumed:
+ * a commit or floor the clone does not hold, an unusable floor, or no clone while a floor exists, FAILS. No `gatewayCode` floors = nothing to judge (a note).
+ */
+export async function judgeGatewayCodeSha(ports: Ports, floors: Floors, repo: string | null, codeSha: string): Promise<FloorVerdict> {
+  const list = gatewayCodeFloors(floors);
+  if (list.length === 0) return { failures: [], notes: [`the floors file lists no gatewayCode floors: the gateway's Code commit ${codeSha.slice(0, 12)} was not judged`] };
+  if (repo === null) return { failures: [`the gateway's Code commit ${codeSha.slice(0, 12)} cannot be judged against the gatewayCode floors: no Code clone was provided (ROVARA_CODE_REPO)`], notes: [] };
+  return { failures: await judgeInCodeClone(ports, list, repo, codeSha, `the gateway's Code commit ${codeSha.slice(0, 12)}`, "gatewayCode"), notes: [] };
 }
 
 /**

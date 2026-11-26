@@ -119,20 +119,22 @@ export async function tagOfSha(ports: Ports, config: PipelineConfig, sha: string
   return null;
 }
 
-/** The Cloud sha live in an environment: the DeployedCloudSha output (BETA-CLOUD-PLAN 1.6; written by L5's cdk change). Web first, then the gateway; absent is null, never guessed. */
-export async function readLiveCloudSha(ports: Ports, web: string, gateway: string): Promise<{ sha: string | null; warnings: string[] }> {
-  const warnings: string[] = [];
-  const fromStack = async (name: string): Promise<string | null> => {
-    const stack = await ports.cfn.describeStack(name);
-    const value = stack?.outputs.DeployedCloudSha;
-    return value !== undefined && /^[0-9a-f]{40}$/u.test(value) ? value : null;
-  };
-  const w = await fromStack(web);
-  const g = await fromStack(gateway);
-  if (w !== null && g !== null && w !== g) warnings.push(`DeployedCloudSha differs: ${web} says ${w.slice(0, 9)}, ${gateway} says ${g.slice(0, 9)}`);
-  const sha = w ?? g;
-  if (sha === null) warnings.push("no DeployedCloudSha output on the web or gateway stack: the live Cloud sha is unknown");
-  return { sha, warnings };
+/**
+ * The Cloud sha live in an environment: the web stack's DeployedCloudSha output (BETA-CLOUD-PLAN 1.6; written by L5's cdk change); absent is null, never guessed.
+ * The WEB stack only (#1478 phase 2): the gateway is deployed from Code now and records its own Code commit (DeployedCodeSha, see liveGatewayCodeSha), so the gateway stack
+ * says nothing about which Cloud is live, and a gateway that an earlier pipeline stamped with a Cloud sha is not read either.
+ */
+export async function readLiveCloudSha(ports: Ports, web: string): Promise<{ sha: string | null; warnings: string[] }> {
+  const stack = await ports.cfn.describeStack(web);
+  const value = stack?.outputs.DeployedCloudSha;
+  const sha = value !== undefined && /^[0-9a-f]{40}$/u.test(value) ? value : null;
+  return { sha, warnings: sha === null ? [`no DeployedCloudSha output on the web stack (${web}): the live Cloud sha is unknown`] : [] };
+}
+
+/** The Code commit a gateway stack was deployed from: its DeployedCodeSha output (a 40-hex commit), else null (a gateway last deployed from Cloud has none). */
+export function liveGatewayCodeSha(outputs: Readonly<Record<string, string>>): string | null {
+  const value = outputs.DeployedCodeSha;
+  return value !== undefined && /^[0-9a-f]{40}$/u.test(value) ? value : null;
 }
 
 export interface ModeDecision { mode: "release" | "rollback" | "adoption"; codeRelease: "run" | "skip"; warnings: string[] }

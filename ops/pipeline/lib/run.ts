@@ -73,7 +73,7 @@ function logEvent(ctx: StepContext, event: string, detail: string): void {
 async function warnOlderProductionCloud(ctx: StepContext, manifest: Manifest, stage: StageRecord): Promise<void> {
   if (manifest.code.release !== "run") return;
   try {
-    const live = await readLiveCloudSha(ctx.ports, stackName(ctx.config, "production", "web"), stackName(ctx.config, "production", "gateway"));
+    const live = await readLiveCloudSha(ctx.ports, stackName(ctx.config, "production", "web"));
     if (live.sha === null) { stage.warnings.push("Code is promoted while production's Cloud cannot be compared with the one Beta tested: its live Cloud commit is unknown"); return; }
     if (live.sha === manifest.cloud.sha) return;
     let older = false;

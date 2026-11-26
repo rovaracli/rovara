@@ -79,7 +79,7 @@ describe("pipeline stage CLI: the gate runner", () => {
     // Every gate the policy requires exists as a file (a lane that adds a name to gate-policy.json must add its gate).
     const policy = JSON.parse(readFileSync(new URL("../../ops/pipeline/gate-policy.json", import.meta.url), "utf8")) as { required: Record<string, string[]> };
     for (const names of Object.values(policy.required)) for (const name of names) expect(found).toContain(name);
-    expect(found).toEqual(["canary", "change-set-integrity", "deployed-drift", "gateway-digest-equal", "gateway-runprice", "gateway-settled", "gitleaks", "own-key-backfill", "price-freshness", "protected", "rollback-floor"]);
+    expect(found).toEqual(["canary", "change-set-integrity", "deployed-drift", "gateway-digest-equal", "gateway-runprice", "gateway-settled", "gateway-source-switch", "gitleaks", "own-key-backfill", "price-freshness", "protected", "rollback-floor"]);
   });
 });
 

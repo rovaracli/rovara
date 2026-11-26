@@ -236,7 +236,7 @@ async function readOnly(step: ReadOnlyStep, ctx: StepContext, out: (line: string
     return EXIT.OK;
   }
   const resolved = await resolveCloudRef(ports, config, inputs.cloudRef, { sourceCommit: inputs.cloudSourceCommit, env });
-  const live = await readLiveCloudSha(ports, stackName(config, env, "web"), stackName(config, env, "gateway"));
+  const live = await readLiveCloudSha(ports, stackName(config, env, "web"));
   const codeRelease = decideCodeRelease(inputs, resolved);
   const decision = await decideMode(ports, { requested: codeRelease.request, resolved, liveSha: live.sha, adopt: inputs.adopt, env, declared: inputs.declaredRollback, codeTarget: inputs.codeTarget });
   out(JSON.stringify({ env, cloud: resolved, liveSha: live.sha, mode: decision.mode, codeRelease: decision.codeRelease, codeLiveShaNeeded: decision.mode === "rollback", codeTarget: inputs.codeTarget, lastGoodParameter: lastGoodParameter(config, env), warnings: [...live.warnings, ...decision.warnings] }, null, 2));

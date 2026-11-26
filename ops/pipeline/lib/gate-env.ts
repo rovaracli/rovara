@@ -41,11 +41,18 @@ export async function commitInRepo(ports: Ports, repo: string, sha: string): Pro
 }
 
 /**
- * Variables that give a child process AWS access. The drift checks (npm ci, contract:drift) need none, so they run without them: a postinstall script of a tree being
- * checked, or a bug in one, then cannot use the build role. Set to undefined = removed from the child's environment by the exec port.
+ * The child environment of a command that needs no AWS access (the drift checks' `npm ci` and `contract:drift`, the Code gateway's install and build). A postinstall script of a tree being
+ * checked, or a bug in one, then cannot use the build role. This removes the credential VARIABLES (undefined = removed from the child's environment by the exec port), points the shared
+ * credentials and config files at /dev/null (unsetting them would fall back to ~/.aws) and turns the instance-metadata lookup off. It is defence in depth, not a sandbox: it does not stop a
+ * process from reading a parent's environment or a file by path.
  */
-export const NO_AWS_ENV: Record<string, undefined> = Object.fromEntries([
-  "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN", "AWS_CREDENTIAL_EXPIRATION",
-  "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
-  "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ROLE_SESSION_NAME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_BEARER_TOKEN_BEDROCK",
-].map((name) => [name, undefined]));
+export const NO_AWS_ENV: Record<string, string | undefined> = {
+  ...Object.fromEntries([
+    "AWS_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN", "AWS_CREDENTIAL_EXPIRATION",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_AUTHORIZATION_TOKEN", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ROLE_SESSION_NAME", "AWS_BEARER_TOKEN_BEDROCK",
+  ].map((name) => [name, undefined])),
+  AWS_SHARED_CREDENTIALS_FILE: "/dev/null",
+  AWS_CONFIG_FILE: "/dev/null",
+  AWS_EC2_METADATA_DISABLED: "true",
+};

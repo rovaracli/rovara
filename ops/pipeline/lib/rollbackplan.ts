@@ -6,7 +6,8 @@ import { stackName } from "../config.ts";
 import type { PipelineConfig } from "../config.ts";
 import { StageError } from "../types.ts";
 import type { LastGoodRecord, PipelineEnv, Ports } from "../types.ts";
-import { cloudFloors, codeFloors, judgeCodeTarget, judgeDigest, judgeRef, loadFloors } from "./floors.ts";
+import { cloudFloors, codeFloors, gatewayCodeFloors, judgeCodeTarget, judgeDigest, judgeGatewayCodeSha, judgeRef, loadFloors } from "./floors.ts";
+import { gatewayCodeForRecordedDigest, recordedGateways } from "./gateway-code.ts";
 import { CODE_REPO_ENV, envValue } from "./gate-env.ts";
 import { readLastGood } from "./lastgood.ts";
 import { readLiveCloudSha, resolveCloudRef, tagOfSha } from "./refs.ts";
@@ -44,7 +45,7 @@ export async function planRollback(args: PlanArgs): Promise<string[]> {
   const resolved = await resolveCloudRef(ports, config, target.tag);
   if (resolved.sha !== target.sha) throw refuse(`${target.tag} now points at ${resolved.sha.slice(0, 12)} but was recorded at ${target.sha.slice(0, 12)}: release tags must not move`);
   const warnings: string[] = [];
-  const live = await readLiveCloudSha(ports, stackName(config, env, "web"), stackName(config, env, "gateway"));
+  const live = await readLiveCloudSha(ports, stackName(config, env, "web"));
   warnings.push(...live.warnings);
   // With a Code target the Cloud half may stay where it is: a Code-only rollback names the tag that is live.
   const cloudStays = live.sha === target.sha && codeTarget !== null;
@@ -54,10 +55,20 @@ export async function planRollback(args: PlanArgs): Promise<string[]> {
     try { older = await ports.git.isAncestor(target.sha, live.sha); } catch { warnings.push(`the live Cloud sha ${live.sha.slice(0, 12)} is not in this repository, so the run cannot be proven a rollback`); older = true; }
     if (!older) throw refuse(`${target.tag} is not older than what ${env} runs (${live.sha.slice(0, 12)}): that is a release, not a rollback`);
   }
+  // The gateway comes from Code (#1478 phase 2): the plan names the Code commit recorded with the target's image, which the run builds the stack from. An image recorded without one is refused,
+  // unless it is the image the live gateway stack runs (deployed from Cloud): then the run KEEPS the gateway (null here; no gateway change set).
+  const gatewayCodeSha = await gatewayCodeForRecordedDigest(ports, config, record, target.digest, env);
   const floors = loadFloorsOrRefuse(ports, args.pipelineDir);
   const verdict = await judgeRef(ports, floors, { tag: target.tag, sha: target.sha });
   const failures = [...verdict.failures, ...judgeDigest(floors, target.digest)];
   const codeNotes: string[] = [];
+  const cloneForGateway = await envValue(ports, CODE_REPO_ENV);
+  if (gatewayCodeSha === null) codeNotes.push("the gateway is kept as it runs now (the image has no recorded Code commit): no gateway change set is made, and no gatewayCode floor applies to it (its digest was judged above)");
+  else if (cloneForGateway === null && gatewayCodeFloors(floors).length > 0) codeNotes.push(`the gateway's Code commit was not judged against the ${gatewayCodeFloors(floors).length} gatewayCode floor(s): no Code clone (${CODE_REPO_ENV}); the pipeline's rollback-floor gate judges it`);
+  else {
+    const gateway = await judgeGatewayCodeSha(ports, floors, cloneForGateway, gatewayCodeSha);
+    failures.push(...gateway.failures);
+  }
   if (codeTarget !== null) {
     // The Code floors are judged in a Code clone; the operator's machine may not have one (the pipeline's rollback-floor gate always does).
     const repo = await envValue(ports, CODE_REPO_ENV);
@@ -71,12 +82,13 @@ export async function planRollback(args: PlanArgs): Promise<string[]> {
   if (failures.length > 0) throw refuse(`the rollback floor refuses ${codeTarget !== null ? "this rollback" : target.tag}: ${failures.join("; ")}`);
   if (record.proofSkipped !== undefined && record.proofSkipped.length > 0) warnings.push(`the target was recorded without proof from: ${record.proofSkipped.join(", ")}`);
   const liveTag = live.sha === null ? null : await tagOfSha(ports, config, live.sha);
-  if (codeTarget !== null) return codePlanLines({ env, live, liveTag, target, floorsChecked: cloudFloors(floors).length, codeTarget, warnings: [...warnings, ...codeNotes] });
+  if (codeTarget !== null) return codePlanLines({ env, live, liveTag, target, gatewayCodeSha, floorsChecked: cloudFloors(floors).length, codeTarget, warnings: [...warnings, ...codeNotes] });
+  warnings.push(...codeNotes);
   const lines = [
     `ROLLBACK PLAN ${env}  (read-only: nothing was changed)`,
     `  Live   : ${live.sha === null ? "unknown" : `${liveTag ?? "no release tag"} ${live.sha.slice(0, 12)}`}`,
     `  Target : ${target.tag} ${target.sha.slice(0, 12)}  (${target.what})`,
-    `  Gateway: ${target.digest}`,
+    `  Gateway: ${gatewayLine(target.digest, gatewayCodeSha)}`,
     `  Floors : ${cloudFloors(floors).length} checked, none below`,
     "  Run the pipeline with these variables (beta first, then production, each with its own CODE_LIVE_SHA):",
     `    CLOUD_REF=${target.tag}`,
@@ -89,18 +101,20 @@ export async function planRollback(args: PlanArgs): Promise<string[]> {
   return lines;
 }
 
+const gatewayLine = (digest: string, codeSha: string | null): string => (codeSha === null ? `${digest}  (kept: the image the gateway runs now, recorded before the gateway moved to Code; no gateway change set)` : `${digest}  (built from Code ${codeSha.slice(0, 12)})`);
+
 /**
  * The plan of a rollback that moves Code too (L9b). The pipeline supplies CODE_LIVE_SHA and the supersession itself (inside CODE_CTX), so they are not variables to set. The Code history
  * lives in the release account (SSM, written by the Code release build): the Cloud roles cannot read it, so the operator reads it; the Code Preflight enforces membership either way.
  */
-function codePlanLines(a: { env: PipelineEnv; live: { sha: string | null }; liveTag: string | null; target: Target; floorsChecked: number; codeTarget: string; warnings: string[] }): string[] {
+function codePlanLines(a: { env: PipelineEnv; live: { sha: string | null }; liveTag: string | null; target: Target; gatewayCodeSha: string | null; floorsChecked: number; codeTarget: string; warnings: string[] }): string[] {
   const stays = a.live.sha === a.target.sha;
   const lines = [
     `ROLLBACK PLAN ${a.env} with a Code rollback  (read-only: nothing was changed)`,
     `  Live   : ${a.live.sha === null ? "unknown" : `${a.liveTag ?? "no release tag"} ${a.live.sha.slice(0, 12)}`}`,
     `  Cloud  : ${stays ? `stays at ${a.target.tag}` : `${a.target.tag} ${a.target.sha.slice(0, 12)}`}  (${a.target.what})`,
     `  Code   : rolls back to ${a.codeTarget.slice(0, 12)}`,
-    `  Gateway: ${a.target.digest}`,
+    `  Gateway: ${gatewayLine(a.target.digest ?? "", a.gatewayCodeSha)}`,
     `  Floors : ${a.floorsChecked} cloud floor(s) checked, none below`,
     "  Run the pipeline with these variables (CODE_LIVE_SHA and the supersession are supplied by the pipeline itself):",
     "    PIPELINE_MODE=rollback",
@@ -121,7 +135,5 @@ function loadFloorsOrRefuse(ports: Ports, pipelineDir: string): ReturnType<typeo
 
 /** The gateway digests this environment's last-good record names: the current one and the one it replaced (the digests `rollback-plan` prints). */
 export async function recordedGatewayDigests(ports: Ports, config: PipelineConfig, env: PipelineEnv): Promise<string[]> {
-  const record = await readLastGood(ports, config, env);
-  if (record === null) return [];
-  return [record.gateway.digest, ...(record.previous?.gatewayDigest != null ? [record.previous.gatewayDigest] : [])];
+  return recordedGateways(await readLastGood(ports, config, env)).map((entry) => entry.digest);
 }

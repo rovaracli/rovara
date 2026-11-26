@@ -61,7 +61,8 @@ export interface RollbackRecord {
   capturedAt: string;
   executionId: string;
   cloud: { tag: string | null; sha: string | null };
-  gateway: { digest: string | null };
+  /** `codeSha`: the Code commit the live gateway stack was deployed from (its DeployedCodeSha output), null when it has none (a gateway last deployed from Cloud). */
+  gateway: { digest: string | null; codeSha?: string | null };
   stacks: Record<string, { status: string; templateSha256: string | null }>;
   code: { liveSha: string | null; facts: Record<string, string> };
 }
@@ -77,7 +78,8 @@ export interface PromotionSummary {
     liveSha?: string | null; rollbackTarget?: string | null;
   };
   cloud: { tag: string; sha: string; liveSha: string | null };
-  gateway: { digest: string | null; source: string | null };
+  /** `codeSha`: the Code commit the gateway image and stack come from (#1478 phase 2); absent in a summary from before. */
+  gateway: { digest: string | null; source: string | null; codeSha?: string | null };
   changeSets: Array<{ part: string; stack: string; noChanges: boolean; counts: ChangeCounts }>;
   gates: Array<{ name: string; phase: string; result: "pass" | "fail" | "skipped"; skippedReason: string | null }>;
   warnings: string[];
@@ -129,6 +131,12 @@ export interface Manifest {
     source: "built" | "copied" | "adopted" | "supplied" | null;
     imageTag: string | null;
     repository: string | null;
+    /**
+     * The Code commit this gateway comes from (#1478 phase 2): its image is built from that commit's tree and its stack is synthesized from that commit's CDK app. Set by the image step
+     * (the Code that will be live, or, for a rollback to a recorded image, the Code sha recorded with that image); read by the gateway step and written to last-good. Absent or null in a
+     * manifest from before phase 2 (the image was built from the Cloud commit then).
+     */
+    codeSha?: string | null;
   };
   stages: Partial<Record<PipelineEnv, StageRecord>>;
 }
@@ -140,12 +148,13 @@ export interface LastGoodRecord {
   executionId: string;
   mode: PipelineMode;
   cloud: { tag: string; sha: string };
-  gateway: { digest: string };
+  /** `codeSha` (a sibling attribute: older readers ignore it): the Code commit the gateway image and stack were built from; absent = recorded before the gateway moved to Code (built from `cloud.sha`). */
+  gateway: { digest: string; codeSha?: string | null };
   code: { sha: string | null };
   proofGates: string[];
   /** L9, a sibling attribute (rule 8: older readers ignore it): proof gates that were skipped when this record was written; absent = none. */
   proofSkipped?: string[];
-  previous: { cloudTag: string; cloudSha: string; gatewayDigest: string | null } | null;
+  previous: { cloudTag: string; cloudSha: string; gatewayDigest: string | null; gatewayCodeSha?: string | null } | null;
 }
 
 // ---- gates ----
@@ -207,6 +216,9 @@ export interface Ports {
     describeChangeSet(stack: string, name: string): Promise<ChangeSetDescription | null>;
     templateSha256(stack: string, changeSetName: string): Promise<string>;
     liveTemplateSha256(stack: string): Promise<string | null>;
+    /** The original template (parsed JSON) of a change set / of the live stack (null for the live one: no such stack). Read by the gateway-source-switch gate only. */
+    templateBody(stack: string, changeSetName: string): Promise<unknown>;
+    liveTemplateBody(stack: string): Promise<unknown>;
     executeChangeSet(stack: string, name: string): Promise<void>;
     deleteChangeSet(stack: string, name: string): Promise<void>;
     listChangeSetNames(stack: string): Promise<string[]>;
@@ -227,7 +239,10 @@ export interface ImageStepInput {
   env: PipelineEnv;
   manifest: Readonly<Manifest>;
   supplied: { digest: string } | null;
-  dirs: { pipeline: string; cloud: string; out: string; work: string };
+  /** `code`: a checkout of the Code commit `codeSha` (the gateway image is built from it; never from the Cloud tree). */
+  dirs: { pipeline: string; code: string | null; out: string; work: string };
+  /** The Code commit the gateway image is built from (checked against `dirs.code`'s HEAD). Null only for a supplied digest, which builds nothing. */
+  codeSha: string | null;
   ports: Ports;
   log: (line: string) => void;
 }

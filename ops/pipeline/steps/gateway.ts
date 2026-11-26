@@ -1,8 +1,10 @@
 // Step gateway: preview the gateway change set (only ImageDigest as a parameter), run the change-set gates (the protected check) on THAT change set,
-// verify it by id and template hash, execute it by name, wait for the stack to settle.
+// verify it by id and template hash, execute it by name, wait for the stack to settle. The gateway is Code's (#1478 phase 2): the stack is synthesized by CODE's CDK app from the
+// Code checkout at manifest.gateway.codeSha (the commit its image was built from), and the stack records that commit as its DeployedCodeSha output. No Cloud tree is built here.
 import { changeSetNameFor, stackName } from "../config.ts";
 import { StageError } from "../types.ts";
-import { buildCandidate } from "../lib/candidate.ts";
+import { buildCodeGateway } from "../lib/candidate.ts";
+import { keepsLiveGateway } from "../lib/gateway-code.ts";
 import type { StepContext } from "../lib/context.ts";
 import { discardChangeSets, executeRecorded, previewChangeSets, tidyChangeSets } from "../lib/changesets.ts";
 import { stageOf } from "../lib/manifest.ts";
@@ -10,23 +12,37 @@ import { gatePhase, requireManifest } from "../lib/run.ts";
 import type { State } from "../lib/run.ts";
 
 export const SETTLE_TIMEOUT_SECONDS = 30 * 60;
+/** Code's CDK app reads the commit it records as the gateway's DeployedCodeSha from this context (infra/lib/model-gateway-deployed-sha.ts in Code). */
+export const CODE_SHA_CONTEXT_KEY = "rovaraCodeSha";
 
 export async function gatewayStep(ctx: StepContext, state: State): Promise<void> {
   const manifest = requireManifest(state);
   const stage = stageOf(manifest, ctx.env);
   const digest = manifest.gateway.digest;
   if (digest === null) throw new StageError("REFUSED", "the manifest has no gateway digest: the image step did not complete");
+  const codeSha = manifest.gateway.codeSha ?? null;
+  if (codeSha === null) {
+    // No Code commit: the only gateway that may go on is the live one, kept (an image recorded before the gateway moved to Code that the live stack, last deployed from Cloud, runs now).
+    // Judged again here on the live stack, never from the image step's word: no change set, no gates of this phase, nothing executes.
+    const kept = await keepsLiveGateway(ctx.ports, ctx.config, ctx.env, digest);
+    if (!kept.keep) throw new StageError("REFUSED", `the manifest has no Code commit for the gateway, so its stack cannot be made from Code, and the gateway that runs now cannot be kept: ${kept.why}`);
+    stage.changeSets = stage.changeSets.filter((cs) => cs.part !== "gateway");
+    stage.warnings.push(`the ${ctx.env} gateway was kept as it runs (${digest.slice(0, 19)}...): no gateway change set was made`);
+    ctx.log(`the ${ctx.env} gateway stack already runs ${digest.slice(0, 19)}... and was last deployed from Cloud: kept, no gateway change set`);
+    return;
+  }
   if (ctx.inputs.dryRun) { stage.warnings.push("dry run: the gateway change set was not created"); return; }
-  const dir = await buildCandidate(ctx, manifest.cloud.sha, false);
+  const dir = await buildCodeGateway(ctx, codeSha);
   const name = stackName(ctx.config, ctx.env, "gateway");
   const changeSetName = changeSetNameFor(manifest.exec8);
   try {
     const [record] = await previewChangeSets({
       ports: ctx.ports, dir, changeSetName, stacks: [{ part: "gateway", stack: name, stackId: ctx.config.stackIds.gateway }],
-      context: { ...ctx.contextFor("gateway"), rovaraCloudSha: manifest.cloud.sha }, parameters: { ImageDigest: digest }, log: ctx.log,
+      context: { ...ctx.contextFor("gateway"), [CODE_SHA_CONTEXT_KEY]: codeSha }, parameters: { ImageDigest: digest }, log: ctx.log,
     });
     stage.changeSets = [...stage.changeSets.filter((cs) => cs.part !== "gateway"), record!];
-    await gatePhase(ctx, state, stage, "change-sets", [record!], dir, ctx.inputs.workDir);
+    // No Cloud tree is involved: the gates of this phase read the records and the live stack, never a Cloud checkout.
+    await gatePhase(ctx, state, stage, "change-sets", [record!], null, ctx.inputs.workDir);
     const [executed] = await executeRecorded({ ports: ctx.ports, records: [record!], settleTimeoutSeconds: SETTLE_TIMEOUT_SECONDS, log: ctx.log });
     stage.changeSets = stage.changeSets.map((cs) => (cs.part === "gateway" ? executed! : cs));
   } catch (error) {
